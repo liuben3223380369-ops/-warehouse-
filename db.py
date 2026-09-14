@@ -27,7 +27,7 @@ CREATE VIEW IF NOT EXISTS v_stock AS
 SELECT m.*,
   COALESCE(a.i, 0) AS in_qty,
   COALESCE(a.o, 0) AS out_qty,
-  m.opening + COALESCE(a.i, 0) - COALESCE(a.o, 0) AS stock
+  ROUND(m.opening + COALESCE(a.i, 0) - COALESCE(a.o, 0), 6) AS stock
 FROM materials m
 LEFT JOIN (SELECT material_id,
              SUM(CASE WHEN kind='进' THEN qty ELSE 0 END) AS i,
@@ -176,7 +176,8 @@ def migrate():
             run("ALTER TABLE txns ADD COLUMN %s %s" % (col, ddl))
     # 视图改成聚合 JOIN 后，老库里的旧视图不会自动更新，这里重建
     old = q("SELECT sql FROM sqlite_master WHERE type='view' AND name='v_stock'")
-    if old and 'COALESCE(a.i' not in (old[0]['sql'] or ''):
+    if old and ('COALESCE(a.i' not in (old[0]['sql'] or '')
+                or 'ROUND(' not in (old[0]['sql'] or '')):
         with tx() as c:
             c.execute("DROP VIEW IF EXISTS v_stock")
             c.execute("DROP VIEW IF EXISTS v_mats")
@@ -236,9 +237,9 @@ def runmany(sql, seq):
 def history(mid, m=''):
     """物料台账：每笔单据 + 滚动结存"""
     sql = """SELECT t.*, m.name, m.unit, m.code, m.opening,
-      m.opening + SUM(CASE WHEN t.kind='进' THEN t.qty ELSE -t.qty END) OVER (
+      ROUND(m.opening + SUM(CASE WHEN t.kind='进' THEN t.qty ELSE -t.qty END) OVER (
         PARTITION BY t.material_id ORDER BY t.tdate, t.id
-        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS balance
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW), 6) AS balance
       FROM txns t JOIN materials m ON m.id=t.material_id WHERE t.material_id=?"""
     args = [mid]
     if m:
@@ -314,11 +315,14 @@ DEFAULT_COLS = [
 ]
 
 def init_cols():
+    # 注意：conn() 是按线程复用的共享连接，这里绝对不能 close()，
+    # 否则 _local.conn 会指向一个已关闭的连接，之后所有查询全部报
+    # "Cannot operate on a closed database"——整个程序直接废掉。
     c = conn()
     for fid, label, pos, en, al in DEFAULT_COLS:
         c.execute("INSERT OR IGNORE INTO colmap(fid,label,pos,enabled,aliases)"
                   " VALUES(?,?,?,?,?)", (fid, label, pos, en, al))
-    c.commit(); c.close()
+    c.commit()
 
 def cols(only_enabled=True):
     sql = "SELECT * FROM colmap"
@@ -345,7 +349,21 @@ def check_integrity():
         if q("PRAGMA integrity_check")[0][0] != 'ok':
             issues.append('数据库文件结构异常（integrity_check 未通过）')
     except sqlite3.DatabaseError as e:
-        issues.append('无法读取数据库：%s' % e)
+        issues.append('数据库文件损坏，读不了了：%s' % e)
+        # 只说"坏了"没用，得告诉用户手上有哪些备份可以救
+        try:
+            d = os.path.dirname(os.path.abspath(DB_PATH)) or '.'
+            baks = sorted((f for f in os.listdir(d)
+                           if f.startswith(os.path.basename(DB_PATH) + '.')
+                           and f.endswith('.bak')), reverse=True)
+        except OSError:
+            baks = []
+        if baks:
+            issues.append('别慌，有 %d 份自动备份可以还原，最新的是 %s' % (len(baks), baks[0]))
+            issues.append('还原方法：退出程序 → 把 %s 改名成 %s → 重新打开'
+                          % (baks[0], os.path.basename(DB_PATH)))
+        else:
+            issues.append('没有找到自动备份，数据库只能重建，此前的单据将无法恢复')
         return issues
     for r in q("SELECT t.id, t.material_id FROM txns t"
                " LEFT JOIN materials m ON m.id=t.material_id WHERE m.id IS NULL"):
@@ -381,7 +399,16 @@ def fix_orphans():
 def backup(to_path=None, keep=10):
     """在线备份（用 SQLite 官方 backup API，拷出来的库一定是一致的）。
     同一秒重复备份会覆盖；只保留最近 keep 个，避免备份把磁盘塞满。"""
-    to_path = to_path or (DB_PATH + '.' + datetime.now().strftime('%Y%m%d_%H%M%S') + '.bak')
+    if not to_path:
+        base = DB_PATH + '.' + datetime.now().strftime('%Y%m%d_%H%M%S')
+        to_path = base + '.bak'
+        # 同一秒内重复备份会互相覆盖（比如程序反复重启），加序号保证每份都在，
+        # 否则最后一份好备份可能被同名覆盖掉，真出事就没得还原了
+        n = 1
+        while os.path.exists(to_path):
+            n += 1
+            to_path = '%s_%d.bak' % (base, n)
+    to_path = to_path
     src = conn()
     dst = sqlite3.connect(to_path)
     try:

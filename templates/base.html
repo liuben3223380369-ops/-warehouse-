@@ -8,10 +8,17 @@
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 body{margin:0;font:15px/1.5 -apple-system,"Noto Sans CJK SC","Microsoft YaHei",sans-serif;
 background:#f2f4f7;color:#1c2430;padding-bottom:64px}
-header{background:#1f6feb;color:#fff;padding:12px 14px;position:sticky;top:0;z-index:9}
+header{background:#1f6feb;color:#fff;padding:12px 14px;position:sticky;top:0;z-index:9;
+display:flex;align-items:flex-start;gap:10px}
+header .inner{max-width:960px;margin:0 auto;flex:1;min-width:0}
+.wbtn{display:none;width:34px;height:34px;padding:0;margin:0;flex:none;border:0;border-radius:8px;
+background:rgba(255,255,255,.18);color:#fff;font-size:16px;line-height:1;cursor:pointer}
+@media(min-width:820px){.wbtn{display:block}}
+@media(min-width:820px){body.wide main,body.wide header .inner{max-width:none}
+body.wide nav{max-width:none;border-radius:0;left:0;right:0;transform:none;width:auto}}
 header h1{margin:0;font-size:17px;font-weight:600}
 header .sub{opacity:.85;font-size:12px;margin-top:2px}
-main{padding:12px}
+main{padding:12px;max-width:960px;margin:0 auto}
 .card{background:#fff;border-radius:12px;padding:12px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
@@ -59,6 +66,35 @@ th.c,td.c{padding:4px 3px;font-size:12px}
 .bar{display:flex;gap:8px;align-items:center;margin-bottom:10px}
 .bar>a,.bar>span{flex:1;margin-top:0}
 tr.new{background:#f7fbff}
+/* ---- 宽屏（平板/电脑/独立窗口）：别把手机样式拉伸到全屏 ---- */
+@media(min-width:820px){
+  main{padding:18px 20px 90px}
+  header{padding:14px 20px}
+  .card{padding:18px;border-radius:14px}
+  h2{font-size:17px}
+  table{font-size:14px}
+  th,td{padding:9px 8px}
+  input,select,textarea{width:auto;min-width:180px}
+  .rowflex>input,.rowflex>select{width:100%;min-width:0}
+  /* 按钮在宽屏限制宽度并居中：既不会拉成一条，也不破坏原有的上下堆叠 */
+  button,.btn{max-width:320px;margin-left:auto;margin-right:auto}
+  .btn.s{max-width:240px}
+  .grid2{gap:14px}
+  .grid3{gap:14px}
+  .stat b{font-size:24px}
+}
+@media(min-width:820px){
+  /* 底部导航在宽屏居中限宽，不再横贯整屏 */
+  nav{left:50%;right:auto;transform:translateX(-50%);width:100%;max-width:960px;
+  border-radius:14px 14px 0 0;box-shadow:0 -2px 12px rgba(0,0,0,.08);
+  border-left:1px solid #e3e7ec;border-right:1px solid #e3e7ec}
+  nav a{font-size:12px;padding:10px 0 9px}
+  nav a i{font-size:21px}
+}
+@media(min-width:820px) and (hover:hover){
+  button:hover,.btn:hover{filter:brightness(1.08)}
+  tr:hover td{background:#f7fafd}
+}
 </style>
 {% block extra_head %}{% endblock %}
 </head>
@@ -69,8 +105,9 @@ tr.new{background:#f7fbff}
 <th class="{{cls}}"><a href="?{{ (qs or {})|urlencode }}&sort={{ns}}&dir={{nd}}" style="color:inherit;text-decoration:none">
 {{label}}{% if cur_sort == f %}{% if cur_dir == 'asc' %} ▲{% elif cur_dir == 'desc' %} ▼{% endif %}{% endif %}</a></th>
 {%- endmacro %}
-<header><h1>{% block h1 %}仓库管理系统{% endblock %}</h1>
-<div class="sub">{% block sub %}{% endblock %}</div></header>
+<header><div class="inner"><h1>{% block h1 %}仓库管理系统{% endblock %}</h1>
+<div class="sub">{% block sub %}{% endblock %}</div></div><button id="wbtn" class="wbtn" type="button"
+title="切换 紧凑/铺满">⤢</button></header>
 <main>{% block body %}{% endblock %}</main>
 {% set ep = request.endpoint or '' %}
 <nav>
@@ -81,4 +118,15 @@ tr.new{background:#f7fbff}
 <a href="{{url_for('report')}}" class="{{'on' if ep=='report'}}"><i>📅</i>月报</a>
 <a href="{{url_for('materials')}}" class="{{'on' if ep.startswith('material')}}"><i>🗂</i>物料</a>
 </nav>
+<script>
+(function(){
+  var b=document.getElementById('wbtn');
+  if(!b) return;
+  try{ if(localStorage.getItem('wh_wide')==='1') document.body.classList.add('wide'); }catch(e){}
+  b.onclick=function(){
+    document.body.classList.toggle('wide');
+    try{ localStorage.setItem('wh_wide', document.body.classList.contains('wide')?'1':'0'); }catch(e){};
+  };
+})();
+</script>
 </body></html>

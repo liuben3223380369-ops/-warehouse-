@@ -3,7 +3,7 @@
 表头自动识别（中文别名），按「料号 → 名称」优先级匹配已有物料：
   命中则更新非空白字段，未命中则新增。
 """
-import io, csv, os, datetime
+import io, csv, datetime
 
 try:
     import openpyxl
@@ -187,14 +187,21 @@ def _fmt_date(v):
         pass
     if hasattr(v, 'strftime'):
         return v.strftime('%Y-%m-%d')
-    s = s.replace('年', '-').replace('月', '-').replace('日', '').replace('/', '-').replace('.', '-')
-    parts = [p for p in s.split('-') if p]
-    if len(parts) >= 3:
-        y, m, d = parts[0], parts[1].zfill(2), parts[2][:2].zfill(2)
-        if len(y) == 2:
-            y = '20' + y
-        return f'{y}-{m}-{d}'
-    return s[:10]
+    # 只做"整体像日期"的替换：先确认格式，再动手，避免把文本里的"日"字吃掉
+    import re as _re
+    m = _re.match(r'^\s*(\d{4})\s*[-/年.]\s*(\d{1,2})\s*[-/月.]\s*(\d{1,2})\s*日?\s*$', s)
+    if m:
+        y, mo, d = m.group(1), m.group(2).zfill(2), m.group(3).zfill(2)
+        try:
+            datetime.date(int(y), int(mo), int(d))   # 顺带校验合法性（排除 2026-13-45）
+        except ValueError:
+            return ''
+        return f'{y}-{mo}-{d}'
+    m2 = _re.match(r'^\s*(\d{1,2})\s*[-/月.]\s*(\d{1,2})\s*日?\s*$', s)   # 只有月日
+    if m2:
+        return ''
+    # 认不出来就返回空，由上层用默认日期，绝不把垃圾塞进数据库
+    return ''
 
 def map_txn_headers(header, aliases=None, mat_aliases=None):
     """流水表头 -> {列索引: 字段}。先看进出/数量专用别名，再补物料 A-G 列"""

@@ -30,7 +30,7 @@ def free_port(start=8080, tries=50):
 
 def has_webview():
     try:
-        import webview
+        import webview          # noqa: F401  仅探测是否可用
         return True
     except Exception:
         return False

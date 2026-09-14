@@ -23,6 +23,17 @@ import calendar, io, csv, os, time, sys
 from flask import Response
 import db, importer
 
+def say(msg=''):
+    """容错输出：编码问题、控制台不存在都不会让程序崩"""
+    try:
+        print(msg)
+    except Exception:
+        try:
+            print(str(msg).encode('ascii', 'replace').decode('ascii'))
+        except Exception:
+            pass
+
+
 BASE = db.app_dir()
 TMP = os.path.join(BASE, '.uploads')
 os.makedirs(TMP, exist_ok=True)
@@ -32,7 +43,30 @@ if getattr(sys, 'frozen', False):
     app = Flask(__name__, template_folder=os.path.join(db.res_dir(), 'templates'))
 else:
     app = Flask(__name__)
-db.init()
+# 数据库损坏时 init() 就会抛异常，而这是在 import 阶段——
+# main() 里的兜底根本轮不到执行。必须在这里就接住，否则
+# 窗口模式（无控制台）下程序一闪而过，用户完全不知道出了什么事。
+try:
+    db.init()
+except Exception as _e:
+    import desktop as _d
+    _lines = ['数据库打不开：%s' % _e]
+    try:
+        _lines += db.check_integrity()
+    except Exception:
+        pass
+    _lines.append('也可以把 %s 改名（比如加 .old），程序会自动新建一个空库，'
+                  '再用之前的备份还原。' % os.path.basename(db.DB_PATH))
+    _d.log('启动失败：\n  ' + '\n  '.join(_lines))
+    say('')
+    say('  !! 启动失败 !!')
+    for _m in _lines:
+        say('  ' + _m)
+    say('')
+    say('  以上信息已写入 %s' % _d.LOG)
+    if getattr(sys, 'frozen', False):
+        time.sleep(30)
+    raise SystemExit(1)
 
 LABELS = {'name': '物料名称', 'code': '料号', 'supplier': '供应商', 'category': '类型',
           'spec': '规格', 'width': '宽幅', 'unit': '单位', 'status': '状态',
@@ -67,6 +101,36 @@ def eall(e):
 
 def today():
     return date.today().strftime('%Y-%m-%d')
+
+MAX_UPLOAD = 20 * 1024 * 1024      # 单个上传文件上限 20MB，防止被大文件刷爆磁盘
+MAX_KW = 100                       # 搜索词上限：SQLite 对超长 LIKE 模式会报
+                                   # "LIKE or GLOB pattern too complex" 直接 500
+MAX_ROWS = 500                     # 录单页一次最多提交/渲染多少行
+
+def safe_name(name, default='upload'):
+    """把上传文件名压成安全的：去掉路径、空字节、控制字符，限制长度。
+
+    不处理的话，文件名里带 \\x00 会在 open() 时抛
+    ValueError: embedded null byte，直接变 HTTP 500。
+    """
+    import re as _re
+    name = os.path.basename((name or '').replace('\\', '/'))
+    # 控制字符直接剔除（而不是截断），这样 a\x00b.xlsx 还能保留成 ab.xlsx
+    name = _re.sub(r'[\x00-\x1f\x7f]', '', name)
+    name = _re.sub(r'\s+', ' ', name)                     # 连续空白压成一个
+    name = name.strip().strip('.') or default
+    if len(name) > 80:                                 # 防止超长文件名
+        stem, dot, ext = name.rpartition('.')
+        name = (stem[:60] or stem) + dot + (ext[:10] if dot else '')
+    return name
+
+def clean_kw(s, limit=MAX_KW):
+    """搜索词清洗：去空白、限长。超长会让 SQLite 的 LIKE 直接报错。"""
+    s = (s or '').strip()
+    if len(s) > limit:
+        s = s[:limit]
+    # LIKE 里的 % 和 _ 是通配符，用户搜 "50%" 时应该匹配字面量而不是任意串
+    return s.replace('%', '').replace('_', '')
 
 def cleanup_tmp(max_age=3600):
     """清掉上传后没确认导入的临时文件，避免 .uploads 越积越多"""
@@ -180,6 +244,32 @@ def ym(d=None):
     d = d or today()
     return d[:7]
 
+def safe_ym(m, default=None):
+    """把用户传来的月份参数规范成 YYYY-MM。
+
+    不校验就直接 int(m[5:7]) 会在 m='abc' 时抛 ValueError，
+    calendar.monthrange 也会对 13 月、0 月抛 IllegalMonthError，
+    两种情况都是 HTTP 500。这里统一兜住，非法就回退到默认月份。
+    """
+    import re as _re
+    if not m or not isinstance(m, str):
+        return default or ym()
+    m = m.strip()
+    if not _re.match(r'^\d{4}-\d{2}$', m):
+        # 容错：2026-9 补成 2026-09
+        m2 = _re.match(r'^(\d{4})-(\d{1,2})$', m)
+        if m2:
+            m = '%s-%02d' % (m2.group(1), int(m2.group(2)))
+        else:
+            return default or ym()
+    try:
+        y, mo = int(m[:4]), int(m[5:7])
+        if not (1 <= mo <= 12) or not (1970 <= y <= 9999):
+            return default or ym()
+    except (ValueError, TypeError):
+        return default or ym()
+    return m
+
 @app.context_processor
 def inject():
     return dict(today=today(), ym=ym())
@@ -245,38 +335,46 @@ def txn():
     msg = request.args.get('msg', '')
 
     if request.method == 'POST':
-        nrow = int(request.form.get('nrow') or 0)
+        nrow = min(int(request.form.get('nrow') or 0), MAX_ROWS)
         saved = newmat = blocked = 0
         names = []
         dflt = request.form.get('tdate') or today()
-        for i in range(nrow):
-            qty = num(request.form.get(f'qty_{i}'))
-            vals = {f: (request.form.get(f'{f}_{i}') or '').strip() for f in
-                    ('name', 'code', 'supplier', 'category', 'spec', 'width', 'unit', 'status')}
-            vals['opening'] = num(request.form.get(f'opening_{i}'))
-            vals['safety'] = num(request.form.get(f'safety_{i}'))
-            qty, pieces, per = calc_qty(qty, request.form.get(f'pieces_{i}'),
-                                        request.form.get(f'per_{i}'))
-            if qty <= 0 or (not vals['name'] and not vals['code']):
-                continue
-            mid, is_new = _resolve_material(vals)
-            if not mid:
-                continue
-            newmat += is_new
-            d = safe_date(request.form.get(f'tdate_{i}'), dflt)
-            kind = fixed or (request.form.get(f'kind_{i}') or '进')
-            note = (request.form.get(f'note_{i}') or '').strip()
-            if kind == '出':                      # 出库不允许超出现有库存
-                stock = scalar("SELECT stock FROM v_stock WHERE id=?", mid, default=0)
-                if qty > stock + 1e-9:
-                    blocked += 1
-                    names.append('%s(可用%g)' % (vals['name'] or vals['code'], stock))
+        # 一次提交多行时要么全成功要么全回滚：
+        # 否则中途出错（比如某一行的物料档案更新失败）会留下"录了一半"的单据，
+        # 用户看到报错后重录，那几行就重复了。
+        try:
+          with db.tx() as _cx:
+            for i in range(nrow):
+                qty = num(request.form.get(f'qty_{i}'))
+                vals = {f: (request.form.get(f'{f}_{i}') or '').strip() for f in
+                        ('name', 'code', 'supplier', 'category', 'spec', 'width', 'unit', 'status')}
+                vals['opening'] = num(request.form.get(f'opening_{i}'))
+                vals['safety'] = num(request.form.get(f'safety_{i}'))
+                qty, pieces, per = calc_qty(qty, request.form.get(f'pieces_{i}'),
+                                            request.form.get(f'per_{i}'))
+                if qty <= 0 or (not vals['name'] and not vals['code']):
                     continue
-            db.run("INSERT INTO txns(tdate,material_id,kind,qty,pieces,per_piece,note,created_at)"
-                   " VALUES(?,?,?,?,?,?,?,?)",
-                   d, mid, kind, qty, pieces, per, note,
-                   datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-            saved += 1
+                mid, is_new = _resolve_material(vals)
+                if not mid:
+                    continue
+                newmat += is_new
+                d = safe_date(request.form.get(f'tdate_{i}'), dflt)
+                kind = fixed or (request.form.get(f'kind_{i}') or '进')
+                note = (request.form.get(f'note_{i}') or '').strip()
+                if kind == '出':                      # 出库不允许超出现有库存
+                    stock = scalar("SELECT stock FROM v_stock WHERE id=?", mid, default=0)
+                    if qty > stock + 1e-9:
+                        blocked += 1
+                        names.append('%s(可用%g)' % (vals['name'] or vals['code'], stock))
+                        continue
+                _cx.execute("INSERT INTO txns(tdate,material_id,kind,qty,pieces,per_piece,note,created_at)"
+                       " VALUES(?,?,?,?,?,?,?,?)",
+                       (d, mid, kind, qty, pieces, per, note,
+                        datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                saved += 1
+        except Exception:
+            return render_template('error.html', code=500, title='保存失败',
+                detail='这批单据一条都没保存（已回滚），请返回重试。'), 500
         back = 'out' if ep == 'out' else ('in' if ep == 'in' else 'txn')
         tip = f'已保存 {saved} 条{"出库" if fixed=="出" else ("入库" if fixed=="进" else "")}单' \
               + (f'，新建物料 {newmat} 种' if newmat else '')
@@ -286,7 +384,7 @@ def txn():
             return redirect(url_for(back, msg=tip, n=request.form.get('nrow')))
         return redirect(url_for('txns', msg=tip, kind=fixed or ''))
 
-    n = int(request.args.get('n') or 5)
+    n = min(int(request.args.get('n') or 5), MAX_ROWS)
     return render_template('txn.html', cols=cols, fids=fids, mats=mats, msg=msg,
                            fixed=fixed, ep=ep, only_stock=only_stock,
                            allm=request.args.get('allm') == '1',
@@ -365,50 +463,66 @@ def txn_import():
                     filter_kind = '进'
                 elif fixed == '出' and 'out_qty' in fields:
                     filter_kind = '出'
-            saved = newmat = blocked = skipped = archived = 0
+            saved = newmat = blocked = skipped = archived = new_miss = 0
             msgs = []
-            for d in rows:
-                vals = {k: d.get(k, '') for k in
-                        ('name', 'code', 'supplier', 'category', 'spec', 'width', 'unit', 'status')}
-                vals['opening'] = d.get('opening', 0)
-                vals['safety'] = d.get('safety', 0)
-                mid, is_new = _resolve_material(vals)
-                if not mid:
-                    continue
-                newmat += is_new
-                if not d.get('kind'):          # 宽表里没进出的行：只建档/更新期初
-                    if mode == 'overwrite' or is_new:
-                        db.run("UPDATE materials SET opening=? WHERE id=?",
-                               float(d.get('opening') or 0), mid)
-                    archived += 1
-                    continue
-                if is_wide or has_split:      # 表格自带方向，以表格为准
-                    kind = d.get('kind') or '进'
-                else:
-                    kind = fixed or d.get('kind') or '进'
-                qty = float(d.get('qty') or 0)
-                if filter_kind and kind != filter_kind:
-                    skipped += 1
-                    continue
-                if kind == '出' and not allow_over:
-                    stock = scalar("SELECT stock FROM v_stock WHERE id=?", mid, default=0)
-                    if qty > stock + 1e-9:
-                        blocked += 1
-                        msgs.append('%s(可用%g)' % (d.get('name'), stock))
-                        continue
-                qty, pc, per = calc_qty(qty, d.get('pieces'), d.get('per_piece'))
-                if qty <= 0:
-                    continue
-                db.run("INSERT INTO txns(tdate,material_id,kind,qty,pieces,per_piece,note,created_at)"
-                       " VALUES(?,?,?,?,?,?,?,?)",
-                       d.get('date') or dflt_date, mid, kind, qty, pc, per, d.get('note', ''),
-                       datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-                saved += 1
+            # 整批导入放进一个事务：中途任何异常全回滚，绝不留下"导了一半"的数据
+            try:
+              with db.tx():
+                for d in rows:
+                  vals = {k: d.get(k, '') for k in
+                          ('name', 'code', 'supplier', 'category', 'spec', 'width', 'unit', 'status')}
+                  vals['opening'] = d.get('opening', 0)
+                  vals['safety'] = d.get('safety', 0)
+                  mid, is_new = _resolve_material(vals)
+                  if not mid:
+                      continue
+                  newmat += is_new
+                  if is_new and not (vals.get('code') or '').strip() \
+                          and not (vals.get('category') or '').strip():
+                      new_miss += 1
+                  if not d.get('kind'):          # 宽表里没进出的行：只建档/更新期初
+                      if mode == 'overwrite' or is_new:
+                          db.run("UPDATE materials SET opening=? WHERE id=?",
+                                 float(d.get('opening') or 0), mid)
+                      archived += 1
+                      continue
+                  if is_wide or has_split:      # 表格自带方向，以表格为准
+                      kind = d.get('kind') or '进'
+                  else:
+                      kind = fixed or d.get('kind') or '进'
+                  qty = float(d.get('qty') or 0)
+                  if filter_kind and kind != filter_kind:
+                      skipped += 1
+                      continue
+                  if kind == '出' and not allow_over:
+                      stock = scalar("SELECT stock FROM v_stock WHERE id=?", mid, default=0)
+                      if qty > stock + 1e-9:
+                          blocked += 1
+                          msgs.append('%s(可用%g)' % (d.get('name'), stock))
+                          continue
+                  qty, pc, per = calc_qty(qty, d.get('pieces'), d.get('per_piece'))
+                  if qty <= 0:
+                      continue
+                  db.run("INSERT INTO txns(tdate,material_id,kind,qty,pieces,per_piece,note,created_at)"
+                         " VALUES(?,?,?,?,?,?,?,?)",
+                         d.get('date') or dflt_date, mid, kind, qty, pc, per, d.get('note', ''),
+                         datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                  saved += 1
+            except Exception as e:
+                try: os.remove(p)
+                except OSError: pass
+                return render_template('txn_import.html', fixed=fixed,
+                    err='导入失败，已全部回滚（数据未改动）：%s' % e)
             try: os.remove(p)
             except OSError: pass
             tip = f'已导入 {saved} 条{"出库" if fixed=="出" else ("入库" if fixed=="进" else "")}单据'
             if newmat:
                 tip += f'，新建物料 {newmat} 种'
+                # 只统计"本次新建"里字段不全的，别拿全库说事
+                if new_miss:
+                    tip += f'（其中 {new_miss} 种没认出料号/类型：'
+                    tip += '宽表前几列若没写表头就识别不出来' if is_wide else '表里缺这几列'
+                    tip += '，可在「物料」页补全或改用「手动指定列」）'
             if blocked:
                 tip += f'；{blocked} 行超出库存被跳过：' + '、'.join(msgs[:3])
             if skipped:
@@ -458,12 +572,22 @@ def txn_import():
         f = request.files.get('file')
         if not f or not f.filename:
             return render_template('txn_import.html', fixed=fixed, err='请选择文件')
-        fn = f.filename.lower()
+        fn = safe_name(f.filename, 'x.xlsx').lower()
         if not fn.endswith(('.xlsx', '.xlsm', '.xls', '.et', '.csv')):
             return render_template('txn_import.html', fixed=fixed,
                                    err='只支持 .xlsx / .xlsm / .xls / .et / .csv')
-        tmp = os.path.join(TMP, '%d_%s' % (int(time.time() * 1000), os.path.basename(fn)))
-        f.save(tmp)
+        # 先看大小再落盘：超大文件直接拒，别把磁盘写满
+        f.seek(0, os.SEEK_END); size = f.tell(); f.seek(0)
+        if size > MAX_UPLOAD:
+            return render_template('txn_import.html', fixed=fixed,
+                                   err='文件太大（%.1f MB），上限 %d MB。'
+                                       '请拆分后再导入。' % (size / 1048576.0, MAX_UPLOAD // 1048576))
+        tmp = os.path.join(TMP, '%d_%s' % (int(time.time() * 1000), fn))
+        try:
+            f.save(tmp)
+        except (ValueError, OSError):
+            return render_template('txn_import.html', fixed=fixed,
+                                   err='文件名不合法，请改成普通中文/英数字再试')
         try:
             rows, fields, hi, diag = importer.parse_txn_file(
                 path=tmp, default_kind=fixed or (request.form.get('defkind') or None),
@@ -560,7 +684,7 @@ def txn_del(tid):
 def txns():
     d = request.args.get('d') or ''
     kind = request.args.get('kind') or ''
-    kw = (request.args.get('kw') or '').strip()
+    kw = clean_kw(request.args.get('kw'))
     sort = request.args.get('sort') or ''
     dir_ = request.args.get('dir') or ''
     sql = ("SELECT t.*, m.name, m.unit, m.code, m.category FROM txns t"
@@ -591,7 +715,7 @@ def txns():
 # ---------- 物料档案 ----------
 @app.route('/materials')
 def materials():
-    kw = request.args.get('kw','').strip()
+    kw = clean_kw(request.args.get('kw'))
     show_all = request.args.get('all') == '1'
     w, a = [], []
     if kw:
@@ -724,35 +848,43 @@ def imp():
                 return render_template('import.html', err='预览已过期，请重新选择文件')
             rows, _ = importer.parse_file(path=p, aliases=db.aliases_map())
             added = updated = skipped = 0
-            for d in rows:
-                exist = None
-                if d['code']:
-                    exist = db.q("SELECT id FROM materials WHERE code=? AND code<>''", d['code'])
-                if not exist:
-                    exist = db.q("SELECT id FROM materials WHERE name=?", d['name'])
-                if exist:
-                    if mode == 'skip':
-                        skipped += 1; continue
-                    mid = exist[0]['id']
-                    sets, vals = [], []
-                    for f2 in ('supplier', 'category', 'spec', 'width', 'unit', 'status', 'code'):
-                        if d[f2] and (mode == 'overwrite' or f2 == 'code'):
-                            sets.append("%s=?" % f2); vals.append(d[f2])
-                    if mode == 'overwrite' and d['name']:
-                        sets.append("name=?"); vals.append(d['name'])
-                    for f2 in ('opening', 'safety'):
-                        if d[f2] or mode == 'overwrite':
-                            sets.append("%s=?" % f2); vals.append(d[f2])
-                    if sets:
-                        vals.append(mid)
-                        db.run("UPDATE materials SET " + ",".join(sets) + " WHERE id=?", *vals)
-                    updated += 1
-                else:
-                    db.run("INSERT INTO materials(supplier,category,spec,width,name,code,unit,opening,safety,status)"
-                           " VALUES(?,?,?,?,?,?,?,?,?,?)",
-                           d['supplier'], d['category'], d['spec'], d['width'], d['name'], d['code'],
-                           d['unit'] or '平米', d['opening'], d['safety'], d['status'] or '常用')
-                    added += 1
+            # 整批放进事务：中途异常全回滚，不会只导入一半
+            try:
+              with db.tx():
+                for d in rows:
+                  exist = None
+                  if d['code']:
+                      exist = db.q("SELECT id FROM materials WHERE code=? AND code<>''", d['code'])
+                  if not exist:
+                      exist = db.q("SELECT id FROM materials WHERE name=?", d['name'])
+                  if exist:
+                      if mode == 'skip':
+                          skipped += 1; continue
+                      mid = exist[0]['id']
+                      sets, vals = [], []
+                      for f2 in ('supplier', 'category', 'spec', 'width', 'unit', 'status', 'code'):
+                          if d[f2] and (mode == 'overwrite' or f2 == 'code'):
+                              sets.append("%s=?" % f2); vals.append(d[f2])
+                      if mode == 'overwrite' and d['name']:
+                          sets.append("name=?"); vals.append(d['name'])
+                      for f2 in ('opening', 'safety'):
+                          if d[f2] or mode == 'overwrite':
+                              sets.append("%s=?" % f2); vals.append(d[f2])
+                      if sets:
+                          vals.append(mid)
+                          db.run("UPDATE materials SET " + ",".join(sets) + " WHERE id=?", *vals)
+                      updated += 1
+                  else:
+                      db.run("INSERT INTO materials(supplier,category,spec,width,name,code,unit,opening,safety,status)"
+                             " VALUES(?,?,?,?,?,?,?,?,?,?)",
+                             d['supplier'], d['category'], d['spec'], d['width'], d['name'], d['code'],
+                             d['unit'] or '平米', d['opening'], d['safety'], d['status'] or '常用')
+                      added += 1
+            except Exception as e:
+                try: os.remove(p)
+                except OSError: pass
+                return render_template('import.html',
+                    err='导入失败，已全部回滚（数据未改动）：%s' % e)
             try: os.remove(p)
             except OSError: pass
             return redirect(url_for('materials',
@@ -761,11 +893,19 @@ def imp():
         f = request.files.get('file')
         if not f or not f.filename:
             return render_template('import.html', err='请选择文件')
-        fn = f.filename.lower()
+        fn = safe_name(f.filename, 'x.xlsx').lower()
         if not fn.endswith(('.xlsx', '.xlsm', '.csv')):
             return render_template('import.html', err='只支持 .xlsx / .xlsm / .csv')
-        tmp = os.path.join(TMP, '%d_%s' % (int(time.time() * 1000), os.path.basename(fn)))
-        f.save(tmp)
+        f.seek(0, os.SEEK_END); size = f.tell(); f.seek(0)
+        if size > MAX_UPLOAD:
+            return render_template('import.html',
+                                   err='文件太大（%.1f MB），上限 %d MB'
+                                       % (size / 1048576.0, MAX_UPLOAD // 1048576))
+        tmp = os.path.join(TMP, '%d_%s' % (int(time.time() * 1000), fn))
+        try:
+            f.save(tmp)
+        except (ValueError, OSError):
+            return render_template('import.html', err='文件名不合法，请改成普通中文/英数字再试')
         try:
             rows, fields = importer.parse_file(path=tmp, aliases=db.aliases_map())
         except Exception as e:
@@ -798,7 +938,7 @@ def import_tpl():
 @app.route('/stock')
 def stock():
     f = request.args.get('f', '')
-    kw = (request.args.get('kw') or '').strip()
+    kw = clean_kw(request.args.get('kw'))
     sort = request.args.get('sort') or ''
     dir_ = request.args.get('dir') or ''
     w, args = [], []
@@ -826,27 +966,10 @@ def stock():
 # ---------- 月报表（复刻原模板布局） ----------
 @app.route('/report')
 def report():
-    m = request.args.get('m') or ym()
-    y, mo = int(m[:4]), int(m[5:7])
-    days = calendar.monthrange(y, mo)[1]
-    first = f'{m}-01'
-    last  = f'{m}-{days:02d}'
-    mats = [dict(r) for r in db.stock_rows()]
-    raw = db.q("SELECT tdate,material_id,kind,SUM(qty) q FROM txns WHERE tdate BETWEEN ? AND ?"
-               " GROUP BY tdate,material_id,kind", first, last)
-    cell = {}
-    for r in raw:
-        cell[(r['material_id'], int(r['tdate'][8:10]), r['kind'])] = r['q']
-    tot_in = tot_out = 0.0
-    for mt in mats:
-        mi = mo_ = 0.0
-        mt['cells'] = []
-        for d in range(1, days+1):
-            a = cell.get((mt['id'], d, '进'), 0); b = cell.get((mt['id'], d, '出'), 0)
-            mt['cells'].append((a, b)); mi += a; mo_ += b
-        mt['min'], mt['mout'] = mi, mo_
-        mt['ending'] = mt['opening'] + mi - mo_
-        tot_in += mi; tot_out += mo_
+    m = safe_ym(request.args.get('m'))
+    mats, days = _report_data(m)
+    tot_in = sum(mt['min'] for mt in mats)
+    tot_out = sum(mt['mout'] for mt in mats)
     return render_template('report.html', m=m, days=days, mats=mats,
                            tot_in=tot_in, tot_out=tot_out)
 
@@ -855,10 +978,10 @@ def export_xlsx():
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment
     kind = request.args.get('t', 'stock')
-    kw = (request.args.get('kw') or '').strip()
+    kw = clean_kw(request.args.get('kw'))
     f = request.args.get('f') or ''
     d = request.args.get('d') or ''
-    m = request.args.get('m') or ym()
+    m = safe_ym(request.args.get('m'))
     sort = request.args.get('sort') or ''
     dir_ = request.args.get('dir') or ''
     wb = openpyxl.Workbook(); ws = wb.active
@@ -941,11 +1064,27 @@ def _txn_rows(kw, d, kind, sort, dir_):
     return db.q(sql, *args)
 
 def _report_data(m):
+    """月报数据。（调用前应用 safe_ym 清洗月份）
+    月初结存 = 物料期初 + 该月之前所有单据的净额（不是固定的 materials.opening），
+    这样才能保证：上月月末 == 本月月初，且当月月末 == 实时库存。
+    """
+    m = safe_ym(m)
     y, mo = int(m[:4]), int(m[5:7])
     days = calendar.monthrange(y, mo)[1]
-    mats = [dict(r) for r in db.stock_rows()]
+    first, last = f'{m}-01', f'{m}-{days:02d}'
+    # 用 v_mats（含停用物料）而不是 v_stock（只含启用）：
+    # "停用"只是让它不再出现在录单和实时库存里，历史月份既然有单据，
+    # 月报就必须照实反映，否则停用某物料后查旧月报会凭空少掉一批数据。
+    mats = [dict(r) for r in db.q("SELECT * FROM v_mats ORDER BY category, name")]
+
+    # 该月之前的累计净额（进 - 出），按物料汇总
+    before = {}
+    for r in db.q("SELECT material_id, kind, SUM(qty) q FROM txns WHERE tdate < ?"
+                  " GROUP BY material_id, kind", first):
+        before[r['material_id']] = before.get(r['material_id'], 0.0) +             (r['q'] if r['kind'] == '进' else -r['q'])
+
     raw = db.q("SELECT tdate,material_id,kind,SUM(qty) q FROM txns WHERE tdate BETWEEN ? AND ?"
-               " GROUP BY tdate,material_id,kind", f'{m}-01', f'{m}-{days:02d}')
+               " GROUP BY tdate,material_id,kind", first, last)
     cell = {}
     for r in raw:
         cell[(r['material_id'], int(r['tdate'][8:10]), r['kind'])] = r['q']
@@ -956,23 +1095,45 @@ def _report_data(m):
             a = cell.get((mt['id'], dd, '进'), 0); b = cell.get((mt['id'], dd, '出'), 0)
             mt['cells'].append((a, b)); mi += a; mo_ += b
         mt['min'], mt['mout'] = mi, mo_
-        mt['ending'] = mt['opening'] + mi - mo_
+        # 月初 = 档案期初 + 历史累计；月末 = 月初 + 本月进 - 本月出
+        mt['opening'] = round(float(mt['opening'] or 0) + before.get(mt['id'], 0.0), 2)
+        mt['ending'] = round(mt['opening'] + mi - mo_, 2)
     return mats, days
+
+def csv_safe(v):
+    """防 CSV 公式注入。
+
+    单元格以 = + - @ 或制表符开头时，Excel / WPS 打开会当成公式执行
+    （=HYPERLINK("http://evil.com","点我")、=cmd|'/c calc'!A1 都能触发）。
+    这里给文本前面加一个单引号，Excel 当纯文本显示，肉眼看不出差别。
+    数字原样返回，避免破坏数值。
+    """
+    if v is None:
+        return ''
+    if isinstance(v, (int, float)):
+        return v
+    t = str(v)
+    if t[:1] in ('=', '+', '-', '@', '\t', '\r'):
+        return "'" + t
+    return t
 
 @app.route('/export.csv')
 def export_csv():
     kind = request.args.get('t', 'stock')
     if kind == 'stock':
         rows, head = db.stock_rows(), ['供应商','类型','规格','宽幅','物料名称','料号','单位','期初','入库','出库','当前库存','预警值','状态']
-        data = [[r['supplier'],r['category'],r['spec'],r['width'],r['name'],r['code'],r['unit'],
-                 r['opening'],r['in_qty'],r['out_qty'],r['stock'],r['safety'],r['status']] for r in rows]
+        data = [[csv_safe(r['supplier']),csv_safe(r['category']),csv_safe(r['spec']),
+                 csv_safe(r['width']),csv_safe(r['name']),csv_safe(r['code']),csv_safe(r['unit']),
+                 r['opening'],r['in_qty'],r['out_qty'],r['stock'],r['safety'],
+                 csv_safe(r['status'])] for r in rows]
         fn = '库存'
     else:
-        m = request.args.get('m') or ym()
+        m = safe_ym(request.args.get('m'))
         rows = db.q("SELECT t.tdate,m.name,m.code,m.unit,t.kind,t.qty,t.note FROM txns t"
                     " JOIN materials m ON m.id=t.material_id WHERE t.tdate LIKE ? ORDER BY t.tdate,t.id", m+'%')
         head, data = ['日期','物料名称','料号','单位','类型','数量','备注'], \
-            [[r['tdate'],r['name'],r['code'],r['unit'],r['kind'],r['qty'],r['note']] for r in rows]
+            [[r['tdate'],csv_safe(r['name']),csv_safe(r['code']),csv_safe(r['unit']),
+              r['kind'],r['qty'],csv_safe(r['note'])] for r in rows]
         fn = f'流水{m}'
     out = io.StringIO(); out.write('\ufeff')
     csv.writer(out).writerow(head); csv.writer(out).writerows(data)
@@ -980,16 +1141,6 @@ def export_csv():
     return Response(out.getvalue(), mimetype='text/csv; charset=utf-8',
                     headers={'Content-Disposition':
                              "attachment; filename=export.csv; filename*=UTF-8''%s.csv" % quote(fn)})
-
-def say(msg=''):
-    """容错输出：编码问题、控制台不存在都不会让程序崩"""
-    try:
-        print(msg)
-    except Exception:
-        try:
-            print(str(msg).encode('ascii', 'replace').decode('ascii'))
-        except Exception:
-            pass
 
 def open_browser_later(port, delay=1.2):
     """浏览器模式下自动打开浏览器"""
@@ -1016,7 +1167,29 @@ def main():
         port = desktop.free_port()
 
     cleanup_tmp()
-    st = db.stats()
+    try:
+        st = db.stats()
+    except Exception as e:          # 数据库损坏等致命错误
+        # 数据库坏了：启动阶段必须给出可执行的恢复指引，
+        # 否则窗口模式（无控制台）下用户只看到程序一闪而过，完全不知道发生了什么
+        import desktop as _d
+        msg = []
+        msg.append('数据库打不开：%s' % e)
+        for line in db.check_integrity():
+            msg.append(line)
+        msg.append('也可以把 %s 改名（比如加 .old），程序会自动新建一个空库，'
+                   '再用备份还原。' % os.path.basename(db.DB_PATH))
+        _d.log('启动失败：\n  ' + '\n  '.join(msg))
+        say('')
+        say('  !! 启动失败 !!')
+        for m in msg:
+            say('  ' + m)
+        say('')
+        say('  详细信息已写入 %s' % _d.LOG)
+        # 打包成 exe 时停一会儿，让窗口来得及显示；源码运行直接退出
+        if getattr(sys, 'frozen', False):
+            time.sleep(30)
+        return
     banner = [
         '-' * 46,
         '  仓库管理系统',
