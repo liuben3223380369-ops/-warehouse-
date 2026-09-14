@@ -5,32 +5,46 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>{% block title %}仓库管理系统{% endblock %}</title>
 <style>
+/* 字号档位：小 / 标准 / 大 —— 用变量统一控制，改一处全站生效 */
+:root{
+  --fs-body:14px; --fs-title:16px; --fs-h2:14px; --fs-table:13px;
+  --fs-th:12px;  --fs-btn:15px;   --fs-nav:11px; --fs-navico:18px;
+  --fs-input:15px; --fs-stat:20px; --fs-label:12px;
+}
+body.fs-s{ --fs-body:13px; --fs-title:15px; --fs-h2:13px; --fs-table:12px;
+  --fs-th:11px; --fs-btn:14px; --fs-nav:10px; --fs-navico:16px;
+  --fs-input:14px; --fs-stat:18px; --fs-label:11px; }
+body.fs-l{ --fs-body:16px; --fs-title:18px; --fs-h2:16px; --fs-table:15px;
+  --fs-th:13px; --fs-btn:16px; --fs-nav:12px; --fs-navico:20px;
+  --fs-input:16px; --fs-stat:24px; --fs-label:13px; }
+
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-body{margin:0;font:15px/1.5 -apple-system,"Noto Sans CJK SC","Microsoft YaHei",sans-serif;
+body{margin:0;font:var(--fs-body)/1.5 -apple-system,"Noto Sans CJK SC","Microsoft YaHei",sans-serif;
 background:#f2f4f7;color:#1c2430;padding-bottom:64px}
 header{background:#1f6feb;color:#fff;padding:12px 14px;position:sticky;top:0;z-index:9;
 display:flex;align-items:flex-start;gap:10px}
 header .inner{max-width:960px;margin:0 auto;flex:1;min-width:0}
 .wbtn{display:none;width:34px;height:34px;padding:0;margin:0;flex:none;border:0;border-radius:8px;
 background:rgba(255,255,255,.18);color:#fff;font-size:16px;line-height:1;cursor:pointer}
+header .tools{display:flex;gap:6px;flex:none}
 @media(min-width:820px){.wbtn{display:block}}
 @media(min-width:820px){body.wide main,body.wide header .inner{max-width:none}
-body.wide nav{max-width:none;border-radius:0;left:0;right:0;transform:none;width:auto}}
-header h1{margin:0;font-size:17px;font-weight:600}
-header .sub{opacity:.85;font-size:12px;margin-top:2px}
+body.wide nav{padding-left:0;padding-right:0}}
+header h1{margin:0;font-size:var(--fs-title);font-weight:600}
+header .sub{opacity:.85;font-size:var(--fs-label);margin-top:2px}
 main{padding:12px;max-width:960px;margin:0 auto}
 .card{background:#fff;border-radius:12px;padding:12px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
 .stat{background:#fff;border-radius:12px;padding:10px;text-align:center}
-.stat b{display:block;font-size:19px;margin-top:2px}
-.stat span{font-size:11px;color:#7a869a}
+.stat b{display:block;font-size:var(--fs-stat);margin-top:2px}
+.stat span{font-size:var(--fs-label);color:#7a869a}
 .in{color:#12a150}.out{color:#e5484d}.warn{color:#f5a524}
-h2{font-size:15px;margin:0 0 10px}
-label{display:block;font-size:12px;color:#5b6675;margin:10px 0 4px}
+h2{font-size:var(--fs-h2);margin:0 0 10px}
+label{display:block;font-size:var(--fs-label);color:#5b6675;margin:10px 0 4px}
 input,select,textarea,button{font:inherit}
 input,select,textarea{width:100%;padding:11px;border:1px solid #d7dce3;border-radius:9px;background:#fff;
-font-size:16px;appearance:none}
+font-size:var(--fs-input);appearance:none}
 input[type=checkbox],input[type=radio]{-webkit-appearance:checkbox;appearance:auto;
 width:22px;height:22px;min-width:22px;flex:none;padding:0;margin:0;border:0;background:none;
 accent-color:#1f6feb;vertical-align:middle;display:inline-block}
@@ -39,41 +53,39 @@ padding:11px 8px;margin:0;cursor:pointer;-webkit-tap-highlight-color:transparent
 tr.sel td{background:#eaf2fe}
 textarea{min-height:60px}
 button,.btn{display:block;width:100%;padding:13px;border:0;border-radius:10px;background:#1f6feb;
-color:#fff;font-size:16px;font-weight:600;text-align:center;text-decoration:none;margin-top:14px}
+color:#fff;font-size:var(--fs-btn);font-weight:600;text-align:center;text-decoration:none;margin-top:14px}
 .btn.g{background:#12a150}.btn.r{background:#e5484d}.btn.o{background:#6b7785}
-.btn.s{padding:9px;font-size:14px;margin-top:8px}
-table{width:100%;border-collapse:collapse;font-size:13px}
+.btn.s{padding:9px;font-size:var(--fs-body);margin-top:8px}
+table{width:100%;border-collapse:collapse;font-size:var(--fs-table)}
 th,td{padding:7px 4px;border-bottom:1px solid #eef0f3;text-align:left;white-space:nowrap}
-th{color:#7a869a;font-weight:500;font-size:12px;position:sticky;top:0;background:#fff}
+th{color:#7a869a;font-weight:500;font-size:var(--fs-th);position:sticky;top:0;background:#fff}
 th a{white-space:nowrap}
 td.n,th.n{text-align:right}
 .low{color:#e5484d;font-weight:600}
-.pill{display:inline-block;padding:1px 7px;border-radius:20px;font-size:11px;background:#eef2f7;color:#5b6675}
+.pill{display:inline-block;padding:1px 7px;border-radius:20px;font-size:var(--fs-label);background:#eef2f7;color:#5b6675}
 .pill.i{background:#e6f6ed;color:#12a150}.pill.o{background:#fdeced;color:#e5484d}
 nav{position:fixed;bottom:0;left:0;right:0;display:grid;grid-template-columns:repeat(6,1fr);
 background:#fff;border-top:1px solid #e3e7ec;padding-bottom:env(safe-area-inset-bottom)}
-nav a{padding:8px 0 7px;text-align:center;font-size:11px;color:#7a869a;text-decoration:none}
-nav a.on{color:#1f6feb}nav a i{display:block;font-size:19px;font-style:normal;line-height:1.2}
+nav a{padding:8px 0 7px;text-align:center;font-size:var(--fs-nav);color:#7a869a;text-decoration:none}
+nav a.on{color:#1f6feb}nav a i{display:block;font-size:var(--fs-navico);font-style:normal;line-height:1.2}
 .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
-.empty{color:#98a2b3;text-align:center;padding:22px;font-size:13px}
+.empty{color:#98a2b3;text-align:center;padding:22px;font-size:var(--fs-table)}
 .rowflex{display:flex;gap:8px}.rowflex>*{flex:1}
-.kv{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #f0f2f5;font-size:13px}
-input.cell{padding:6px 6px;font-size:14px;border:1px solid #e3e7ec;border-radius:6px;min-width:64px;
+.kv{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #f0f2f5;font-size:var(--fs-table)}
+input.cell{padding:6px 6px;font-size:var(--fs-table);border:1px solid #e3e7ec;border-radius:6px;min-width:64px;
 background:#fff}
 input.cell:focus{border-color:#1f6feb;outline:none;background:#f5f9ff}
-select.cell{padding:6px 4px;font-size:14px;border:1px solid #e3e7ec;border-radius:6px;background:#fff;min-width:70px}
-th.c,td.c{padding:4px 3px;font-size:12px}
+select.cell{padding:6px 4px;font-size:var(--fs-table);border:1px solid #e3e7ec;border-radius:6px;background:#fff;min-width:70px}
+th.c,td.c{padding:4px 3px;font-size:var(--fs-th)}
 .bar{display:flex;gap:8px;align-items:center;margin-bottom:10px}
 .bar>a,.bar>span{flex:1;margin-top:0}
 tr.new{background:#f7fbff}
 /* ---- 宽屏（平板/电脑/独立窗口）：别把手机样式拉伸到全屏 ---- */
 @media(min-width:820px){
-  main{padding:18px 20px 90px}
-  header{padding:14px 20px}
-  .card{padding:18px;border-radius:14px}
-  h2{font-size:17px}
-  table{font-size:14px}
-  th,td{padding:9px 8px}
+  main{padding:16px 20px 86px}
+  header{padding:12px 20px}
+  .card{padding:16px;border-radius:14px}
+  th,td{padding:8px 8px}
   input,select,textarea{width:auto;min-width:180px}
   .rowflex>input,.rowflex>select{width:100%;min-width:0}
   /* 按钮在宽屏限制宽度并居中：既不会拉成一条，也不破坏原有的上下堆叠 */
@@ -81,15 +93,13 @@ tr.new{background:#f7fbff}
   .btn.s{max-width:240px}
   .grid2{gap:14px}
   .grid3{gap:14px}
-  .stat b{font-size:24px}
 }
 @media(min-width:820px){
-  /* 底部导航在宽屏居中限宽，不再横贯整屏 */
-  nav{left:50%;right:auto;transform:translateX(-50%);width:100%;max-width:960px;
-  border-radius:14px 14px 0 0;box-shadow:0 -2px 12px rgba(0,0,0,.08);
-  border-left:1px solid #e3e7ec;border-right:1px solid #e3e7ec}
-  nav a{font-size:12px;padding:10px 0 9px}
-  nav a i{font-size:21px}
+  /* 底部导航始终横贯整屏、紧贴屏幕底边一行；
+     只让 6 个按钮在中间 960px 内均匀分布，背景条本身贯穿左右 */
+  nav{padding-left:max(0px,calc(50% - 480px));padding-right:max(0px,calc(50% - 480px));
+  border-radius:0;box-shadow:0 -1px 6px rgba(0,0,0,.05);border-left:0;border-right:0}
+  nav a{padding:9px 0 8px}
 }
 @media(min-width:820px) and (hover:hover){
   button:hover,.btn:hover{filter:brightness(1.08)}
@@ -106,8 +116,9 @@ tr.new{background:#f7fbff}
 {{label}}{% if cur_sort == f %}{% if cur_dir == 'asc' %} ▲{% elif cur_dir == 'desc' %} ▼{% endif %}{% endif %}</a></th>
 {%- endmacro %}
 <header><div class="inner"><h1>{% block h1 %}仓库管理系统{% endblock %}</h1>
-<div class="sub">{% block sub %}{% endblock %}</div></div><button id="wbtn" class="wbtn" type="button"
-title="切换 紧凑/铺满">⤢</button></header>
+<div class="sub">{% block sub %}{% endblock %}</div></div><div class="tools"><button id="wbtn" class="wbtn" type="button"
+title="切换 紧凑/铺满">⤢</button><button id="fbtn" class="wbtn" type="button"
+title="切换字号 小/标准/大">A</button></div></header>
 <main>{% block body %}{% endblock %}</main>
 {% set ep = request.endpoint or '' %}
 <nav>
@@ -120,13 +131,30 @@ title="切换 紧凑/铺满">⤢</button></header>
 </nav>
 <script>
 (function(){
+  /* 紧凑 / 铺满 */
   var b=document.getElementById('wbtn');
-  if(!b) return;
-  try{ if(localStorage.getItem('wh_wide')==='1') document.body.classList.add('wide'); }catch(e){}
-  b.onclick=function(){
-    document.body.classList.toggle('wide');
-    try{ localStorage.setItem('wh_wide', document.body.classList.contains('wide')?'1':'0'); }catch(e){};
-  };
+  if(b){
+    try{ if(localStorage.getItem('wh_wide')==='1') document.body.classList.add('wide'); }catch(e){}
+    b.onclick=function(){
+      document.body.classList.toggle('wide');
+      try{ localStorage.setItem('wh_wide', document.body.classList.contains('wide')?'1':'0'); }catch(e){};
+    };
+  }
+  /* 字号：标准 -> 小 -> 大 -> 标准 */
+  var f=document.getElementById('fbtn'), order=['','fs-s','fs-l'], key='wh_font';
+  if(f){
+    var cur=0;
+    try{ var v=localStorage.getItem(key); if(v){ document.body.classList.add(v);
+      cur=order.indexOf(v); if(cur<0) cur=0; } }catch(e){}
+    f.onclick=function(){
+      var cls=document.body.className;
+      document.body.className=cls.replace(/\bfs-[s|l]\b/g,'').replace(/\s+/g,' ').trim();
+      cur=(cur+1)%order.length;
+      var nv=order[cur];
+      if(nv) document.body.classList.add(nv);
+      try{ localStorage.setItem(key, nv||''); }catch(e){}
+    };
+  }
 })();
 </script>
 </body></html>
