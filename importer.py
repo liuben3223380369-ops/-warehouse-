@@ -3,7 +3,7 @@
 表头自动识别（中文别名），按「料号 → 名称」优先级匹配已有物料：
   命中则更新非空白字段，未命中则新增。
 """
-import io, csv, datetime
+import io, csv, datetime, re
 
 try:
     import openpyxl
@@ -25,6 +25,10 @@ ALIASES = {
 }
 NUM = {'opening', 'safety'}
 
+# 单笔数量上限：挡住表里多输几个零（1e15）把库存冲爆的情况。
+# 真有超大批量请拆单，或换个更大的单位（比如用吨而不是克）。
+QTY_MAX = 1e9
+
 # ---------- 流水（出入库单据）导入的表头别名 ----------
 # 说明：物料的「类型」与「进出」易混淆，进出用 进出/方向/出入库 等专属词；
 #      也支持 入库数量 / 出库数量 分列写法（一行可生成两笔）
@@ -40,6 +44,9 @@ TXN_ALIASES = {
     'note':  ['备注', '客户', '单号', '用途', '领用人', '说明', '摘要', 'note'],
     'pieces':    ['件数', '件', '卷数', '箱数', '数量(件)', '数量（件）', 'pieces'],
     'per_piece': ['每件', '每件/个', '每件数量', '单件', '每件米数', '米/件', 'per'],
+    'price': ['单价', '价格', '单位价格', '售价', '进货价', '单价(元)', '单价（元）',
+              '元/米', '元/卷', '元/平', 'price'],
+    'amount': ['金额', '总价', '合计金额', '总金额', '金额(元)', '金额（元）', 'amount'],
 }
 # 物料档案列（导入流水时顺带建档/更新用）
 TXN_MAT_COLS = ['supplier', 'category', 'spec', 'width', 'unit', 'status', 'opening', 'safety']
@@ -92,6 +99,22 @@ def map_headers(header, aliases=None):
                 break
     return out
 
+def _pick_sheet(cand, aliases=None):
+    """从多张表候选里挑出真正有数据的那张。
+
+    两轮：先找表头能被识别的（最可靠），
+    都不认识就退回第一张非空表（至少让用户看到诊断网格去手选列）。
+    """
+    for rows in cand:
+        for i in range(min(5, len(rows))):
+            try:
+                if map_headers(rows[i], aliases):
+                    return rows
+            except Exception:
+                pass
+    return cand[0]
+
+
 def parse_file(path=None, stream=None, filename='', aliases=None):
     """返回 (行列表[dict], 识别到的字段集合)"""
     if path and path.lower().endswith('.csv') or (filename or '').lower().endswith('.csv'):
@@ -108,8 +131,17 @@ def parse_file(path=None, stream=None, filename='', aliases=None):
         if openpyxl is None:
             raise RuntimeError('未安装 openpyxl，请先执行: pip install openpyxl')
         wb = openpyxl.load_workbook(path or io.BytesIO(stream.read()), data_only=True)
-        ws = wb[wb.sheetnames[0]]
-        rows = [[c for c in r] for r in ws.iter_rows(values_only=True)]
+        # 选表：很多人第一张表是封面/说明，真正的数据在后面。
+        # 直接取 sheetnames[0] 会停在封面上，表头认不出、导入 0 条，
+        # 用户只会看到"没认出表头"，完全想不到是选错了表。
+        # 策略：先找表头能认出来的那张；都不认识才退回第一张非空表。
+        _cand = []
+        for _nm in wb.sheetnames:
+            _rows = [[c for c in r] for r in wb[_nm].iter_rows(values_only=True)]
+            _rows = [r for r in _rows if any(_norm(c) for c in r)]
+            if _rows:
+                _cand.append(_rows)
+        rows = _pick_sheet(_cand, aliases) if _cand else []
 
     rows = [r for r in rows if any(_norm(c) for c in r)]
     if not rows:
@@ -136,26 +168,63 @@ def parse_file(path=None, stream=None, filename='', aliases=None):
         for i, f in hmap.items():
             if i < len(r):
                 v = r[i]
-                d[f] = '' if v is None else (str(v).strip() if f != 'width' else str(v).split('.')[0] if isinstance(v, float) else str(v).strip())
+                d[f] = '' if v is None else _as_text(v)
         d['name'] = d['name'] or d['code']
         if not d['name']:
             continue
         for f in NUM:
-            d[f] = _num(d[f])
+            d[f] = _num(d[f], hi=QTY_MAX)
         out.append(d)
     return out, set(hmap.values())
 
-def _num(v):
-    s = str(v or '').strip().replace(',', '')
-    if not s:
-        return 0.0
+def _as_text(v):
+    """单元格值转文本。
+
+    坑：宽幅常见值是 0.035/0.045/0.05 这类真小数，以前用
+    str(v).split('.')[0] 想去掉 250.0 的尾巴，结果把 0.035 也砍成了 "0"
+    —— 宽幅信息全丢，连带"名称+规格+宽幅"的物料指纹失效，
+    不同宽幅的物料被合并成一条，库存张冠李戴。
+    正确做法：只有整数值（250.0）才去掉小数部分，真小数原样保留。
+    """
+    if v is None:
+        return ''
+    if isinstance(v, float):
+        if v == int(v) and abs(v) < 1e15:      # 250.0 -> "250"
+            return str(int(v))
+        # 去掉浮点噪音：0.035000000000000003 -> 0.035
+        return ('%g' % v)
+    return str(v).strip()
+
+
+def _num(v, lo=None, hi=None):
+    """转数字。lo/hi 为边界，超出则截断；非法值一律 0。
+
+    数量上限很必要：表里填错多几个零（1e15）会把库存冲到天文数字，
+    后面所有报表、预警全都失真，而且很难一眼看出是哪笔错了。
+    """
     try:
-        return float(s)
-    except ValueError:
+        f = float(str(v).strip().replace(',', ''))
+    except (TypeError, ValueError):
         return 0.0
+    import math
+    if math.isnan(f) or math.isinf(f):
+        return 0.0
+    if lo is not None and f < lo:
+        f = lo
+    if hi is not None and f > hi:
+        f = hi
+    return f
 
 def _read_grid(path=None, stream=None, filename=''):
-    """把 xlsx/xlsm/xls/csv 读成二维列表（只取第一张表）"""
+    """把 xlsx/xlsm/xls/csv 读成二维列表。
+
+    选表：很多人第一张表是封面/说明，真正的数据在后面。
+    以前直接取"第一张非空表"，但封面通常也有几个字，照样会选中它，
+    结果表头认不出、导入 0 条，用户只会看到"没认出表头"，
+    完全想不到是程序选错了表。
+    现在分两轮：先找表头能被认出来的那张；都不认识才退回第一张非空表
+    （至少让用户看到诊断网格，可以手动指定列）。
+    """
     fn = ((path or '') + (filename or '')).lower()
     if fn.endswith('.csv'):
         data = open(path, 'rb').read() if path else stream.read()
@@ -179,13 +248,23 @@ def _read_grid(path=None, stream=None, filename=''):
     if openpyxl is None:
         raise RuntimeError('未安装 openpyxl，请先执行: pip install openpyxl')
     wb = openpyxl.load_workbook(path or io.BytesIO(stream.read()), data_only=True)
-    # 只取第一张"有内容的"表：很多人第一张表是说明/封面，数据在后面
+    cand = []
     for nm in wb.sheetnames:
-        ws = wb[nm]
-        rows = [[c for c in r] for r in ws.iter_rows(values_only=True)]
-        if any(any(_norm(c) for c in r) for r in rows):
-            return rows
-    return []
+        rows = [[c for c in r] for r in wb[nm].iter_rows(values_only=True)]
+        rows = [r for r in rows if any(_norm(c) for c in r)]
+        if rows:
+            cand.append(rows)
+    if not cand:
+        return []
+    for rows in cand:                       # 第一轮：表头可识别的优先
+        for i in range(min(5, len(rows))):
+            try:
+                if map_txn_headers(rows[i]):
+                    return rows
+            except Exception:
+                pass
+    return cand[0]                          # 第二轮：退回第一张非空表
+
 
 def _cell(sh, r, c):
     v = sh.cell_value(r, c)
@@ -245,7 +324,8 @@ def map_txn_headers(header, aliases=None, mat_aliases=None):
         n = _norm(h)
         if not n:
             continue
-        for f in ('date', 'kind', 'qty', 'in_qty', 'out_qty', 'pieces', 'per_piece', 'note'):
+        for f in ('date', 'kind', 'qty', 'in_qty', 'out_qty', 'pieces', 'per_piece',
+                  'price', 'amount', 'note'):
             if f in out.values():
                 continue
             if n in [_norm(x) for x in names[f]]:
@@ -368,18 +448,91 @@ def _col_by_head(grid, hrows, names):
                 return c
     return None
 
+def _combo_date_kind(v, y, mo):
+    """识别「日期+进出」写在同一个单元格里的表头。
+
+    真实表格里这种写法很常见：09-01进 / 09-01出 / 9/1 进 / 2026-09-01进。
+    以前只认"一行日期 + 一行进出"的双层表头，遇到这种单层写法
+    parse_wide 直接返回空，用户又没法手动指定列（宽表列太多，
+    手动映射只适合一行一笔的表），数据就彻底导不进来了。
+    """
+    s = str(v or '').strip()
+    if not s:
+        return None
+    kind = None
+    for k in WIDE_KINDS:
+        if s.endswith(k):
+            kind = k
+            s = s[:-1].strip()
+            break
+    if kind is None:
+        return None
+    s = s.rstrip('/-—– 　')
+    if not s:
+        return None
+    d = _fmt_date(s)                       # 完整日期：2026-09-01 / 2026/9/1
+    if d:
+        return (d, kind)
+    m = re.match(r'^(\d{1,2})\s*[\-/月]\s*(\d{1,2})\s*日?$', s)   # 09-01 / 9-1 / 9月1
+    if m:
+        a, b = int(m.group(1)), int(m.group(2))
+        mm, dd = (a, b) if a <= 12 else (b, a)
+        if 1 <= mm <= 12 and 1 <= dd <= 31:
+            try:
+                return ('%04d-%02d-%02d' % (y, mo, dd) if mm == mo
+                        else '%04d-%02d-%02d' % (y, mm, dd), kind)
+            except ValueError:
+                return None
+    return None
+
+
+def _combo_cols(grid, defmonth=None):
+    """扫描表头区，找出"日期+进出"合并写法的列。
+
+    返回 (dates, kind_map, 最后一条表头行号)；找不到返回 None。
+    """
+    y, mo = (int(defmonth[:4]), int(defmonth[5:7])) if defmonth and len(defmonth) >= 7 \
+        else (datetime.date.today().year, datetime.date.today().month)
+    dates, kinds, last = {}, {}, None
+    for r in range(min(6, len(grid))):
+        for c, v in enumerate(grid[r] if r < len(grid) else []):
+            if c in dates:
+                continue
+            got = _combo_date_kind(v, y, mo)
+            if got:
+                dates[c], kinds[c] = got
+                last = r if last is None else max(last, r)
+    if len(dates) >= 4 and kinds:          # 至少 4 个日期列才认定是宽表
+        return dates, kinds, last
+    return None
+
+
 def parse_wide(grid, defmonth=None):
-    """解析原表那种『物料 × 每日进/出』宽表。返回 (单据列表, 字段集合)"""
+    """解析原表那种『物料 × 每日进/出』宽表。返回 (单据列表, 字段集合)
+
+    支持两种表头写法：
+      A 双层：一行写日期、下一行写 进/出（原表就是这种）
+      B 单层：日期和进出写在一个格子里，如「09-01进」「09-01出」
+    """
     kr = _wide_kind_row(grid)
+    combo = None
     if kr is None:
-        return [], set()
-    drow = kr - 1 if kr > 0 else None
-    dates = _wide_dates(grid, drow, defmonth)
-    if not dates:
-        return [], set()
-    # 数据起点：进出行之后，且该行有物料名称
-    start = kr + 1
-    heads = [hr for hr in (drow, kr) if hr is not None]
+        combo = _combo_cols(grid, defmonth)     # 试试单层合并写法
+        if combo is None:
+            return [], set()
+        dates, kind_map_pre, last = combo
+        start = (last or 0) + 1
+        heads = [r for r in range((last or 0) + 1)]
+        kr = None
+    else:
+        drow = kr - 1 if kr > 0 else None
+        dates = _wide_dates(grid, drow, defmonth)
+        if not dates:
+            return [], set()
+        # 数据起点：进出行之后，且该行有物料名称
+        start = kr + 1
+        heads = [hr for hr in (drow, kr) if hr is not None]
+        kind_map_pre = None
     name_c = _col_by_head(grid, heads, MAT_HEADS['name'])
     if name_c is None:                      # 表头对不上：挑"文字最多"的那一列当物料名
         best, bestn = None, 0
@@ -398,11 +551,14 @@ def parse_wide(grid, defmonth=None):
     cols = {k: _col_by_head(grid, heads, v) for k, v in MAT_HEADS.items()}
     cols['name'] = name_c
     # 日期列 -> (列号, 进/出)
-    kind_map = {}
-    for c, v in enumerate(grid[kr] if kr < len(grid) else []):
-        s = str(v or '').strip()
-        if s in WIDE_KINDS and c in dates:
-            kind_map[c] = s
+    if kind_map_pre is not None:
+        kind_map = dict(kind_map_pre)        # 单层写法：方向直接来自表头单元格
+    else:
+        kind_map = {}
+        for c, v in enumerate(grid[kr] if (kr is not None and kr < len(grid)) else []):
+            s = str(v or '').strip()
+            if s in WIDE_KINDS and c in dates:
+                kind_map[c] = s
     out = []
     for r in grid[start:]:
         if not r or name_c >= len(r):
@@ -411,7 +567,7 @@ def parse_wide(grid, defmonth=None):
         if not nm or nm in ('/', '-', '合计', '总计'):
             continue
         base = {'name': nm, 'code': '', 'date': '', 'note': '',
-                'pieces': None, 'per_piece': None}
+                'pieces': None, 'per_piece': None, 'price': None}
         for f in ('supplier', 'category', 'spec', 'width', 'unit', 'code'):
             c = cols.get(f)
             base[f] = '' if (c is None or c >= len(r)) else str(r[c] or '').strip()
@@ -425,13 +581,13 @@ def parse_wide(grid, defmonth=None):
             if fixed:
                 base['unit'] = fixed
         oc = cols.get('opening')
-        base['opening'] = _num(r[oc]) if (oc is not None and oc < len(r)) else 0.0
+        base['opening'] = _num(r[oc], hi=QTY_MAX) if (oc is not None and oc < len(r)) else 0.0
         base['safety'] = 0.0
         got = False
         for c, kind in sorted(kind_map.items()):
             if c >= len(r):
                 continue
-            q = _num(r[c])
+            q = _num(r[c], hi=QTY_MAX)
             if q > 0:
                 d = dict(base); d['kind'] = kind; d['qty'] = q
                 d['date'] = dates[c]
@@ -449,7 +605,9 @@ def parse_wide(grid, defmonth=None):
 def parse_txn_by_map(path=None, stream=None, filename='', colmap=None, start=1,
                      default_kind=None, defdate=None):
     """按用户手动指定的列来解析。colmap: {列索引: 字段名}，start: 数据起始行(0基)
-    字段名取值 name/code/date/kind/qty/in_qty/out_qty/pieces/per_piece/note，未列出的列忽略。"""
+    字段名取值 name/code/date/kind/qty/in_qty/out_qty/pieces/per_piece/
+    price/amount/note，未列出的列忽略。
+    金额(amount)可以不填，由 数量×单价 自动算出；只填金额时反推单价。"""
     grid = _read_grid(path=path, stream=stream, filename=filename)
     colmap = {int(k): v for k, v in (colmap or {}).items() if v}
     out = []
@@ -468,17 +626,26 @@ def parse_txn_by_map(path=None, stream=None, filename='', colmap=None, start=1,
         base = dict(name=name or code, code=code,
                     date=_fmt_date(val('date')) or (defdate or ''),
                     note=str(val('note') or '').strip(),
-                    pieces=_num(val('pieces')) or None,
-                    per_piece=_num(val('per_piece')) or None)
+                    pieces=_num(val('pieces'), hi=QTY_MAX) or None,
+                    per_piece=_num(val('per_piece'), hi=QTY_MAX) or None)
         for f in TXN_MAT_COLS:
             v = val(f)
             base[f] = '' if v is None else str(v).strip()
             if f in ('opening', 'safety'):
                 base[f] = _num(v)
-        ins = _num(val('in_qty')); outs = _num(val('out_qty'))
-        q = _num(val('qty')); pcs = _num(val('pieces')); per = _num(val('per_piece'))
+        ins = _num(val('in_qty'), hi=QTY_MAX); outs = _num(val('out_qty'), hi=QTY_MAX)
+        q = _num(val('qty'), hi=QTY_MAX)
+        pcs = _num(val('pieces'), hi=QTY_MAX); per = _num(val('per_piece'), hi=QTY_MAX)
         if not q and pcs and per:
             q = round(pcs * per, 2)
+        # 单价：表里直接给"单价"最好；只给"金额"时按 金额÷数量 反推。
+        # 两个都给了以单价为准（金额只是展示值，不入库，避免对不上）。
+        pr = _num(val('price'))
+        if not pr:
+            am = _num(val('amount'))
+            if am and q:
+                pr = round(am / q, 4)
+        pr = pr or None
         kd = str(val('kind') or '').strip()
         items = []
         if ins or outs:
@@ -494,7 +661,7 @@ def parse_txn_by_map(path=None, stream=None, filename='', colmap=None, start=1,
         for kind, qty in items:
             if qty <= 0:
                 continue
-            d = dict(base); d['kind'] = kind; d['qty'] = qty
+            d = dict(base); d['kind'] = kind; d['qty'] = qty; d['price'] = pr
             out.append(d)
     return out
 
@@ -554,22 +721,30 @@ def parse_txn_file(path=None, stream=None, filename='', aliases=None, mat_aliase
         base = dict(name=name or code, code=code,
                     date=_fmt_date(val('date')),
                     note=str(val('note') or '').strip(),
-                    pieces=_num(val('pieces')) or None,
-                    per_piece=_num(val('per_piece')) or None)
+                    pieces=_num(val('pieces'), hi=QTY_MAX) or None,
+                    per_piece=_num(val('per_piece'), hi=QTY_MAX) or None)
         for f in TXN_MAT_COLS:
             v = val(f)
             base[f] = '' if v is None else str(v).strip()
             if f in ('opening', 'safety'):
-                base[f] = _num(v)
+                base[f] = _num(v, hi=QTY_MAX)
         # 数量：优先 进/出 分列，其次 数量 + 进出方向
-        ins = _num(val('in_qty'))
-        outs = _num(val('out_qty'))
-        q = _num(val('qty'))
-        pcs = _num(val('pieces'))
+        # 都加 QTY_MAX 上限：表里多输几个零不该把库存冲到天文数字
+        ins = _num(val('in_qty'), hi=QTY_MAX)
+        outs = _num(val('out_qty'), hi=QTY_MAX)
+        q = _num(val('qty'), hi=QTY_MAX)
+        pcs = _num(val('pieces'), hi=QTY_MAX)
         per = _num(val('per_piece'))
         if not q and pcs and per:      # 只有件数×每件 -> 总数量
             q = round(pcs * per, 2)
-            base['qty_computed'] = True
+        # 单价：优先表里的"单价"列；只给"金额"时按 金额÷数量 反推
+        pr = _num(val('price'))
+        if not pr:
+            am = _num(val('amount'))
+            if am and q:
+                pr = round(am / q, 4)
+        pr = pr or None
+        base['qty_computed'] = bool(pcs and per and not _num(val('qty')))
         kd = str(val('kind') or '').strip()
         items = []
         if ins or outs:
@@ -585,7 +760,7 @@ def parse_txn_file(path=None, stream=None, filename='', aliases=None, mat_aliase
         for kind, qty in items:
             if qty <= 0:
                 continue
-            d = dict(base); d['kind'] = kind; d['qty'] = qty
+            d = dict(base); d['kind'] = kind; d['qty'] = qty; d['price'] = pr
             out.append(d)
     if not out:
         return out, set(hmap.values()), hi, {

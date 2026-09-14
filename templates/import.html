@@ -32,6 +32,7 @@
    <td class="n">{{'%g'|format(r.opening)}}</td><td class="n">{{'%g'|format(r.safety)}}</td>
   </tr>{% endfor %}</table></div>
   <form method="post" enctype="multipart/form-data">
+<input type="hidden" name="_n" value="{{new_nonce()}}">
     <input type="hidden" name="confirm" value="1">
     <input type="hidden" name="f" value="{{f}}">
     <label>重复物料（名称或料号已存在）怎么处理</label>
@@ -45,6 +46,7 @@
 </div>
 {% else %}
 <form class="card" method="post" enctype="multipart/form-data">
+<input type="hidden" name="_n" value="{{new_nonce()}}">
   <h2>② 选择文件</h2>
   <label>Excel / CSV 文件</label>
   <input type="file" name="file" accept=".xlsx,.xlsm,.csv" required>

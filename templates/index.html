@@ -10,6 +10,7 @@
   <div class="stat"><span>本月出库</span><b class="out">{{'%g'|format(mon_out)}}</b></div>
 </div>
 
+
 <div class="card">
   <h2>库存预警 <span class="pill">{{alerts|length}} 项</span></h2>
   {% if alerts %}
@@ -29,7 +30,8 @@
   {% if recent %}{% for r in recent %}
   <div class="kv"><span>{{r.tdate[5:]}} {{r.name}}</span>
     <span><span class="pill {{'i' if r.kind=='进' else 'o'}}">{{r.kind}}</span>
-    <b class="{{'in' if r.kind=='进' else 'out'}}">{{'%g'|format(r.qty)}}</b> {{r.unit}}</span></div>
+    <b class="{{'in' if r.kind=='进' else 'out'}}">{{'%g'|format(r.qty)}}</b> {{r.unit}}
+</span></div>
   {% endfor %}{% else %}<div class="empty">还没有单据，去录第一笔吧</div>{% endif %}
   <div class="rowflex">
     <a class="btn s" href="{{url_for('in_list')}}">入库流水</a>
@@ -40,5 +42,12 @@
 <div class="rowflex">
   <a class="btn g" href="{{url_for('in')}}">📥 入库</a>
   <a class="btn r" href="{{url_for('out')}}">📤 出库</a>
+</div>
+<div class="rowflex">
+  <a class="btn s" href="{{url_for('purchase_home')}}" style="margin-top:0">🛒 采购台账</a>
+  <a class="btn s o" href="{{url_for('report')}}" style="margin-top:0">📅 月报表</a>
+</div>
+<div class="rowflex" style="display:none">
+  <a class="btn g" href="{{url_for('in')}}">占位</a>
 </div>
 {% endblock %}

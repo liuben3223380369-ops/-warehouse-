@@ -14,6 +14,7 @@
 {% if msg %}<div class="card" style="background:#e8f6ee;border-left:3px solid #12a150">{{msg}}</div>{% endif %}
 
 <form method="post" id="f">
+<input type="hidden" name="_n" value="{{new_nonce()}}">
 <input type="hidden" name="nrow" id="nrow" value="{{n}}">
 <div id="cards"></div>
 
@@ -50,7 +51,7 @@ box-shadow:0 1px 3px rgba(0,0,0,.06);position:relative}
 display:flex;align-items:center;justify-content:center;font-size:12px;flex:none}
 .ecard .mt{flex:1;min-width:0;font-weight:600;font-size:14px;overflow:hidden;
 text-overflow:ellipsis;white-space:nowrap;color:#1c2430}
-.ecard .av{pill}.ecard .av{font-size:11px;padding:2px 8px;border-radius:20px;background:#eef2f7;color:#5b6675;flex:none}
+.ecard .av{font-size:11px;padding:2px 8px;border-radius:20px;background:#eef2f7;color:#5b6675;flex:none}
 .ecard .av.over{background:#fdeced;color:#e5484d;font-weight:600}
 .ecard .del{width:26px;height:26px;border-radius:50%;border:0;background:#f2f4f7;color:#7a869a;
 font-size:15px;line-height:1;flex:none;cursor:pointer;padding:0;margin:0}
@@ -84,9 +85,9 @@ var MATS = {{ js_mats|tojson }};
 var COLS = {{ fids|tojson }};
 var COLS_FULL = {{ col_defs|tojson }};
 var FIXED = {{ 'true' if fixed else 'false' }};
-var KIND = {{ ('"' + fixed + '"') if fixed else 'null' }};
-var TODAY = "{{ tdate }}";
-var rowIdx = {{ n }};
+var KIND = {{ fixed|tojson }};
+var TODAY = {{ tdate|tojson }};
+var rowIdx = {{ n|int }};
 var curCard = null;
 
 function esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g,function(c){
@@ -181,14 +182,20 @@ function addCard(copy){
     old.id='c'+rowIdx;
     old.querySelectorAll('input,select').forEach(function(el){
       var nm=el.name||''; var m=nm.match(/^(.+)_(\d+)$/);
+      // 金额框是只读展示用的，没有 name —— m 会是 null，
+      // 直接用 m[2] 会抛 "Cannot read properties of null"，
+      // 整个"复制上一笔"直接崩掉。先取出旧行号再统一改名。
+      var oi = m ? m[2] : null;
       if(m){
         el.name=m[1]+'_'+rowIdx;
-        if(el.id==='mid'+m[2]) el.id='mid'+rowIdx;
-        if(el.id==='nm'+m[2]) el.id='nm'+rowIdx;
+        if(el.id==='mid'+oi) el.id='mid'+rowIdx;
+        if(el.id==='nm'+oi) el.id='nm'+rowIdx;
       }
-      if(el.id==='mt'+m[2]) el.id='mt'+rowIdx;
-      if(el.id==='av'+m[2]) el.id='av'+rowIdx;
-      if(el.id==='sg'+m[2]) el.id='sg'+rowIdx;
+      if(oi!==null){
+        if(el.id==='mt'+oi) el.id='mt'+rowIdx;
+        if(el.id==='av'+oi) el.id='av'+rowIdx;
+        if(el.id==='sg'+oi) el.id='sg'+rowIdx;
+      }
       if(el.classList&&el.classList.contains('qty')){ el.value=''; el.dataset.i=rowIdx; }
       if(el.classList&&el.classList.contains('pc')) el.dataset.i=rowIdx;
       if(el.classList&&el.classList.contains('pe')) el.dataset.i=rowIdx;
@@ -212,6 +219,7 @@ function calc(i){ var q=numv(i,'qty'),p=numv(i,'pc'); var e=document.querySelect
 function calc2(i){ var p=numv(i,'pc'),pe=numv(i,'pe'),q=numv(i,'qty');
   if(p&&pe){ document.querySelector('.qty[data-i="'+i+'"]').value=fmt(p*pe); }
   else if(q&&pe){ document.querySelector('.pc[data-i="'+i+'"]').value=fmt(q/pe); } }
+
 
 function showSug(i, list){
   var box=document.getElementById('sg'+i); if(!box) return;
@@ -250,16 +258,19 @@ function pick(i, id){
 
 function bind(i){
   var el=document.getElementById('nm'+i); if(!el) return;
+  // 预先拼好检索串，避免每次按键都对全部物料做三次 toLowerCase
+  if(!MATS.length || MATS[0]._q===undefined){
+    for(var k=0;k<MATS.length;k++){
+      var m=MATS[k];
+      m._q=((m.name||'')+'\u0001'+(m.code||'')+'\u0001'+(m.supplier||'')).toLowerCase();
+    }
+  }
   el.addEventListener('input', function(){
     var v=(this.value||'').trim().toLowerCase();
     if(!v){ hideSug(i); return; }
     var r=[];
     for(var k=0;k<MATS.length;k++){
-      var m=MATS[k];
-      var a=(m.name||'').toLowerCase(), b=(m.code||'').toLowerCase(), c=(m.supplier||'').toLowerCase();
-      if(a.indexOf(v)>=0||b.indexOf(v)>=0||c.indexOf(v)>=0){
-        r.push(m); if(r.length>=12) break;
-      }
+      if(MATS[k]._q.indexOf(v)>=0){ r.push(MATS[k]); if(r.length>=12) break; }
     }
     showSug(i,r);
   });

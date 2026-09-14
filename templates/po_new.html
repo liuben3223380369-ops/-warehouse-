@@ -1,0 +1,148 @@
+{% extends 'base.html' %}
+{% block title %}新建采购单 - 仓库管理系统{% endblock %}
+{% block h1 %}新建采购单{% endblock %}
+{% block sub %}先建单头，再逐行加采购明细{% endblock %}
+{% block body %}
+
+{% if err %}<div class="card" style="background:#fdeced;border-left:3px solid #e5484d">{{err}}</div>{% endif %}
+
+<form method="post" id="poform">
+<input type="hidden" name="_n" value="{{new_nonce()}}">
+<div class="card">
+  <label>供应商 *</label>
+  <input name="supplier" list="supl" autocomplete="off" placeholder="输入或选择供应商" required>
+  <datalist id="supl">{% for s in sups %}<option value="{{s}}">{% endfor %}</datalist>
+
+  <div class="rowflex">
+    <div><label>下单日期</label><input type="date" name="odate" value="{{today}}"></div>
+    <div><label>要求交期</label><input type="date" name="ddate"></div>
+  </div>
+
+  <div class="rowflex">
+    <div><label>税率 %</label><input name="tax_rate" inputmode="decimal" value="0"
+      oninput="calcAll()"></div>
+    <div><label>状态</label><select name="status">
+      <option>已下单</option><option>草稿</option></select></div>
+  </div>
+
+  <label>备注</label><input name="note" placeholder="选填">
+  <datalist id="ulist">
+    {% for u in units %}<option value="{{u}}">{% endfor %}
+  </datalist>
+</div>
+
+<div class="card">
+  <h2>采购明细 <span class="pill" id="cnt">0 行</span></h2>
+  <div id="rows"></div>
+  <button type="button" class="btn s o" onclick="addRow()">＋ 加一行</button>
+  <button type="button" class="btn s" onclick="addRow(true)">＋ 复制上一行</button>
+
+  <div style="margin-top:12px;padding-top:10px;border-top:1px solid #eef2f7">
+    <div class="kv"><span>不含税金额</span><b id="s_amt">0.00</b></div>
+    <div class="kv"><span>税额</span><span id="s_tax">0.00</span></div>
+    <div class="kv"><span>价税合计</span><b id="s_total" style="color:#1f6feb">0.00</b></div>
+  </div>
+  <div style="font-size:12px;color:#7a869a;margin-top:8px">
+    金额 = 数量 × 单价，实时计算；税额按单头税率算。保存后可在详情页登记到货与付款。
+  </div>
+</div>
+
+<button type="submit" class="btn g">保存采购单</button>
+<a class="btn s o" href="{{url_for('purchase_home')}}">取消</a>
+</form>
+
+<script>
+var MATS = {{ mats|tojson }};
+var n = 0;
+
+function addRow(copy){
+  var wrap=document.getElementById('rows');
+  var d=document.createElement('div');
+  d.className='card'; d.style.boxShadow='none'; d.style.border='1px solid #eef2f7';
+  d.innerHTML = rowHtml(n, copy ? wrap.lastElementChild : null);
+  wrap.appendChild(d);
+  bind(n); showUnit(n); n++;
+  document.getElementById('cnt').textContent = document.querySelectorAll('#rows .card').length + ' 行';
+  calcAll();
+  return false;
+}
+function rowHtml(i, src){
+  if(src){
+    var h=src.innerHTML;
+    return h.replace(/_(\d+)/g, '_'+i).replace(/id="r(\d+)"/g, 'id="r'+i+'"');
+  }
+  return '<div class="rowflex"><div><label>物料名称 *</label>'
+   + '<input name="item_name" list="ml'+i+'" autocomplete="off" placeholder="输入即联想" class="nm" data-i="'+i+'">'
+   + '<input type="hidden" name="item_mid" class="mid" data-i="'+i+'">'
+   + '<div class="sg" id="sg'+i+'" style="display:none"></div></div>'
+   + '<div><label>数量 *</label><input name="item_qty" inputmode="decimal" placeholder="0" class="q" data-i="'+i+'" oninput="calcAll()"></div></div>'
+   + '<div class="rowflex"><div><label>单价</label><input name="item_price" inputmode="decimal" placeholder="0.00" class="p" data-i="'+i+'" oninput="calcAll()"></div>'
+   + '<div><label>单位（可直接改）</label><input name="item_unit" class="u" data-i="'+i+'" list="ulist" placeholder="个" oninput="showUnit('+i+')"></div></div>'
+   + '<div class="rowflex"><div><label>1 采购单位 =</label><input name="item_conv" inputmode="decimal" value="1" class="cv" data-i="'+i+'" oninput="showUnit('+i+')"></div>'
+   + '<div><label>库存单位（不同才填）</label><input name="item_stock_unit" class="su" data-i="'+i+'" list="ulist" placeholder="留空=同上"></div></div>'
+   + '<div class="uhint" data-i="'+i+'" style="font-size:12px;color:#7a869a"></div>'
+   + '<datalist id="ml'+i+'">{% for m in mats %}<option value="{{m.name}}">{% endfor %}</datalist>'
+   + '<input type="hidden" name="item_spec" class="sp" data-i="'+i+'">'
+   + '<div style="text-align:right"><button type="button" class="btn s o" style="width:auto;padding:6px 12px" '
+   + 'onclick="delRow(this)">删掉这行</button></div>'
+   + '<div style="font-size:12px;color:#7a869a;text-align:right" class="ln" data-i="'+i+'"></div>';
+}
+function delRow(b){ b.closest('.card').remove();
+  document.getElementById('cnt').textContent = document.querySelectorAll('#rows .card').length + ' 行';
+  calcAll(); }
+function bind(i){
+  var el=document.querySelector('.nm[data-i="'+i+'"]'); if(!el) return;
+  el.oninput=function(){
+    var kw=el.value.trim().toLowerCase(); var box=document.getElementById('sg'+i);
+    if(!kw){ box.style.display='none'; return; }
+    var hit=MATS.filter(function(m){ return m.name.toLowerCase().indexOf(kw)>=0
+      || (m.code||'').toLowerCase().indexOf(kw)>=0; }).slice(0,8);
+    if(!hit.length){ box.style.display='none'; return; }
+    box.innerHTML='<div class="card" style="margin:4px 0;padding:6px;box-shadow:none;border:1px solid #eef2f7">'
+      + hit.map(function(m){ return '<div data-id="'+m.id+'" data-n="'+m.name.replace(/"/g,'&quot;')
+        +'" data-u="'+m.unit+'" data-s="'+m.spec+'" style="padding:5px;cursor:pointer">'
+        + m.name + (m.code?' <span class="pill">'+m.code+'</span>':'') + '</div>'; }).join('') + '</div>';
+    box.style.display='block';
+    box.querySelectorAll('div[data-id]').forEach(function(x){
+      x.onclick=function(){
+        el.value=x.dataset.n;
+        document.querySelector('.mid[data-i="'+i+'"]').value=x.dataset.id;
+        document.querySelector('.u[data-i="'+i+'"]').value=x.dataset.u||'';
+        showUnit(i);
+        document.querySelector('.sp[data-i="'+i+'"]').value=x.dataset.s||'';
+        box.style.display='none'; calcAll();
+        document.querySelector('.q[data-i="'+i+'"]').focus();
+      };
+    });
+  };
+}
+function showUnit(i){
+  var u=document.querySelector('.u[data-i="'+i+'"]');
+  var cv=document.querySelector('.cv[data-i="'+i+'"]');
+  var su=document.querySelector('.su[data-i="'+i+'"]');
+  var hint=document.querySelector('.uhint[data-i="'+i+'"]');
+  if(!u||!hint) return;
+  var c=parseFloat(cv&&cv.value);
+  var s=(su&&su.value||'').trim();
+  if(!s || !c || Math.abs(c-1)<1e-9){ hint.textContent=''; return; }
+  hint.innerHTML='入库按 <b>'+s+'</b> 计：1 '+u.value+' = '+c+' '+s;
+}
+function calcAll(){
+  var rate=parseFloat(document.querySelector('[name=tax_rate]').value)||0;
+  var amt=0;
+  document.querySelectorAll('.q').forEach(function(q){
+    var i=q.dataset.i;
+    var p=document.querySelector('.p[data-i="'+i+'"]');
+    var qv=parseFloat(q.value)||0, pv=parseFloat(p&&p.value)||0;
+    var line=Math.round(qv*pv*100)/100; amt+=line;
+    var ln=document.querySelector('.ln[data-i="'+i+'"]');
+    if(ln) ln.textContent = line? ('小计 '+line.toFixed(2)) : '';
+  });
+  var tax=Math.round(amt*rate)/100;
+  document.getElementById('s_amt').textContent=amt.toFixed(2);
+  document.getElementById('s_tax').textContent=tax.toFixed(2);
+  document.getElementById('s_total').textContent=(amt+tax).toFixed(2);
+}
+addRow();
+</script>
+{% endblock %}

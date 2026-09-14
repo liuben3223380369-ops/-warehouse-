@@ -28,6 +28,7 @@
 {% if inline and rows %}
 {# ---------- 行内可编辑表格 ---------- #}
 <form method="post" action="{{url_for('table_save',kw=kw,all='1' if show_all else '')}}">
+<input type="hidden" name="_n" value="{{new_nonce()}}">
 {% for f in ['name','code','supplier','category','spec','width','unit','status','opening','safety'] %}<input type="hidden" name="{{f}}" value="1">{% endfor %}
 <div class="card" style="padding:10px 6px">
   <div class="scroll"><table>
@@ -58,6 +59,7 @@
 {% else %}
 {# ---------- 勾选批量模式 ---------- #}
 <form method="post" action="{{url_for('batch')}}" id="bform">
+<input type="hidden" name="_n" value="{{new_nonce()}}">
 <div class="card">
 {% if rows %}
   <div style="margin-bottom:4px;display:flex;align-items:center;justify-content:space-between">

@@ -47,14 +47,28 @@
   </div>
   {% endif %}
   <div class="scroll"><table>
-  <tr><th>日期</th><th>物料</th><th>料号</th><th>进/出</th><th class="n">数量</th><th>单位</th><th>备注</th></tr>
+  <tr><th>日期</th><th>物料</th><th>料号</th><th>进/出</th><th class="n">数量</th><th>单位</th><th class="n">单价</th><th class="n">金额</th><th>备注</th></tr>
   {% for r in preview %}<tr>
    <td>{{r.date}}</td><td>{{r.name}}</td><td>{{r.code}}</td>
    <td><span class="pill {{'i' if r.kind=='进' else 'o'}}">{{r.kind}}</span></td>
    <td class="n"><b class="{{'in' if r.kind=='进' else 'out'}}">{{'%g'|format(r.qty)}}</b></td>
-   <td>{{r.unit}}</td><td>{{r.note}}</td>
+   <td>{{r.unit}}</td>
+   <td class="n">{% if r.price %}{{'%.2f'|format(r.price)}}{% endif %}</td>
+   <td class="n">{% if r.price %}{{'%.2f'|format(r.price * r.qty)}}{% endif %}</td>
+   <td>{{r.note}}</td>
   </tr>{% endfor %}</table></div>
+  {% set pa = preview|selectattr('price')|list %}
+  {% if pa %}
+  {% set ns = namespace(tin=0.0, tout=0.0) %}
+  {% for r in pa %}{% if r.kind == '出' %}{% set ns.tout = ns.tout + r.price * r.qty %}
+  {% else %}{% set ns.tin = ns.tin + r.price * r.qty %}{% endif %}{% endfor %}
+  <div style="margin-top:8px;font-size:13px">
+    <b>金额合计 {{'%.2f'|format(ns.tin - ns.tout)}}</b>
+    <span style="color:#7a869a;font-size:12px">（进 {{'%.2f'|format(ns.tin)}} − 出 {{'%.2f'|format(ns.tout)}}）</span>
+  </div>
+  {% endif %}
   <form method="post">
+<input type="hidden" name="_n" value="{{new_nonce()}}">
     <input type="hidden" name="confirm" value="1">
     <input type="hidden" name="f" value="{{f}}">
     <input type="hidden" name="defkind" value="{{defkind}}">
@@ -76,6 +90,7 @@
 </div>
 {% else %}
 <form class="card" method="post" enctype="multipart/form-data">
+<input type="hidden" name="_n" value="{{new_nonce()}}">
   <h2>② 选择文件</h2>
   <label>Excel / WPS 表格文件</label>
   <input type="file" name="file" accept=".xlsx,.xlsm,.xls,.et,.csv" required>
@@ -99,6 +114,7 @@
   <p style="font-size:13px;color:#5b6675;margin:0 0 8px">
   自动没认出来？<b>你自己指定每一列是什么</b>，什么表头都能导。</p>
   <form method="post">
+<input type="hidden" name="_n" value="{{new_nonce()}}">
     <input type="hidden" name="manual" value="1">
     <input type="hidden" name="f" value="{{f}}">
     <div class="rowflex">
@@ -115,7 +131,8 @@
       <option value="">—忽略—</option>
       {% for v,l in [('name','物料名称'),('code','料号'),('date','日期'),('qty','数量'),
                      ('in_qty','进'),('out_qty','出'),('kind','进/出'),('pieces','件数'),
-                     ('per_piece','每件'),('note','备注'),('supplier','供应商'),
+                     ('per_piece','每件'),('price','单价'),('amount','金额'),
+                     ('note','备注'),('supplier','供应商'),
                      ('category','类型'),('spec','规格'),('width','宽幅'),('unit','单位')] %}
         <option value="{{v}}">{{l}}</option>{% endfor %}
     </select></td>{% endfor %}</tr>

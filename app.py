@@ -22,7 +22,22 @@ from datetime import datetime, date
 import calendar, io, csv, os, time, sys
 from flask import Response
 from urllib.parse import quote
-import db, importer
+import db, importer, purchase
+
+
+def _log_err(tag, detail=''):
+    """把错误写进程序目录的 warehouse.log。
+    窗口模式没有控制台，异常不落盘就永远查不到原因。"""
+    try:
+        import traceback
+        with open(os.path.join(BASE, 'warehouse.log'), 'a', encoding='utf-8',
+                  errors='replace') as f:
+            f.write('[%s] %s\n%s\n%s\n' % (
+                datetime.now().strftime('%Y-%m-%d %H:%M:%S'), tag,
+                detail or traceback.format_exc(), '-' * 46))
+    except Exception:
+        pass
+
 
 def say(msg=''):
     """容错输出：编码问题、控制台不存在都不会让程序崩"""
@@ -36,6 +51,34 @@ def say(msg=''):
 
 
 BASE = db.app_dir()
+
+# ---------- 重复提交防护（一次性令牌） ----------
+# 场景：网络卡顿时用户连点两下"保存"，同一批单据会记两遍，
+# 库存平白多出一笔，而且很难发现。所以每个表单发一个一次性令牌，
+# 提交时核销；令牌用掉再提交就是重复，直接挡下。
+_nonces = set()
+_NONCE_MAX = 500          # 上限：防止开着几十个页面把内存撑大
+
+
+def new_nonce():
+    """发一个新令牌（渲染表单时调用）"""
+    import uuid
+    n = uuid.uuid4().hex[:16]
+    _nonces.add(n)
+    if len(_nonces) > _NONCE_MAX:      # 超量就淘汰最早的一批
+        for x in list(_nonces)[:_NONCE_MAX // 2]:
+            _nonces.discard(x)
+    return n
+
+
+def take_nonce(n):
+    """核销令牌：有效返回 True（并作废），重复/伪造返回 False"""
+    if not n:
+        return False
+    if n in _nonces:
+        _nonces.discard(n)
+        return True
+    return False
 TMP = os.path.join(BASE, '.uploads')
 os.makedirs(TMP, exist_ok=True)
 
@@ -69,10 +112,15 @@ except Exception as _e:
         time.sleep(30)
     raise SystemExit(1)
 
+TXN_PAGE = 500       # 流水页单页最多显示条数
+# 金额不单独存库：只存单价，金额 = 数量 × 单价，查询时现算。
+# 存两份的话改了数量金额还是旧值，必然对不上。
+AMT = "ROUND(t.qty * COALESCE(t.price,0), 2)" 
+
 LABELS = {'name': '物料名称', 'code': '料号', 'supplier': '供应商', 'category': '类型',
           'spec': '规格', 'width': '宽幅', 'unit': '单位', 'status': '状态',
           'opening': '期初结存', 'safety': '安全库存'}
-app.jinja_env.globals.update(LABELS=LABELS)
+app.jinja_env.globals.update(LABELS=LABELS, new_nonce=new_nonce)
 
 # ---------- 全局错误处理：任何异常都给一句人话，而不是空白页 ----------
 @app.teardown_appcontext
@@ -234,6 +282,30 @@ def calc_qty(qty, pieces, per):
         q = round(p * e, 2)
     return (q or 0.0), (p or None), (e or None)
 
+def _last_prices():
+    """每种物料最近一次填过的单价，用于录单时自动带出（省得每次重填）"""
+    out = {}
+    try:
+        for r in db.q("SELECT material_id, price FROM txns t WHERE price IS NOT NULL"
+                      " AND id=(SELECT MAX(id) FROM txns WHERE material_id=t.material_id"
+                      " AND price IS NOT NULL)"):
+            out[r['material_id']] = r['price']
+    except Exception:
+        pass
+    return out
+
+def js_mats_with_price(mats):
+    lp = _last_prices()
+    out = []
+    for m in mats:
+        d = {k: m[k] for k in ('id', 'name', 'code', 'supplier', 'category',
+                               'spec', 'width', 'unit', 'stock')}
+        p = lp.get(m['id'])
+        if p:
+            d['price'] = p
+        out.append(d)
+    return out
+
 def sort_args(sort, default):
     """三态排序：默认 -> 升序 -> 降序 -> 默认"""
     if not sort:
@@ -284,10 +356,16 @@ def index():
     mon_out = db.q("SELECT COALESCE(SUM(qty),0) s FROM txns WHERE tdate LIKE ? AND kind='出'", m+'%')[0]['s']
     n_mat   = db.q("SELECT COUNT(*) c FROM materials WHERE active=1")[0]['c']
     alerts  = db.q("SELECT * FROM v_stock WHERE stock<=safety ORDER BY stock")
-    recent  = db.q("SELECT t.*, m.name, m.unit, m.code FROM txns t JOIN materials m ON m.id=t.material_id"
-                   " ORDER BY t.id DESC LIMIT 8")
+    recent  = db.q("SELECT t.*, m.name, m.unit, m.code, %s AS amount FROM txns t"
+                   " JOIN materials m ON m.id=t.material_id"
+                   " ORDER BY t.id DESC LIMIT 8" % AMT.replace('t.', 't.'))
+    # 本月进出金额（只统计填了单价的单据）
+    _amt = "SELECT COALESCE(SUM(qty*COALESCE(price,0)),0) s FROM txns WHERE tdate LIKE ? AND kind=?"
+    mon_amt_in  = db.q(_amt, m + '%', '进')[0]['s']
+    mon_amt_out = db.q(_amt, m + '%', '出')[0]['s']
     return render_template('index.html', day_in=day_in, day_out=day_out, mon_in=mon_in,
-                           mon_out=mon_out, n_mat=n_mat, alerts=alerts, recent=recent)
+                           mon_out=mon_out, n_mat=n_mat, alerts=alerts, recent=recent,
+                           mon_amt_in=mon_amt_in, mon_amt_out=mon_amt_out)
 
 # ---------- 单据流水（表格录入，含原表 A-G 全部列） ----------
 def _fingerprint(vals):
@@ -362,6 +440,11 @@ def txn():
     msg = request.args.get('msg', '')
 
     if request.method == 'POST':
+        _back = 'out' if ep == 'out' else ('in' if ep == 'in' else 'txn')
+        # 一次性令牌：挡住"网络卡顿时连点两下"造成的重复记账
+        if not take_nonce(request.form.get('_n')):
+            return redirect(url_for(_back,
+                msg='这一批已经保存过了，请不要重复提交（可去流水页核对）'))
         nrow = min(int(request.form.get('nrow') or 0), MAX_ROWS)
         saved = newmat = blocked = 0
         names = []
@@ -394,14 +477,18 @@ def txn():
                         blocked += 1
                         names.append('%s(可用%g)' % (vals['name'] or vals['code'], stock))
                         continue
-                _cx.execute("INSERT INTO txns(tdate,material_id,kind,qty,pieces,per_piece,note,created_at)"
-                       " VALUES(?,?,?,?,?,?,?,?)",
+                # 单价不在录单页填 —— 入库成本来自采购单，采购到货时写入
+                _cx.execute("INSERT INTO txns(tdate,material_id,kind,qty,pieces,per_piece,"
+                       "note,created_at) VALUES(?,?,?,?,?,?,?,?)",
                        (d, mid, kind, qty, pieces, per, note,
                         datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
                 saved += 1
         except Exception:
+            # 不能静默吞掉：窗口模式没有控制台，不落盘就永远查不到原因
+            _log_err('录单保存失败')
             return render_template('error.html', code=500, title='保存失败',
-                detail='这批单据一条都没保存（已回滚），请返回重试。'), 500
+                detail='这批单据一条都没保存（已回滚），请返回重试。'
+                       '错误详情已写入 warehouse.log。'), 500
         back = 'out' if ep == 'out' else ('in' if ep == 'in' else 'txn')
         tip = f'已保存 {saved} 条{"出库" if fixed=="出" else ("入库" if fixed=="进" else "")}单' \
               + (f'，新建物料 {newmat} 种' if newmat else '')
@@ -418,8 +505,7 @@ def txn():
                            tdate=today(), rows=range(n), n=n,
                            # sqlite3.Row 不能直接 tojson，前端只需要 fid/label 两列
                            col_defs=[{'fid': c['fid'], 'label': c['label']} for c in cols],
-                           js_mats=[{k: m[k] for k in ('id','name','code','supplier','category',
-                                                       'spec','width','unit','stock')} for m in mats])
+                           js_mats=js_mats_with_price(mats))
 
 @app.route('/out/list')
 def out_list():
@@ -433,7 +519,8 @@ def in_list():
 def _kind_list(kind):
     d = request.args.get('d') or ''
     m = request.args.get('m') or ''
-    sql = "SELECT t.*, m.name, m.unit, m.code FROM txns t JOIN materials m ON m.id=t.material_id WHERE t.kind=?"
+    sql = ("SELECT t.*, m.name, m.unit, m.code, %s AS amount FROM txns t"
+           " JOIN materials m ON m.id=t.material_id WHERE t.kind=?" % AMT)
     args = [kind]
     if d:
         sql += " AND t.tdate=?"; args.append(d)
@@ -457,6 +544,9 @@ def txn_import():
     if request.method == 'POST':
         mode = request.form.get('mode', 'merge')
         if request.form.get('confirm') == '1':
+            if not take_nonce(request.form.get('_n')):
+                return redirect(url_for(back,
+                    msg='这批单据已经导入过了，请不要重复提交'))
             p = os.path.join(TMP, os.path.basename(request.form.get('f', '')))
             if not os.path.exists(p):
                 return render_template('txn_import.html', fixed=fixed,
@@ -493,7 +583,18 @@ def txn_import():
                 elif fixed == '出' and 'out_qty' in fields:
                     filter_kind = '出'
             saved = newmat = blocked = skipped = archived = new_miss = 0
+            n_in = n_out = 0
             msgs = []
+            # 按 日期→进先出后 排序后再写入。不排的话，同一物料"先出后进"
+            # 的历史行会在写入当时因库存为 0 被当成超库存拦掉，
+            # 导入整月流水时莫名其妙少几笔。
+            def _ord(d):
+                return (str(d.get('date') or '9999-99-99'),
+                        0 if d.get('kind') == '进' else 1)
+            try:
+                rows = sorted(rows, key=_ord)
+            except Exception:
+                pass
             # 整批导入放进一个事务：中途任何异常全回滚，绝不留下"导了一半"的数据
             try:
               with db.tx():
@@ -532,11 +633,14 @@ def txn_import():
                   qty, pc, per = calc_qty(qty, d.get('pieces'), d.get('per_piece'))
                   if qty <= 0:
                       continue
-                  db.run("INSERT INTO txns(tdate,material_id,kind,qty,pieces,per_piece,note,created_at)"
-                         " VALUES(?,?,?,?,?,?,?,?)",
-                         d.get('date') or dflt_date, mid, kind, qty, pc, per, d.get('note', ''),
+                  db.run("INSERT INTO txns(tdate,material_id,kind,qty,pieces,per_piece,price,"
+                         "note,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                         d.get('date') or dflt_date, mid, kind, qty, pc, per,
+                         (num(d.get('price')) or None), d.get('note', ''),
                          datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
                   saved += 1
+                  if kind == '进': n_in += 1
+                  else: n_out += 1
             except Exception as e:
                 try: os.remove(p)
                 except OSError: pass
@@ -544,7 +648,14 @@ def txn_import():
                     err='导入失败，已全部回滚（数据未改动）：%s' % e)
             try: os.remove(p)
             except OSError: pass
-            tip = f'已导入 {saved} 条{"出库" if fixed=="出" else ("入库" if fixed=="进" else "")}单据'
+            # 宽表会把"进""出"一起导进来，提示必须写明构成，
+            # 否则用户看到"已导入 8 条入库单据"，实际却是 4 进 4 出。
+            if n_in and n_out:
+                tip = f'已导入 {saved} 条单据（进 {n_in} / 出 {n_out}）'
+            elif n_out:
+                tip = f'已导入 {saved} 条出库单据'
+            else:
+                tip = f'已导入 {saved} 条入库单据'
             if newmat:
                 tip += f'，新建物料 {newmat} 种'
                 # 只统计"本次新建"里字段不全的，别拿全库说事
@@ -554,6 +665,10 @@ def txn_import():
                     tip += '，可在「物料」页补全或改用「手动指定列」）'
             if blocked:
                 tip += f'；{blocked} 行超出库存被跳过：' + '、'.join(msgs[:3])
+                # 导入历史流水时，期初没填会让早期的出库全部被拦。
+                # 光报"超出库存"用户不知道怎么办，必须给出路。
+                tip += '。这些行的出库时间早于入库（或期初未填）——' \
+                       '请先补期初结存，或勾选「允许超出库存」重导'
             if skipped:
                 tip += f'（忽略 {skipped} 笔{"出库" if filter_kind=="进" else "入库"}行）'
             if archived:
@@ -684,7 +799,12 @@ def material_history(mid):
     rows = db.history(mid, m)
     months = [r['ym'] for r in db.q(
         "SELECT DISTINCT substr(tdate,1,7) ym FROM txns WHERE material_id=? ORDER BY ym DESC", mid)]
-    return render_template('history.html', row=row, rows=rows, m=m, months=months)
+    # 金额合计（只统计填了单价的单据）
+    amt_in = sum(float(r['amount'] or 0) for r in rows if r['kind'] == '进')
+    amt_out = sum(float(r['amount'] or 0) for r in rows if r['kind'] == '出')
+    return render_template('history.html', row=row, rows=rows, m=m, months=months,
+                           amt_in=amt_in, amt_out=amt_out,
+                           total_amount=amt_in - amt_out)
 
 # ---------- 列（表头）映射设置 ----------
 @app.route('/columns', methods=['GET', 'POST'])
@@ -742,14 +862,34 @@ def txns_batch():
                            " JOIN materials m ON m.id=t.material_id WHERE " + " AND ".join(w) + ")")
                 else:
                     sql = "DELETE FROM txns"
-                c.execute(sql, tuple(args))
-                n = c.total_changes
+                # 安全闸门：列表只显示前 TXN_PAGE 条，但条件删除会删掉全部。
+                # 必须显式传 real_total 授权，否则最多只删一页，杜绝"以为删500实际删2万"。
+                try:
+                    declared = int(request.form.get('real_total') or 0)
+                except ValueError:
+                    declared = 0
+                cur = c.execute("SELECT COUNT(*) FROM txns t JOIN materials m"
+                                " ON m.id=t.material_id"
+                                + (" WHERE " + " AND ".join(w) if w else ""),
+                                tuple(args)).fetchone()[0]
+                if declared != cur:
+                    # 条件实际命中数与页面声明的不一致（数据已变化/参数被改），拒绝执行
+                    raise ValueError('count-mismatch')
+                if cur > TXN_PAGE:
+                    raise ValueError('too-many')
+                cur = c.execute(sql, tuple(args))
+                n = cur.rowcount if cur.rowcount and cur.rowcount > 0 else declared
             else:
                 if not ids:
                     return redirect((back or url_for('txns')) + '?msg=' + quote('未勾选任何单据'))
                 ph = ','.join('?' * len(ids))
                 c.execute("DELETE FROM txns WHERE id IN (%s)" % ph, tuple(ids))
                 n = len(ids)
+    except ValueError as ex:
+        msg = ('删除已取消：要删的数量超过一页上限 %d 条。'
+               '请先按日期或月份缩小范围，再清空。' % TXN_PAGE) if str(ex) == 'too-many' \
+            else '删除已取消：数据量与页面不符，请刷新页面后重试。'
+        return redirect((back or url_for('txns')) + '?msg=' + quote(msg))
     except Exception:
         return redirect((back or url_for('txns')) + '?msg=' + quote('删除失败，已回滚，请重试'))
     return redirect((back or url_for('txns')) + '?msg=' + quote('已删除 %d 条单据' % n))
@@ -761,8 +901,8 @@ def txns():
     kw = clean_kw(request.args.get('kw'))
     sort = request.args.get('sort') or ''
     dir_ = request.args.get('dir') or ''
-    sql = ("SELECT t.*, m.name, m.unit, m.code, m.category FROM txns t"
-           " JOIN materials m ON m.id=t.material_id")
+    sql = ("SELECT t.*, m.name, m.unit, m.code, m.category, %s AS amount FROM txns t"
+           " JOIN materials m ON m.id=t.material_id" % AMT)
     w, args = [], []
     if d:
         w.append("t.tdate=?"); args.append(d)
@@ -774,15 +914,26 @@ def txns():
     if w:
         sql += " WHERE " + " AND ".join(w)
     allowed = {'tdate': 't.tdate', 'name': 'm.name', 'qty': 't.qty', 'kind': 't.kind',
-               'pieces': 'COALESCE(t.pieces,0)', 'note': 't.note'}
+               'pieces': 'COALESCE(t.pieces,0)', 'note': 't.note',
+               'price': 'COALESCE(t.price,0)', 'amount': AMT}
     if sort in allowed and dir_:
         sql += " ORDER BY %s %s, t.id DESC" % (allowed[sort], 'ASC' if dir_ == 'asc' else 'DESC')
     else:
         sql += " ORDER BY t.tdate DESC, t.id DESC"
-    sql += " LIMIT 500"
+    # 真实总数必须单独查：列表 LIMIT 500，用户只看到 500 条，
+    # 但"清空当前筛选"删的是筛选条件的全部。若把 500 当成总数，
+    # 用户以为删 500 条，实际可能删掉几万条 —— 这是灾难性误删。
+    csql = "SELECT COUNT(*) FROM txns t JOIN materials m ON m.id=t.material_id"
+    if w:
+        csql += " WHERE " + " AND ".join(w)
+    real_total = db.q(csql, *args)[0][0]
+
+    sql += " LIMIT %d" % TXN_PAGE
     rows = db.q(sql, *args)
     return render_template('txns.html', rows=rows, d=d, kind=kind or None, m='', kw=kw,
-                           total=0, count=len(rows), url_kind='txns',
+                           total=0, count=len(rows), real_total=real_total,
+                           capped=(real_total > len(rows)),
+                           url_kind='txns',
                            cur_sort=sort, cur_dir=dir_, qs={'d': d, 'kind': kind, 'kw': kw},
                            msg=request.args.get('msg', ''))
 
@@ -855,6 +1006,9 @@ def batch():
     ids = ints(request.form, 'id')
     act = request.form.get('act')
     msg = ''
+    if not take_nonce(request.form.get('_n')):
+        return redirect(url_for('materials',
+            msg='这次批量操作已经执行过了，请不要重复提交'))
     if not ids:
         msg = '未勾选任何物料'
     elif act == 'delete':
@@ -898,16 +1052,27 @@ def _rows_by_ids(ids):
 @app.route('/materials/table', methods=['POST'])
 def table_save():
     ids = ints(request.form, 'id')
+    if not take_nonce(request.form.get('_n')):
+        return redirect(url_for('materials',
+            msg='这批修改已经保存过了，请不要重复提交'))
     changed = 0
+    # 表单里的字段名带行 id 后缀（name_12、code_12），
+    # 原来判断 "if f in request.form" 找的是不带后缀的键，永远为假，
+    # 整段保存逻辑被跳过 —— 改完点保存，一格都没写进去。
     for i in ids:
         vals = {}
         for f in ('name', 'code', 'supplier', 'category', 'spec', 'width', 'unit', 'status'):
-            if f in request.form:
-                vals[f] = request.form.get(f'{f}_{i}', '').strip()
+            key = f'{f}_{i}'
+            if key in request.form:
+                vals[f] = (request.form.get(key) or '').strip()
         for f in ('opening', 'safety'):
-            if f in request.form:
-                vals[f] = num(request.form.get(f'{f}_{i}'))
-        if not vals.get('name'):
+            key = f'{f}_{i}'
+            if key in request.form:
+                vals[f] = num(request.form.get(key))
+        name = vals.get('name')
+        if name is not None and not name:
+            continue                      # 名称清空的行不处理，避免出现空白物料
+        if not vals:
             continue
         sets = ','.join(f'{k}=?' for k in vals)
         db.run(f"UPDATE materials SET {sets} WHERE id=?", *vals.values(), i)
@@ -922,6 +1087,9 @@ def imp():
     if request.method == 'POST':
         mode = request.form.get('mode', 'merge')
         if request.form.get('confirm') == '1':
+            if not take_nonce(request.form.get('_n')):
+                return redirect(url_for('materials',
+                    msg='这批物料已经导入过了，请不要重复提交'))
             p = os.path.join(TMP, os.path.basename(request.form.get('f', '')))
             if not os.path.exists(p):
                 return render_template('import.html', err='预览已过期，请重新选择文件')
@@ -1089,15 +1257,17 @@ def export_xlsx():
     else:
         rows = _txn_rows(kw, d, request.args.get('kind') or '', sort, dir_)
         ws.title = '流水'
-        ws.append(['日期', '物料名称', '料号', '类型', '进/出', '数量', '件数', '每件', '单位', '备注'])
+        ws.append(['日期', '物料名称', '料号', '类型', '进/出', '数量', '件数', '每件',
+                   '单位', '单价', '金额', '备注'])
         for r in rows:
             ws.append([r['tdate'], r['name'], r['code'], r['category'], r['kind'],
-                       r['qty'], r['pieces'], r['per_piece'], r['unit'], r['note']])
+                       r['qty'], r['pieces'], r['per_piece'], r['unit'],
+                       r['price'], (r['amount'] if r['price'] else None), r['note']])
         fn = ('出入库流水' + (d or m))
     for c in ws[1]:
         c.font = head_font; c.fill = fill; c.alignment = Alignment(horizontal='center')
     ws.freeze_panes = 'A2'
-    for i, w in enumerate([14, 14, 12, 10, 26, 18, 10, 10, 10, 10, 12, 10, 10, 20], 1):
+    for i, w in enumerate([14, 14, 12, 10, 26, 18, 10, 10, 10, 10, 12, 10, 10, 20, 20], 1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
     bio = io.BytesIO(); wb.save(bio)
     from urllib.parse import quote
@@ -1127,8 +1297,8 @@ def _stock_rows(kw, f, sort, dir_):
     return db.q(sql, *args)
 
 def _txn_rows(kw, d, kind, sort, dir_):
-    sql = ("SELECT t.*, m.name, m.unit, m.code, m.category FROM txns t"
-           " JOIN materials m ON m.id=t.material_id")
+    sql = ("SELECT t.*, m.name, m.unit, m.code, m.category, %s AS amount FROM txns t"
+           " JOIN materials m ON m.id=t.material_id" % AMT)
     w, args = [], []
     if d:
         w.append("t.tdate=?"); args.append(d)
@@ -1196,6 +1366,119 @@ def csv_safe(v):
         return "'" + t
     return t
 
+@app.route('/export/po.xlsx')
+def export_po_xlsx():
+    """采购台账导出。
+
+    三种表：orders=采购单汇总 / items=明细（含未到货量）/ recv=到货流水 / pay=付款流水
+    之前只有库存/流水/月报能导出，采购数据导不出来，
+    月底对账、发给供应商核对都得手工抄，这里补齐。
+    """
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment
+    kind = request.args.get('t', 'items')
+    st = request.args.get('st') or ''
+    sup = (request.args.get('sup') or '').strip()
+    kw = clean_kw(request.args.get('kw'))
+    m = request.args.get('m') or ''
+
+    w, a = [], []
+    if st:
+        w.append("p.status=?"); a.append(st)
+    if sup:
+        w.append("p.supplier=?"); a.append(sup)
+    if kw:
+        w.append("(p.pono LIKE ? OR p.supplier LIKE ? OR p.note LIKE ?)")
+        a += ['%%%s%%' % kw] * 3
+    if m:
+        w.append("p.odate LIKE ?"); a.append(m + '%')
+    where = (" WHERE " + " AND ".join(w)) if w else ""
+
+    wb = openpyxl.Workbook(); ws = wb.active
+    hf = Font(bold=True, color='FFFFFF')
+    fill = PatternFill('solid', start_color='1F6FEB')
+    # 公式注入防护：= + - @ 开头的文本会被 Excel 当公式执行
+    def cv(v):
+        if v is None:
+            return None
+        if isinstance(v, (int, float)):
+            return v
+        s = str(v)
+        return ("'" + s) if s[:1] in ('=', '+', '-', '@') else s
+
+    if kind == 'items':
+        ws.title = '采购明细'
+        ws.append(['采购单号', '日期', '交期', '供应商', '物料名称', '规格', '单位',
+                   '订购数', '单价', '金额', '已到货', '未到货', '状态', '备注'])
+        sql = ("SELECT p.pono,p.odate,p.ddate,p.supplier,i.name,i.spec,i.unit,"
+               " i.qty,i.price,i.note,p.status,"
+               " COALESCE(SUM(r.qty),0) rq FROM po_items i"
+               " JOIN pos p ON p.id=i.po_id"
+               " LEFT JOIN po_receipts r ON r.item_id=i.id"
+               + where + " GROUP BY i.id ORDER BY p.odate DESC, i.id")
+        for r in db.q(sql, *a):
+            q = float(r['qty'] or 0); rq = float(r['rq'] or 0)
+            ws.append([cv(r['pono']), cv(r['odate']), cv(r['ddate']), cv(r['supplier']),
+                       cv(r['name']), cv(r['spec']), cv(r['unit']),
+                       q, float(r['price'] or 0), round(q * float(r['price'] or 0), 2),
+                       rq, round(q - rq, 2), cv(r['status']), cv(r['note'])])
+        fn = '采购明细'
+    elif kind == 'recv':
+        ws.title = '到货流水'
+        ws.append(['到货日期', '采购单号', '供应商', '物料名称', '规格', '单位',
+                   '到货数', '单价', '金额', '备注'])
+        sql = ("SELECT r.rdate,p.pono,p.supplier,i.name,i.spec,i.unit,"
+               " r.qty,r.price,r.note FROM po_receipts r"
+               " JOIN po_items i ON i.id=r.item_id JOIN pos p ON p.id=i.po_id"
+               + where + " ORDER BY r.rdate DESC, r.id DESC")
+        for r in db.q(sql, *a):
+            q = float(r['qty'] or 0); pr = float(r['price'] or 0)
+            ws.append([cv(r['rdate']), cv(r['pono']), cv(r['supplier']), cv(r['name']),
+                       cv(r['spec']), cv(r['unit']), q, pr, round(q * pr, 2), cv(r['note'])])
+        fn = '到货流水'
+    elif kind == 'pay':
+        ws.title = '付款流水'
+        ws.append(['付款日期', '采购单号', '供应商', '金额', '方式', '备注'])
+        sql = ("SELECT y.pdate,p.pono,p.supplier,y.amount,y.method,y.note"
+               " FROM po_payments y JOIN pos p ON p.id=y.po_id"
+               + where + " ORDER BY y.pdate DESC, y.id DESC")
+        for r in db.q(sql, *a):
+            ws.append([cv(r['pdate']), cv(r['pono']), cv(r['supplier']),
+                       float(r['amount'] or 0), cv(r['method']), cv(r['note'])])
+        fn = '付款流水'
+    else:
+        ws.title = '采购单'
+        ws.append(['采购单号', '日期', '交期', '供应商', '状态', '税率%',
+                   '订购金额', '税额', '价税合计', '已付', '欠款', '备注'])
+        sql = ("SELECT p.*, COALESCE(SUM(i.qty*i.price),0) amt FROM pos p"
+               " LEFT JOIN po_items i ON i.po_id=p.id"
+               + where + " GROUP BY p.id ORDER BY p.odate DESC, p.id DESC")
+        for r in db.q(sql, *a):
+            tr = float(r['tax_rate'] or 0)
+            amt = round(float(r['amt'] or 0), 2)
+            _, tax, total = purchase.line_amount(1, amt, tr)
+            paid = purchase.paid_amount(r['id'])
+            _, recv_total = purchase.owed(r['id'])
+            ws.append([cv(r['pono']), cv(r['odate']), cv(r['ddate']), cv(r['supplier']),
+                       cv(r['status']), tr, amt, round(tax, 2), round(total, 2),
+                       paid, round(recv_total - paid, 2), cv(r['note'])])
+        fn = '采购单汇总'
+
+    for cc in ws[1]:
+        cc.font = hf; cc.fill = fill; cc.alignment = Alignment(horizontal='center')
+    ws.freeze_panes = 'A2'
+    for i, wd in enumerate([16, 12, 12, 14, 20, 12, 8, 10, 12, 10, 10, 10, 10, 18], 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = wd
+    bio = io.BytesIO(); wb.save(bio)
+    from urllib.parse import quote
+    if m:
+        fn += m
+    return Response(bio.getvalue(),
+                    mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    headers={'Content-Disposition':
+                             "attachment; filename=export.xlsx; filename*=UTF-8''%s.xlsx" % quote(fn)})
+
+
 @app.route('/export.csv')
 def export_csv():
     kind = request.args.get('t', 'stock')
@@ -1208,11 +1491,15 @@ def export_csv():
         fn = '库存'
     else:
         m = safe_ym(request.args.get('m'))
-        rows = db.q("SELECT t.tdate,m.name,m.code,m.unit,t.kind,t.qty,t.note FROM txns t"
-                    " JOIN materials m ON m.id=t.material_id WHERE t.tdate LIKE ? ORDER BY t.tdate,t.id", m+'%')
-        head, data = ['日期','物料名称','料号','单位','类型','数量','备注'], \
+        rows = db.q("SELECT t.tdate,m.name,m.code,m.unit,t.kind,t.qty,t.price,"
+                    " %s AS amount, t.note FROM txns t"
+                    " JOIN materials m ON m.id=t.material_id WHERE t.tdate LIKE ?"
+                    " ORDER BY t.tdate,t.id"
+                    % AMT.replace('t.', 't.'), m + '%')
+        head, data = ['日期','物料名称','料号','单位','类型','数量','单价','金额','备注'], \
             [[r['tdate'],csv_safe(r['name']),csv_safe(r['code']),csv_safe(r['unit']),
-              r['kind'],r['qty'],csv_safe(r['note'])] for r in rows]
+              r['kind'],r['qty'],r['price'],(r['amount'] if r['price'] else None),
+              csv_safe(r['note'])] for r in rows]
         fn = f'流水{m}'
     out = io.StringIO(); out.write('\ufeff')
     csv.writer(out).writerow(head); csv.writer(out).writerows(data)
@@ -1231,6 +1518,304 @@ def open_browser_later(port, delay=1.2):
         except Exception:
             pass
     threading.Thread(target=go, daemon=True).start()
+
+# ==================== 采购台账（与仓库库存分离，靠到货单联动） ====================
+@app.route('/purchase')
+def purchase_home():
+    """采购首页：看板 + 采购单列表"""
+    st = request.args.get('st') or ''
+    sup = (request.args.get('sup') or '').strip()
+    kw = clean_kw(request.args.get('kw'))
+    w, a = [], []
+    if st:
+        w.append("p.status=?"); a.append(st)
+    if sup:
+        w.append("p.supplier=?"); a.append(sup)
+    if kw:
+        w.append("(p.pono LIKE ? OR p.supplier LIKE ? OR p.note LIKE ?)")
+        a += ['%%%s%%' % kw] * 3
+    sql = ("SELECT p.*, COALESCE(SUM(i.qty),0) tq, COALESCE(SUM(i.qty*i.price),0) amt,"
+           " COALESCE(SUM(i.recv_qty),0) rq FROM pos p LEFT JOIN po_items i ON i.po_id=p.id")
+    if w:
+        sql += " WHERE " + " AND ".join(w)
+    sql += " GROUP BY p.id ORDER BY p.odate DESC, p.id DESC LIMIT 300"
+    rows = []
+    for r in db.q(sql, *a):
+        d = dict(r)
+        d['tax_rate'] = float(d['tax_rate'] or 0)
+        _, tax, total = purchase.line_amount(1, d['amt'], d['tax_rate'])
+        d['amount'] = round(float(d['amt'] or 0), 2)
+        d['tax'] = tax
+        d['total'] = round(float(d['amt'] or 0) + tax, 2)
+        d['paid'] = purchase.paid_amount(d['id'])
+        d['open_qty'] = round(float(d['tq'] or 0) - float(d['rq'] or 0), 2)
+        today_s = today()
+        d['late'] = bool(d['ddate'] and d['ddate'] < today_s
+                         and d['status'] in ('已下单', '部分到货'))
+        rows.append(d)
+    sups = [r['name'] for r in db.q(
+        "SELECT DISTINCT supplier name FROM pos ORDER BY supplier")]
+    return render_template('purchase.html', rows=rows, st=st, sup=sup, kw=kw,
+                           sups=sups, dash=purchase.dashboard(),
+                           STATUS=purchase.STATUS)
+
+
+@app.route('/po/new', methods=['GET', 'POST'])
+def po_new():
+    """新建采购单（含明细）"""
+    if request.method == 'POST':
+        # 一次性令牌：挡住连点造成的重复建单
+        if not take_nonce(request.form.get('_n')):
+            return redirect(url_for('purchase_home',
+                msg='这个单子已经建过了，请不要重复提交'))
+        supplier = (request.form.get('supplier') or '').strip()
+        odate = safe_date(request.form.get('odate'))
+        if not supplier:
+            return render_template('po_new.html', err='供应商必填',
+                                   mats=_mat_choices(), today=today(),
+                                   sups=_sup_names(), units=db.unit_choices())
+        ddate = (request.form.get('ddate') or '').strip()
+        if ddate and not is_date(ddate):
+            ddate = ''
+        tax = num(request.form.get('tax_rate'), default=0, lo=0, hi=100)
+        note = (request.form.get('note') or '').strip()
+        names = request.form.getlist('item_name')
+        qtys = request.form.getlist('item_qty')
+        prices = request.form.getlist('item_price')
+        units = request.form.getlist('item_unit')
+        specs = request.form.getlist('item_spec')
+        mids = request.form.getlist('item_mid')
+        convs = request.form.getlist('item_conv')
+        sunits = request.form.getlist('item_stock_unit')
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        try:
+            with db.tx() as c:
+                pono = purchase.next_pono(odate)
+                po_id = c.execute("INSERT INTO pos(pono,supplier,odate,ddate,status,"
+                                  "tax_rate,note,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                                  (pono, supplier, odate, ddate,
+                                   request.form.get('status') or '已下单',
+                                   tax, note, now)).lastrowid
+                n = 0
+                for i in range(len(names)):
+                    nm = (names[i] or '').strip()
+                    q = num(qtys[i] if i < len(qtys) else 0)
+                    p = num(prices[i] if i < len(prices) else 0)
+                    if not nm or q <= 0:
+                        continue
+                    mid = None
+                    if i < len(mids) and str(mids[i]).strip().isdigit():
+                        mid = int(mids[i])
+                    cv = num(convs[i] if i < len(convs) else 1, default=1)
+                    if cv <= 0:
+                        cv = 1.0
+                    c.execute("INSERT INTO po_items(po_id,material_id,name,spec,unit,conv,"
+                              "stock_unit,qty,price) VALUES(?,?,?,?,?,?,?,?,?)",
+                              (po_id, mid, nm,
+                               (specs[i] if i < len(specs) else '').strip(),
+                               (units[i] if i < len(units) else '').strip() or '个',
+                               cv,
+                               (sunits[i] if i < len(sunits) else '').strip(),
+                               q, p))
+                    n += 1
+        except Exception:
+            _log_err('采购单保存失败')
+            return render_template('po_new.html', err='保存失败，请重试（详情见 warehouse.log）',
+                                   mats=_mat_choices(), today=today(), sups=_sup_names())
+        if n == 0:
+            db.run("DELETE FROM pos WHERE id=?", (po_id,))
+            return render_template('po_new.html', err='至少要填一行物料（名称和数量）',
+                                   mats=_mat_choices(), today=today(), sups=_sup_names())
+        purchase.touch_supplier(supplier)
+        return redirect(url_for('po_detail', po_id=po_id,
+                                msg='采购单 %s 已创建，%d 条明细' % (pono, n)))
+    return render_template('po_new.html', mats=_mat_choices(), today=today(),
+                           sups=_sup_names(), units=db.unit_choices())
+
+
+def _mat_choices():
+    return [dict(id=m['id'], name=m['name'], spec=m['spec'] or '',
+                 unit=m['unit'] or '', code=m['code'] or '')
+            for m in db.q("SELECT id,name,spec,unit,code FROM materials"
+                          " WHERE active=1 ORDER BY name")]
+
+
+def _sup_names():
+    return [r['name'] for r in db.q("SELECT name FROM suppliers WHERE active=1 ORDER BY name")]
+
+
+@app.route('/po/<int:po_id>')
+def po_detail(po_id):
+    po = db.q("SELECT * FROM pos WHERE id=?", po_id)
+    if not po:
+        return render_template('error.html', code=404, title='找不到采购单',
+                               detail='它可能已被删除。'), 404
+    po = po[0]
+    items = []
+    for it in db.q("SELECT * FROM po_items WHERE po_id=? ORDER BY id", po_id):
+        d = dict(it)
+        a, t, tt = purchase.line_amount(d['qty'], d['price'], po['tax_rate'])
+        d['amount'], d['tax'], d['total'] = a, t, tt
+        d['remain'] = round(float(d['qty']) - float(d['recv_qty']), 2)
+        d['recv_amount'] = float(db.q(
+            "SELECT COALESCE(SUM(qty*price),0) s FROM po_receipts WHERE item_id=?",
+            d['id'])[0]['s'] or 0)
+        d['done'] = d['remain'] <= 1e-9
+        items.append(d)
+    recs = db.q("SELECT r.*, i.name, i.unit FROM po_receipts r JOIN po_items i"
+                " ON i.id=r.item_id WHERE i.po_id=? ORDER BY r.rdate DESC, r.id DESC", po_id)
+    pays = db.q("SELECT * FROM po_payments WHERE po_id=? ORDER BY pdate DESC, id DESC", po_id)
+    t = purchase.po_totals(po_id)
+    owed_amt, recv_total = purchase.owed(po_id)
+    return render_template('po.html', po=po, items=items, recs=recs, pays=pays,
+                           t=t, paid=purchase.paid_amount(po_id),
+                           owed=owed_amt, recv_total=recv_total,
+                           STATUS=purchase.STATUS, today=today(), mats=_mat_choices(),
+                           units=db.unit_choices(),
+                           msg=request.args.get('msg', ''), err=request.args.get('err', ''))
+
+
+@app.route('/po/<int:po_id>/status', methods=['POST'])
+def po_status(po_id):
+    st = (request.form.get('status') or '').strip()
+    if st in purchase.STATUS:
+        db.run("UPDATE pos SET status=? WHERE id=?", st, po_id)
+    return redirect(url_for('po_detail', po_id=po_id, msg='状态已改为「%s」' % st))
+
+
+@app.route('/po/<int:po_id>/item/add', methods=['POST'])
+def po_item_add(po_id):
+    nm = (request.form.get('name') or '').strip()
+    q = num(request.form.get('qty'))
+    p = num(request.form.get('price'))
+    if not nm or q <= 0:
+        return redirect(url_for('po_detail', po_id=po_id, err='物料名称和数量都要填'))
+    mid = request.form.get('material_id')
+    mid = int(mid) if str(mid or '').isdigit() else None
+    cv = num(request.form.get('conv'), default=1)
+    if cv <= 0:
+        cv = 1.0
+    db.run("INSERT INTO po_items(po_id,material_id,name,spec,unit,conv,stock_unit,"
+           "qty,price,note) VALUES(?,?,?,?,?,?,?,?,?,?)", po_id, mid, nm,
+           (request.form.get('spec') or '').strip(),
+           (request.form.get('unit') or '').strip() or '个', cv,
+           (request.form.get('stock_unit') or '').strip(), q, p,
+           (request.form.get('note') or '').strip())
+    purchase.refresh_status(po_id)
+    return redirect(url_for('po_detail', po_id=po_id, msg='已加入 %s' % nm))
+
+
+@app.route('/po/item/unit', methods=['POST'])
+def po_item_unit():
+    """随时改采购单位 / 换算率 / 库存单位 / 单价。
+    改单位只影响之后的到货，已入库存量不动（历史记的是当时实际入库数）。"""
+    iid = request.form.get('item_id')
+    if not str(iid or '').isdigit():
+        return redirect(url_for('purchase_home'))
+    it = db.q("SELECT po_id FROM po_items WHERE id=?", int(iid))
+    if not it:
+        return redirect(url_for('purchase_home'))
+    pid = it[0]['po_id']
+    ok, msg = purchase.set_item_unit(
+        int(iid),
+        unit=request.form.get('unit'),
+        conv=request.form.get('conv'),
+        stock_unit=request.form.get('stock_unit'),
+        price=request.form.get('price'))
+    return redirect(url_for('po_detail', po_id=pid,
+                            msg=msg if ok else '', err='' if ok else msg))
+
+
+@app.route('/po/item/del/<int:iid>')
+def po_item_del(iid):
+    it = db.q("SELECT po_id FROM po_items WHERE id=?", iid)
+    if it:
+        pid = it[0]['po_id']
+        ok, msg = purchase.delete_item(iid)
+        return redirect(url_for('po_detail', po_id=pid,
+                                msg=msg if ok else '', err='' if ok else msg))
+    return redirect(url_for('purchase_home'))
+
+
+@app.route('/po/<int:po_id>/receive', methods=['POST'])
+def po_receive(po_id):
+    iid = request.form.get('item_id')
+    if not str(iid or '').isdigit():
+        return redirect(url_for('po_detail', po_id=po_id, err='请选择要收货的物料'))
+    rdate = safe_date(request.form.get('rdate'))
+    q = request.form.get('qty')
+    p = request.form.get('price')
+    ok, msg = purchase.receive(int(iid), rdate, q, p,
+                               (request.form.get('note') or '').strip())
+    return redirect(url_for('po_detail', po_id=po_id,
+                            msg=msg if ok else '', err='' if ok else msg))
+
+
+@app.route('/po/receive/del/<int:rid>')
+def po_receive_del(rid):
+    r = db.q("SELECT i.po_id FROM po_receipts r JOIN po_items i ON i.id=r.item_id"
+             " WHERE r.id=?", rid)
+    if r:
+        pid = r[0]['po_id']
+        ok, msg = purchase.unreceive(rid)
+        return redirect(url_for('po_detail', po_id=pid,
+                                msg=msg if ok else '', err='' if ok else msg))
+    return redirect(url_for('purchase_home'))
+
+
+@app.route('/po/<int:po_id>/pay', methods=['POST'])
+def po_pay(po_id):
+    amt = num(request.form.get('amount'))
+    if amt <= 0:
+        return redirect(url_for('po_detail', po_id=po_id, err='付款金额要大于 0'))
+    db.run("INSERT INTO po_payments(po_id,pdate,amount,method,note,created_at)"
+           " VALUES(?,?,?,?,?,?)", po_id, safe_date(request.form.get('pdate')),
+           amt, (request.form.get('method') or '转账').strip(),
+           (request.form.get('note') or '').strip(),
+           datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    return redirect(url_for('po_detail', po_id=po_id, msg='已登记付款 %.2f' % amt))
+
+
+@app.route('/po/pay/del/<int:pid>')
+def po_pay_del(pid):
+    r = db.q("SELECT po_id FROM po_payments WHERE id=?", pid)
+    if r:
+        p = r[0]['po_id']
+        db.run("DELETE FROM po_payments WHERE id=?", pid)
+        return redirect(url_for('po_detail', po_id=p, msg='付款记录已删除'))
+    return redirect(url_for('purchase_home'))
+
+
+@app.route('/po/del/<int:po_id>')
+def po_del(po_id):
+    # ON DELETE CASCADE 会带走明细；但要先把到货生成的入库单撤掉，
+    # 否则采购单没了、库存却还留着那批货。
+    recs = db.q("SELECT r.id FROM po_receipts r JOIN po_items i ON i.id=r.item_id"
+                " WHERE i.po_id=?", po_id)
+    for r in recs:
+        purchase.unreceive(r['id'])
+    db.run("DELETE FROM pos WHERE id=?", po_id)
+    return redirect(url_for('purchase_home', msg='采购单已删除，相关入库单已同步撤销'))
+
+
+@app.route('/suppliers')
+def suppliers():
+    return render_template('suppliers.html', rows=purchase.supplier_list(),
+                           msg=request.args.get('msg', ''))
+
+
+@app.route('/suppliers/add', methods=['POST'])
+def supplier_add():
+    nm = (request.form.get('name') or '').strip()
+    if not nm:
+        return redirect(url_for('suppliers', msg='供应商名称必填'))
+    purchase.touch_supplier(nm)
+    db.run("UPDATE suppliers SET contact=?, phone=?, note=? WHERE name=?",
+           (request.form.get('contact') or '').strip(),
+           (request.form.get('phone') or '').strip(),
+           (request.form.get('note') or '').strip(), nm)
+    return redirect(url_for('suppliers', msg='已保存 %s' % nm))
+
 
 def main():
     import desktop

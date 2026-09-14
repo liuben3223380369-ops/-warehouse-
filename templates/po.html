@@ -1,0 +1,242 @@
+{% extends 'base.html' %}
+{% block title %}{{po.pono}} - 采购单
+{% endblock %}
+{% block h1 %}{{po.pono}}{% endblock %}
+{% block sub %}{{po.supplier}} · 下单 {{po.odate}}{% if po.ddate %} · 交期 {{po.ddate}}{% endif %}{% endblock %}
+{% block body %}
+
+{% if err %}<div class="card" style="background:#fdeced;border-left:3px solid #e5484d">{{err}}</div>{% endif %}
+{% if msg %}<div class="card" style="background:#e8f6ee;border-left:3px solid #12a150">{{msg}}</div>{% endif %}
+
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+    <form method="post" action="{{url_for('po_status',po_id=po.id)}}" style="flex:1;margin:0">
+<input type="hidden" name="_n" value="{{new_nonce()}}">
+      <div class="rowflex">
+        <select name="status">{% for s in STATUS %}
+          <option {{'selected' if po.status==s}}>{{s}}</option>{% endfor %}</select>
+        <button type="submit" style="width:auto;padding:11px 16px;margin-top:0">改状态</button>
+      </div>
+    </form>
+  </div>
+  {% if po.note %}<div style="margin-top:8px;color:#5b6675;font-size:var(--fs-table)">{{po.note}}</div>{% endif %}
+</div>
+
+<div class="grid2">
+  <div class="stat"><span>订购金额</span><b>{{'%.2f'|format(t.amount)}}</b></div>
+  <div class="stat"><span>价税合计</span><b>{{'%.2f'|format(t.total)}}</b></div>
+  <div class="stat"><span>已到货</span><b class="in">{{'%.2f'|format(t.recv_amount)}}</b></div>
+  <div class="stat"><span>未交数量</span>
+    <b class="{{'out' if t.open_qty>0 else 'in'}}">{{'%g'|format(t.open_qty)}}</b></div>
+</div>
+
+<div class="card" style="padding:10px 12px">
+  <div style="font-size:12px;color:#5b6675;margin-bottom:8px">⬇ 导出这张单</div>
+  <div class="rowflex" style="margin:0">
+    <a class="btn s" style="margin-top:0"
+       href="{{url_for('export_po_xlsx', t='items', kw=po.pono)}}">采购明细</a>
+    <a class="btn s" style="margin-top:0"
+       href="{{url_for('export_po_xlsx', t='recv', kw=po.pono)}}">到货流水</a>
+  </div>
+  <div class="rowflex" style="margin:8px 0 0">
+    <a class="btn s" style="margin-top:0"
+       href="{{url_for('export_po_xlsx', t='pay', kw=po.pono)}}">付款流水</a>
+  </div>
+</div>
+
+<div class="card">
+  <div class="kv"><span>已付款</span><b class="in">{{'%.2f'|format(paid)}}</b></div>
+  <div class="kv"><span>到货价税合计</span><span>{{'%.2f'|format(recv_total)}}</span></div>
+  <div class="kv"><span>欠款（按到货计）</span>
+    <b class="{{'out' if owed>0 else 'in'}}">{{'%.2f'|format(owed)}}</b></div>
+  <div style="font-size:12px;color:#7a869a;margin-top:6px">
+    只按实际到货计欠款 —— 还没到的货不该先付钱。
+  </div>
+</div>
+
+{# ---------- 明细 ---------- #}
+<div class="card">
+  <h2>采购明细 <span class="pill">{{items|length}} 行</span></h2>
+  {% if items %}
+  <div class="scroll"><table>
+  <tr><th>物料</th><th class="n">订购</th><th class="n">已到</th><th class="n">未交</th>
+      <th class="n">单价</th><th class="n">金额</th><th>单位</th></tr>
+  {% for it in items %}
+  <tr>
+    <td>{{it.name}}{% if it.spec %}<br><span class="pill">{{it.spec}}</span>{% endif %}</td>
+    <td class="n">{{'%g'|format(it.qty)}}{{it.unit}}</td>
+    <td class="n in">{{'%g'|format(it.recv_qty)}}</td>
+    <td class="n {{'out' if it.remain>0 else 'in'}}">{{'%g'|format(it.remain)}}</td>
+    <td class="n">{{'%.2f'|format(it.price)}}</td>
+    <td class="n"><b>{{'%.2f'|format(it.amount)}}</b></td>
+    <td><span class="pill">{{it.unit}}</span>
+      {% if it.stock_unit and it.conv != 1 %}
+        <div style="font-size:11px;color:#7a869a;white-space:nowrap">
+          1{{it.unit}}={{'%g'|format(it.conv)}}{{it.stock_unit}}</div>
+      {% endif %}
+      <a href="#u{{it.id}}" style="font-size:11px">改</a></td>
+  </tr>{% endfor %}</table></div>
+  {% else %}<div class="empty">还没有明细</div>{% endif %}
+
+  {% if items %}
+  <div style="margin-top:12px;padding-top:10px;border-top:1px solid #eef2f7">
+    <h2 style="margin-top:0">改单位 / 换算</h2>
+    <div style="font-size:12px;color:#7a869a;margin-bottom:8px">
+      单位随时可改（也可直接手输新单位）。换算率只影响<b>之后</b>的到货，
+      已经入过库的存量不会变 —— 历史记的是当时实际入库数。
+    </div>
+    <form method="post" action="{{url_for('po_item_unit')}}">
+<input type="hidden" name="_n" value="{{new_nonce()}}">
+      <label>选一条明细</label>
+      <select name="item_id" onchange="fillUnit(this)">
+        {% for it in items %}<option value="{{it.id}}" data-u="{{it.unit}}"
+          data-c="{{'%g'|format(it.conv)}}" data-s="{{it.stock_unit or ''}}"
+          data-p="{{'%.2f'|format(it.price)}}">{{it.name}} · 现单位 {{it.unit}}</option>{% endfor %}
+      </select>
+      <datalist id="ulist">{% for u in units %}<option value="{{u}}">{% endfor %}</datalist>
+      <div class="rowflex">
+        <div><label>采购单位</label>
+          <input name="unit" id="f_unit" list="ulist" autocomplete="off"></div>
+        <div><label>1 采购单位 =</label>
+          <input name="conv" id="f_conv" inputmode="decimal" oninput="hintU()"></div>
+      </div>
+      <div class="rowflex">
+        <div><label>库存单位</label>
+          <input name="stock_unit" id="f_su" list="ulist" autocomplete="off"
+            placeholder="留空=与采购单位相同" oninput="hintU()"></div>
+        <div><label>单价（可改）</label>
+          <input name="price" id="f_price" inputmode="decimal"></div>
+      </div>
+      <div class="uhint" style="font-size:12px;color:#7a869a"></div>
+      <button type="submit" class="btn s g">保存单位设置</button>
+    </form>
+  </div>
+  {% endif %}
+
+  <h2 style="margin-top:14px">加一行明细</h2>
+  <form method="post" action="{{url_for('po_item_add',po_id=po.id)}}">
+<input type="hidden" name="_n" value="{{new_nonce()}}">
+    <label>物料名称 *</label>
+    <input name="name" list="pml" autocomplete="off" placeholder="输入即联想已有物料">
+    <datalist id="pml">{% for m in mats %}<option value="{{m.name}}">{% endfor %}</datalist>
+    <div class="rowflex">
+      <div><label>数量 *</label><input name="qty" inputmode="decimal" placeholder="0"></div>
+      <div><label>单价</label><input name="price" inputmode="decimal" placeholder="0.00"></div>
+    </div>
+    <div class="rowflex">
+      <div><label>规格</label><input name="spec"></div>
+      <div><label>单位（可手输）</label>
+        <input name="unit" list="ulist" placeholder="个"></div>
+    </div>
+    <div class="rowflex">
+      <div><label>1 采购单位 =</label><input name="conv" value="1" inputmode="decimal"></div>
+      <div><label>库存单位</label><input name="stock_unit" list="ulist"
+        placeholder="不同才填"></div>
+    </div>
+    <button type="submit" class="btn s g">加入明细</button>
+  </form>
+</div>
+
+{# ---------- 到货入库 ---------- #}
+<div class="card">
+  <h2>到货登记 <span class="pill">{{recs|length}} 次</span></h2>
+  <div style="font-size:12px;color:#7a869a;margin-bottom:8px">
+    登记到货会<b>自动生成入库单</b>，库存同步增加；取消到货会一并撤销入库单。
+  </div>
+
+  {% set pend = items|selectattr('remain','>',0)|list %}
+  {% if pend %}
+  <form method="post" action="{{url_for('po_receive',po_id=po.id)}}">
+<input type="hidden" name="_n" value="{{new_nonce()}}">
+    <label>收货的物料</label>
+    <select name="item_id">
+      {% for it in pend %}<option value="{{it.id}}">{{it.name}} · 未交
+        {{'%g'|format(it.remain)}}{{it.unit}}</option>{% endfor %}
+    </select>
+    <div class="rowflex">
+      <div><label>到货日期</label><input type="date" name="rdate" value="{{today}}"></div>
+      <div><label>数量 *</label><input name="qty" inputmode="decimal" placeholder="0"></div>
+    </div>
+    <div class="rowflex">
+      <div><label>实际单价</label><input name="price" inputmode="decimal"
+        placeholder="留空用订购价"></div>
+      <div><label>备注</label><input name="note" placeholder="单号/车牌"></div>
+    </div>
+    <button type="submit" class="btn s g">登记到货并入库</button>
+    <div style="font-size:12px;color:#7a869a;margin-top:6px">
+      填的是<b>采购单位</b>的数量；系统按换算率折成库存单位入库，单价同步折算。
+    </div>
+  </form>
+  {% else %}<div class="empty">全部明细都已交齐</div>{% endif %}
+
+  {% if recs %}
+  <div class="scroll" style="margin-top:12px"><table>
+  <tr><th>日期</th><th>物料</th><th class="n">数量</th><th class="n">实价</th>
+      <th class="n">金额</th><th></th></tr>
+  {% for r in recs %}
+  <tr>
+    <td>{{r.rdate}}</td><td>{{r.name}}</td>
+    <td class="n in">{{'%g'|format(r.qty)}}</td>
+    <td class="n">{{'%.2f'|format(r.price)}}</td>
+    <td class="n">{{'%.2f'|format(r.qty * r.price)}}</td>
+    <td><a href="{{url_for('po_receive_del',rid=r.id)}}" class="pill o"
+      onclick="return confirm('取消这次到货？对应的入库单会一并删除，库存扣回。')">撤销</a></td>
+  </tr>{% endfor %}</table></div>
+  {% endif %}
+</div>
+
+{# ---------- 付款 ---------- #}
+<div class="card">
+  <h2>付款记录 <span class="pill">{{pays|length}} 笔</span></h2>
+  <form method="post" action="{{url_for('po_pay',po_id=po.id)}}">
+<input type="hidden" name="_n" value="{{new_nonce()}}">
+    <div class="rowflex">
+      <div><label>日期</label><input type="date" name="pdate" value="{{today}}"></div>
+      <div><label>金额 *</label><input name="amount" inputmode="decimal" placeholder="0.00"></div>
+    </div>
+    <div class="rowflex">
+      <div><label>方式</label><select name="method">
+        <option>转账</option><option>现金</option><option>承兑</option><option>微信/支付宝</option></select></div>
+      <div><label>备注</label><input name="note" placeholder="预付款/尾款"></div>
+    </div>
+    <button type="submit" class="btn s g">登记付款</button>
+  </form>
+
+  {% if pays %}
+  <div class="scroll" style="margin-top:12px"><table>
+  <tr><th>日期</th><th class="n">金额</th><th>方式</th><th>备注</th><th></th></tr>
+  {% for p in pays %}
+  <tr><td>{{p.pdate}}</td><td class="n in"><b>{{'%.2f'|format(p.amount)}}</b></td>
+    <td><span class="pill">{{p.method}}</span></td><td>{{p.note}}</td>
+    <td><a href="{{url_for('po_pay_del',pid=p.id)}}" class="pill o"
+      onclick="return confirm('删除这笔付款记录？')">删</a></td></tr>
+  {% endfor %}</table></div>
+  {% endif %}
+</div>
+
+<div class="rowflex">
+  <a class="btn s o" href="{{url_for('purchase_home')}}" style="margin-top:0">返回采购台</a>
+  <a class="btn s o" href="{{url_for('po_del',po_id=po.id)}}" style="margin-top:0"
+    onclick="return confirm('删除整张采购单？已到货的入库单会一并撤销，库存扣回。')">删除本单</a>
+</div>
+
+<script>
+function fillUnit(sel){
+  var o=sel.options[sel.selectedIndex]; if(!o) return;
+  document.getElementById('f_unit').value=o.dataset.u||'';
+  document.getElementById('f_conv').value=o.dataset.c||'1';
+  document.getElementById('f_su').value=o.dataset.s||'';
+  document.getElementById('f_price').value=o.dataset.p||'';
+  hintU();
+}
+function hintU(){
+  var u=document.getElementById('f_unit').value.trim();
+  var c=parseFloat(document.getElementById('f_conv').value);
+  var s=document.getElementById('f_su').value.trim();
+  var h=document.querySelector('.uhint'); if(!h) return;
+  if(!s||!c||Math.abs(c-1)<1e-9){ h.textContent=''; return; }
+  h.innerHTML='入库按 <b>'+s+'</b> 计：1 '+u+' = '+c+' '+s;
+}
+(function(){ var s=document.querySelector('[name=item_id]'); if(s) fillUnit(s); })();
+</script>
+{% endblock %}

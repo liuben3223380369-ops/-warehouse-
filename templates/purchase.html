@@ -1,0 +1,88 @@
+{% extends 'base.html' %}
+{% block title %}采购台账 - 仓库管理系统{% endblock %}
+{% block h1 %}采购台账{% endblock %}
+{% block sub %}采购订单 · 到货入库 · 付款对账{% endblock %}
+{% block body %}
+
+<div class="grid2">
+  <div class="stat"><span>本月采购额</span><b>{{'%.2f'|format(dash.month_amount)}}</b></div>
+  <div class="stat"><span>本月已付款</span><b class="in">{{'%.2f'|format(dash.paid_month)}}</b></div>
+  <div class="stat"><span>进行中订单</span><b>{{dash.open_orders}}</b></div>
+  <div class="stat"><span>逾期未交</span>
+    <b class="{{'out' if dash.overdue else ''}}">{{dash.overdue}}</b></div>
+</div>
+
+<div class="card">
+  <form method="get" style="margin:0">
+    <div class="rowflex">
+      <select name="st">
+        <option value="">全部状态</option>
+        {% for s in STATUS %}<option {{'selected' if st==s}}>{{s}}</option>{% endfor %}
+      </select>
+      <select name="sup">
+        <option value="">全部供应商</option>
+        {% for s in sups %}<option {{'selected' if sup==s}}>{{s}}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="rowflex" style="margin-top:8px">
+      <input name="kw" value="{{kw}}" placeholder="搜单号 / 供应商 / 备注">
+      <button type="submit" style="width:auto;padding:11px 18px;margin-top:0">筛选</button>
+    </div>
+  </form>
+</div>
+
+<div class="rowflex">
+  <a class="btn g" href="{{url_for('po_new')}}">＋ 新建采购单</a>
+  <a class="btn s o" href="{{url_for('suppliers')}}" style="margin-top:0">供应商</a>
+</div>
+
+<div class="card" style="padding:10px 12px">
+  <div style="font-size:12px;color:#5b6675;margin-bottom:8px">
+    ⬇ 导出 Excel（按上面的筛选结果导出）</div>
+  <div class="rowflex" style="margin:0">
+    <a class="btn s" style="margin-top:0" href="{{url_for('export_po_xlsx', t='orders', st=st, sup=sup, kw=kw)}}">采购单汇总</a>
+    <a class="btn s" style="margin-top:0" href="{{url_for('export_po_xlsx', t='items', st=st, sup=sup, kw=kw)}}">采购明细</a>
+  </div>
+  <div class="rowflex" style="margin:8px 0 0">
+    <a class="btn s" style="margin-top:0" href="{{url_for('export_po_xlsx', t='recv', st=st, sup=sup, kw=kw)}}">到货流水</a>
+    <a class="btn s" style="margin-top:0" href="{{url_for('export_po_xlsx', t='pay', st=st, sup=sup, kw=kw)}}">付款流水</a>
+  </div>
+</div>
+
+{% if rows %}
+{% for r in rows %}
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+    <div style="min-width:0">
+      <a href="{{url_for('po_detail',po_id=r.id)}}" style="font-weight:600;color:#1f6feb;
+        text-decoration:none;font-size:var(--fs-h2)">{{r.pono}}</a>
+      <div style="color:#5b6675;font-size:var(--fs-label);margin-top:2px">{{r.supplier}}</div>
+    </div>
+    <span class="pill {{'i' if r.status=='已完成' else ('o' if r.status=='已取消' else '')}}"
+      style="flex:none">{{r.status}}</span>
+  </div>
+
+  <div class="kv"><span>下单 / 交期</span>
+    <span>{{r.odate}}{% if r.ddate %} → {{r.ddate}}
+      {% if r.late %}<b class="out">逾期</b>{% endif %}{% endif %}</span></div>
+  <div class="kv"><span>订购数量</span><span>{{'%g'|format(r.tq)}} / 未交
+    <b class="{{'out' if r.open_qty>0 else 'in'}}">{{'%g'|format(r.open_qty)}}</b></span></div>
+  <div class="kv"><span>金额（不含税）</span><span>{{'%.2f'|format(r.amount)}}</span></div>
+  <div class="kv"><span>税率 / 税额</span><span>{{'%g'|format(r.tax_rate)}}% →
+    {{'%.2f'|format(r.tax)}}</span></div>
+  <div class="kv"><span>价税合计</span><b>{{'%.2f'|format(r.total)}}</b></div>
+  <div class="kv"><span>已付 / 欠款</span><span>{{'%.2f'|format(r.paid)}} /
+    <b class="{{'out' if (r.total - r.paid) > 0 else 'in'}}">{{'%.2f'|format(r.total - r.paid)}}</b></span></div>
+
+  <div class="rowflex" style="margin-top:8px">
+    <a class="btn s" href="{{url_for('po_detail',po_id=r.id)}}" style="margin-top:0">详情 / 收货</a>
+  </div>
+</div>
+{% endfor %}
+{% else %}
+<div class="card"><div class="empty">
+  还没有采购单。点上面「＋ 新建采购单」开第一张。
+</div></div>
+{% endif %}
+
+{% endblock %}

@@ -1,0 +1,39 @@
+{% extends 'base.html' %}
+{% block title %}供应商 - 仓库管理系统{% endblock %}
+{% block h1 %}供应商{% endblock %}
+{% block sub %}采购额与欠款按供应商汇总{% endblock %}
+{% block body %}
+
+{% if msg %}<div class="card" style="background:#e8f6ee;border-left:3px solid #12a150">{{msg}}</div>{% endif %}
+
+<div class="card">
+  <h2>新增供应商</h2>
+  <form method="post" action="{{url_for('supplier_add')}}">
+    <label>名称 *</label><input name="name" placeholder="如：松杨电子" required>
+    <div class="rowflex">
+      <div><label>联系人</label><input name="contact"></div>
+      <div><label>电话</label><input name="phone"></div>
+    </div>
+    <label>备注</label><input name="note">
+    <button type="submit" class="btn s g">保存</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>供应商台账 <span class="pill">{{rows|length}} 家</span></h2>
+  {% if rows %}
+  <div class="scroll"><table>
+  <tr><th>供应商</th><th class="n">订单</th><th class="n">采购额</th>
+      <th class="n">已付</th><th class="n">欠款</th></tr>
+  {% for r in rows %}
+  <tr>
+    <td>{{r.name}}{% if r.contact %}<br><span class="pill">{{r.contact}}</span>{% endif %}</td>
+    <td class="n">{{r.orders}}</td>
+    <td class="n">{{'%.2f'|format(r.amount)}}</td>
+    <td class="n in">{{'%.2f'|format(r.paid)}}</td>
+    <td class="n {{'out' if r.owed>0 else 'in'}}"><b>{{'%.2f'|format(r.owed)}}</b></td>
+  </tr>{% endfor %}</table></div>
+  {% else %}<div class="empty">还没有供应商，建采购单时会自动添加</div>{% endif %}
+</div>
+<a class="btn s o" href="{{url_for('purchase_home')}}">返回采购台</a>
+{% endblock %}

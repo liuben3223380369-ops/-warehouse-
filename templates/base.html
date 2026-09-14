@@ -125,8 +125,8 @@ title="切换字号 小/标准/大">A</button></div></header>
 <a href="{{url_for('index')}}" class="{{'on' if ep=='index'}}"><i>📊</i>首页</a>
 <a href="{{url_for('in')}}" class="{{'on' if ep in ('in','in_list')}}"><i>📥</i>入库</a>
 <a href="{{url_for('out')}}" class="{{'on' if ep in ('out','out_list')}}"><i>📤</i>出库</a>
+<a href="{{url_for('purchase_home')}}" class="{{'on' if ep in ('purchase_home','po_new','po_detail','suppliers')}}"><i>🛒</i>采购</a>
 <a href="{{url_for('txns')}}" class="{{'on' if ep=='txns'}}"><i>📝</i>流水</a>
-<a href="{{url_for('report')}}" class="{{'on' if ep=='report'}}"><i>📅</i>月报</a>
 <a href="{{url_for('materials')}}" class="{{'on' if ep.startswith('material')}}"><i>🗂</i>物料</a>
 </nav>
 <script>
@@ -155,6 +155,37 @@ title="切换字号 小/标准/大">A</button></div></header>
       try{ localStorage.setItem(key, nv||''); }catch(e){}
     };
   }
+})();
+</script>
+<script>
+/* 防连点：提交后立刻禁用按钮并改文案。
+   网络慢时用户会连点好几下，后端虽然有一次令牌兜底，
+   但前端先挡住体验更好——不会跳到"重复提交"提示页。 */
+(function(){
+  var busy = false;
+  document.addEventListener('submit', function(e){
+    var f = e.target;
+    if (!f || f.tagName !== 'FORM') return;
+    if (f.dataset.noguard === '1') return;
+    var btn = f.querySelector('button[type=submit], button:not([type]), input[type=submit]');
+    if (!btn) return;
+    if (busy) { e.preventDefault(); return; }
+    busy = true;
+    var old = btn.value || btn.textContent;
+    try {
+      btn.disabled = true;
+      if (btn.tagName === 'INPUT') btn.value = '处理中...';
+      else btn.textContent = '处理中...';
+    } catch (err) {}
+    // 保险：15 秒后无论如何恢复，避免卡在禁用状态
+    setTimeout(function(){
+      busy = false;
+      try {
+        btn.disabled = false;
+        if (btn.tagName === 'INPUT') btn.value = old; else btn.textContent = old;
+      } catch (err) {}
+    }, 15000);
+  }, true);
 })();
 </script>
 </body></html>

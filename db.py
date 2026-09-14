@@ -4,6 +4,41 @@ from datetime import datetime
 def _is_frozen():
     return getattr(sys, 'frozen', False)
 
+# 常用单位字典：采购、仓库、物料三处共用同一份，避免"采购写卷、仓库写平米"对不上。
+# 是"建议"不是"约束"——任何单位框都能直接手输新单位，输过一次就自动进候选。
+UNITS = ['卷', '平米', '米', '张', '个', '支', '条', '片', '套', '只', '块', '根',
+         'kg', 'g', '吨', '箱', '包', '桶', '袋', '台', '件', '双', '把', '罐']
+
+
+def unit_choices(extra=None):
+    """返回候选单位：常用字典 + 系统里实际用过的（物料档案/历史采购），去重保序。"""
+    out = []
+    seen = set()
+
+    def add(u):
+        u = (u or '').strip()
+        if u and u not in seen:
+            seen.add(u)
+            out.append(u)
+    for u in UNITS:
+        add(u)
+    try:
+        for r in q("SELECT DISTINCT unit FROM materials WHERE unit<>''"):
+            add(r['unit'])
+        for r in q("SELECT DISTINCT unit FROM po_items WHERE unit<>''"):
+            add(r['unit'])
+        for r in q("SELECT DISTINCT stock_unit FROM po_items WHERE stock_unit<>''"):
+            add(r['stock_unit'])
+        for r in q("SELECT DISTINCT unit FROM txns t JOIN materials m ON m.id=t.material_id"
+                   " WHERE m.unit<>'' LIMIT 200"):
+            add(r['unit'])
+    except Exception:
+        pass
+    for u in (extra or []):
+        add(u)
+    return out
+
+
 def app_dir():
     """程序目录：打包后是 exe 所在目录，源码运行时是脚本目录。
     数据库、备份、上传临时目录都放这里——它可写、且每次运行都固定。"""
@@ -69,6 +104,7 @@ CREATE TABLE IF NOT EXISTS txns (
   qty         REAL    NOT NULL CHECK(qty > 0),
   pieces      REAL    DEFAULT NULL,
   per_piece   REAL    DEFAULT NULL,
+  price       REAL    DEFAULT NULL,
   note        TEXT    DEFAULT '',
   created_at  TEXT    NOT NULL
 );
@@ -76,6 +112,67 @@ CREATE INDEX IF NOT EXISTS idx_txns_date ON txns(tdate);
 CREATE INDEX IF NOT EXISTS idx_txns_mat  ON txns(material_id);
 CREATE INDEX IF NOT EXISTS idx_txns_kind ON txns(kind);
 CREATE INDEX IF NOT EXISTS idx_mat_active ON materials(active);
+
+/* ============ 采购台账（与仓库单据分离，通过到货单联动） ============ */
+CREATE TABLE IF NOT EXISTS suppliers (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  name     TEXT NOT NULL UNIQUE,
+  contact  TEXT DEFAULT '',
+  phone    TEXT DEFAULT '',
+  address  TEXT DEFAULT '',
+  note     TEXT DEFAULT '',
+  active   INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS pos (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  pono       TEXT NOT NULL UNIQUE,        /* 采购单号 CG20260901-001 */
+  supplier   TEXT NOT NULL,
+  odate      TEXT NOT NULL,               /* 下单日期 */
+  ddate      TEXT DEFAULT '',             /* 要求交期 */
+  status     TEXT NOT NULL DEFAULT '草稿', /* 草稿/已下单/部分到货/已完成/已取消 */
+  tax_rate   REAL NOT NULL DEFAULT 0,     /* 税率 % */
+  note       TEXT DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS po_items (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  po_id      INTEGER NOT NULL REFERENCES pos(id) ON DELETE CASCADE,
+  material_id INTEGER REFERENCES materials(id),
+  name       TEXT NOT NULL,               /* 采购时的名称（可能尚未建档） */
+  spec       TEXT DEFAULT '',
+  unit       TEXT DEFAULT '个',          /* 采购单位：可随意改，不影响已入库存量 */
+  conv       REAL NOT NULL DEFAULT 1,    /* 换算率：1 采购单位 = conv 库存单位 */
+  stock_unit TEXT DEFAULT '',            /* 库存单位，空=与采购单位相同 */
+  qty        REAL NOT NULL,              /* 订购数量（采购单位） */
+  price      REAL NOT NULL DEFAULT 0,     /* 含税/不含税单价（按单头税率） */
+  recv_qty   REAL NOT NULL DEFAULT 0,     /* 累计到货数量（冗余，便于列表汇总） */
+  note       TEXT DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS po_receipts (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_id    INTEGER NOT NULL REFERENCES po_items(id) ON DELETE CASCADE,
+  txn_id     INTEGER REFERENCES txns(id),  /* 生成的入库单，取消到货时可追溯 */
+  rdate      TEXT NOT NULL,
+  qty        REAL NOT NULL,
+  price      REAL NOT NULL,               /* 本次到货的实际单价（可能与订购价不同） */
+  note       TEXT DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS po_payments (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  po_id      INTEGER NOT NULL REFERENCES pos(id) ON DELETE CASCADE,
+  pdate      TEXT NOT NULL,
+  amount     REAL NOT NULL,
+  method     TEXT DEFAULT '转账',
+  note       TEXT DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pos_sup  ON pos(supplier);
+CREATE INDEX IF NOT EXISTS idx_pos_st   ON pos(status);
+CREATE INDEX IF NOT EXISTS idx_poi_po   ON po_items(po_id);
+CREATE INDEX IF NOT EXISTS idx_por_item ON po_receipts(item_id);
+CREATE INDEX IF NOT EXISTS idx_pop_po   ON po_payments(po_id);
+
 CREATE TABLE IF NOT EXISTS colmap (
   fid     TEXT PRIMARY KEY,
   label   TEXT    NOT NULL,
@@ -87,6 +184,35 @@ CREATE TABLE IF NOT EXISTS colmap (
 
 import threading
 _local = threading.local()
+
+# 进程内写锁：SQLite 同一时刻只允许一个写者。
+# 多个线程（Web 并发请求）同时写时，在显式事务里 SQLite 不会等
+# busy_timeout，而是立刻抛 "database is locked" —— 用户看到的就是"点保存突然 500"。
+# 所以写操作先在进程内排队，从根上避免撞锁；跨进程（多开程序）再靠重试兜底。
+_write_lock = threading.RLock()
+_READ_PREFIX = ('select', 'pragma', 'explain', 'with')
+
+
+def _is_write(sql):
+    s = (sql or '').lstrip().lower()
+    return bool(s) and not s.startswith(_READ_PREFIX)
+
+
+def _busy_retry(fn, tries=60, sleep=0.05):
+    """遇到 locked/busy 自动重试（跨进程场景，比如同时开了两个程序）"""
+    import time as _t
+    last = None
+    for _ in range(tries):
+        try:
+            return fn()
+        except sqlite3.OperationalError as e:
+            last = e
+            msg = str(e).lower()
+            if 'locked' in msg or 'busy' in msg:
+                _t.sleep(sleep)
+                continue
+            raise
+    raise last
 
 def conn():
     """按线程复用连接：PRAGMA 只需设一次，事务也能跨调用保持。
@@ -129,13 +255,22 @@ class tx:
     嵌套时复用外层事务（用 SAVEPOINT）。
     """
     def __enter__(self):
-        c = conn()
-        self.depth = getattr(_local, 'depth', 0)
-        if self.depth == 0:
-            c.execute("BEGIN")
-        else:
-            c.execute("SAVEPOINT sp%s" % self.depth)
-        _local.depth = self.depth + 1
+        _write_lock.acquire()
+        try:
+            c = conn()
+            self.depth = getattr(_local, 'depth', 0)
+            if self.depth == 0:
+                # IMMEDIATE 是关键：普通 BEGIN 属于"读事务起步"，
+                # 中途要写才升级锁，这时若别人持有写锁，SQLite 不等
+                # busy_timeout 而直接报 locked。IMMEDIATE 起步就取写锁，
+                # 取不到就按 busy_timeout 等，于是能扛住真正的并发。
+                _busy_retry(lambda: c.execute("BEGIN IMMEDIATE"))
+            else:
+                c.execute("SAVEPOINT sp%s" % self.depth)
+            _local.depth = self.depth + 1
+        except Exception:
+            _write_lock.release()
+            raise
         return c
 
     def __exit__(self, exc_type, exc, tb):
@@ -155,6 +290,12 @@ class tx:
                     c.execute("RELEASE sp%s" % self.depth)
         except sqlite3.Error:
             pass
+        finally:
+            # 锁必须放：一次异常没放锁，后面所有写操作会永久卡死
+            try:
+                _write_lock.release()
+            except RuntimeError:
+                pass
         return False
 
 def close():
@@ -171,7 +312,15 @@ def _cols(table):
 
 def migrate():
     """老库平滑升级：补齐后加的列，并按需重建视图/索引。"""
-    for col, ddl in (('pieces', 'REAL'), ('per_piece', 'REAL')):
+    # 采购表对老库是全新的，CREATE TABLE IF NOT EXISTS 会自动补上；
+    # 但 conv/stock_unit 是后加的，老采购库要单独 ALTER
+    if 'po_items' in [r['name'] for r in q("SELECT name FROM sqlite_master WHERE type='table'")]:
+        for col, ddl in (('conv', 'REAL NOT NULL DEFAULT 1'),
+                         ('stock_unit', "TEXT DEFAULT ''")):
+            if col not in _cols('po_items'):
+                run("ALTER TABLE po_items ADD COLUMN %s %s" % (col, ddl))
+
+    for col, ddl in (('pieces', 'REAL'), ('per_piece', 'REAL'), ('price', 'REAL')):
         if col not in _cols('txns'):
             run("ALTER TABLE txns ADD COLUMN %s %s" % (col, ddl))
     # 视图改成聚合 JOIN 后，老库里的旧视图不会自动更新，这里重建
@@ -219,7 +368,16 @@ def run(sql, *a):
 
     注意：不能用 c.in_transaction 判断——sqlite3 执行 INSERT 会自动开隐式事务，
     那个标志恒为 True，会导致永远不提交、进程退出后数据全丢。
+
+    并发：写 SQL 先拿进程内写锁，被别的进程锁住则自动重试。
     """
+    if _is_write(sql):
+        with _write_lock:
+            return _busy_retry(lambda: _run_now(sql, a))
+    return _run_now(sql, a)
+
+
+def _run_now(sql, a):
     c = conn()
     cur = c.execute(sql, _flat(a))
     if getattr(_local, 'depth', 0) == 0:
@@ -228,6 +386,11 @@ def run(sql, *a):
 
 def runmany(sql, seq):
     """批量执行。返回影响行数"""
+    with _write_lock:
+        return _busy_retry(lambda: _runmany_now(sql, seq))
+
+
+def _runmany_now(sql, seq):
     c = conn()
     cur = c.executemany(sql, seq)
     if getattr(_local, 'depth', 0) == 0:
@@ -237,6 +400,7 @@ def runmany(sql, seq):
 def history(mid, m=''):
     """物料台账：每笔单据 + 滚动结存"""
     sql = """SELECT t.*, m.name, m.unit, m.code, m.opening,
+      ROUND(t.qty * COALESCE(t.price,0), 2) AS amount,
       ROUND(m.opening + SUM(CASE WHEN t.kind='进' THEN t.qty ELSE -t.qty END) OVER (
         PARTITION BY t.material_id ORDER BY t.tdate, t.id
         ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW), 6) AS balance
