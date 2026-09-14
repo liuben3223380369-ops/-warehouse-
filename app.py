@@ -1,3 +1,22 @@
+# Windows 中文版控制台是 GBK，print 一个 emoji 就会 UnicodeEncodeError 崩溃。
+# 必须在任何输出之前把 stdout/stderr 改成容错模式。
+import sys as _sys
+def _safe_stdio():
+    for name in ('stdout', 'stderr'):
+        st = getattr(_sys, name, None)
+        if st is None:
+            continue
+        try:                       # Python 3.7+ 支持重新配置
+            st.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            try:                   # 老版本 / 打包环境
+                import io as _io
+                setattr(_sys, name, _io.TextIOWrapper(
+                    st.buffer, encoding='utf-8', errors='replace'))
+            except Exception:
+                pass
+_safe_stdio()
+
 from flask import Flask, render_template, request, redirect, url_for, g, jsonify
 from datetime import datetime, date
 import calendar, io, csv, os, time, sys
@@ -955,6 +974,16 @@ def export_csv():
                     headers={'Content-Disposition':
                              "attachment; filename=export.csv; filename*=UTF-8''%s.csv" % quote(fn)})
 
+def say(msg=''):
+    """容错输出：编码问题、控制台不存在都不会让程序崩"""
+    try:
+        print(msg)
+    except Exception:
+        try:
+            print(str(msg).encode('ascii', 'replace').decode('ascii'))
+        except Exception:
+            pass
+
 def open_browser_later(port, delay=1.2):
     """浏览器模式下自动打开浏览器"""
     import threading, webbrowser
@@ -990,7 +1019,7 @@ def main():
     ]
     iss = db.check_integrity()
     if iss:
-        banner.append('  ⚠ 数据体检发现 %d 个问题，访问 /sys 查看' % len(iss))
+        banner.append('  [!] 数据体检发现 %d 个问题，访问 /sys 查看' % len(iss))
 
     frozen = getattr(sys, 'frozen', False)
     # 打包成 exe 默认开独立窗口；源码运行默认浏览器（方便调试）
@@ -1001,10 +1030,10 @@ def main():
         banner.append('  日志: %s' % desktop.LOG)
         banner.append('-' * 46)
         for b in banner:
-            print(b); desktop.log(b.strip())
+            say(b); desktop.log(b.strip())
         ok = desktop.run_window(app, port)
         if not ok:                       # 窗口起不来就退回浏览器
-            print('  独立窗口启动失败，已退回浏览器模式')
+            say('  独立窗口启动失败，已退回浏览器模式')
             open_browser_later(port)
             app.run('127.0.0.1', port, debug=False, threaded=True)
     else:
@@ -1014,14 +1043,14 @@ def main():
         banner.append('  停止: 关掉这个窗口 或 Ctrl+C')
         banner.append('-' * 46)
         for b in banner:
-            print(b)
+            say(b)
         if frozen:
             open_browser_later(port)
         try:
             app.run('127.0.0.1', port, debug=False, threaded=True)
         except OSError as e:
-            print('  启动失败：%s' % e)
-            print('  端口 %d 可能被占用，换个端口：仓库管理系统.exe 9000' % port)
+            say('  启动失败：%s' % e)
+            say('  端口 %d 可能被占用，换个端口：仓库管理系统.exe 9000' % port)
             if frozen:
                 time.sleep(8)
 
@@ -1036,37 +1065,15 @@ if __name__ == '__main__':
             desktop.log('崩溃：\n' + traceback.format_exc())
         except Exception:
             pass
-        traceback.print_exc()
+        try:
+            traceback.print_exc()
+        except Exception:
+            say('  （错误详情无法打印，已写入 warehouse.log）')
         time.sleep(10)
     finally:
         try:
             db.close()
         except Exception:
             pass
-        if getattr(sys, 'frozen', False):
-            time.sleep(1.5)
-    st = db.stats()
-    print('-' * 46)
-    print('  仓库管理系统')
-    print('  数据: %s' % st['path'])
-    print('  物料 %d 种 · 单据 %d 条 · 预警 %d 项'
-          % (st['materials'], st['txns'], st['alerts']))
-    iss = db.check_integrity()
-    if iss:
-        print('  ⚠ 数据体检发现 %d 个问题，访问 /sys 查看' % len(iss))
-    print('  访问: http://127.0.0.1:%d' % port)
-    print('  停止: 关掉这个窗口 或 Ctrl+C')
-    print('-' * 46)
-    if getattr(sys, 'frozen', False):
-        open_browser_later(port)
-    try:
-        app.run('127.0.0.1', port, debug=False, threaded=True)
-    except OSError as e:
-        print('  启动失败：%s' % e)
-        print('  可能 %d 端口被占用，换个端口试试' % port)
-        if getattr(sys, 'frozen', False):
-            time.sleep(8)
-    finally:
-        db.close()
         if getattr(sys, 'frozen', False):
             time.sleep(1.5)
