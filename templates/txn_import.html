@@ -43,6 +43,10 @@
     <input type="hidden" name="f" value="{{f}}">
     <input type="hidden" name="defkind" value="{{defkind}}">
     <input type="hidden" name="fields" value="{{fields_str}}">
+    {% if manual %}<input type="hidden" name="manual" value="1">
+    <input type="hidden" name="startrow" value="{{startrow}}">
+    {% for k,v in colmap.items() %}<input type="hidden" name="cm_{{k}}" value="{{v}}">{% endfor %}{% endif %}
+    {% if request.form.get('manual') %}{% else %}{% endif %}
     <label>日期为空时，用这个日期</label>
     <input type="date" name="defdate" value="{{defdate}}">
     {% if fixed=='出' or not fixed %}
@@ -71,5 +75,49 @@
 </form>
 {% endif %}
 
-<a class="btn o s" href="{{url_for('out') if fixed=='出' else ('in' if fixed=='进' else 'txn')}}">返回{% if fixed=='出' %}出库{% elif fixed=='进' %}入库{% else %}录单{% endif %}页</a>
+
+{% if grid %}
+<div class="card">
+  <h2>③ 手动指定列</h2>
+  <p style="font-size:13px;color:#5b6675;margin:0 0 8px">
+  自动没认出来？<b>你自己指定每一列是什么</b>，什么表头都能导。</p>
+  <form method="post">
+    <input type="hidden" name="manual" value="1">
+    <input type="hidden" name="f" value="{{f}}">
+    <div class="rowflex">
+      <div><label>数据从第几行开始</label>
+        <input type="number" name="startrow" value="1" min="0" inputmode="numeric">
+        <div style="font-size:11px;color:#7a869a">0=第一行（无表头），1=第二行（有表头）</div></div>
+      <div><label>日期为空时默认用</label><input type="date" name="defdate" value="{{defdate}}"></div>
+    </div>
+    <div class="scroll"><table>
+    <tr>{% for i in ncol %}<th>第{{i+1}}列</th>{% endfor %}</tr>
+    <tr>{% for i in ncol %}<td style="font-size:11px;color:#7a869a;white-space:nowrap">
+      {{ (grid[0][i] if grid and grid|length>0 and i < grid[0]|length else '') or '—' }}</td>{% endfor %}</tr>
+    <tr>{% for i in ncol %}<td><select name="cm_{{i}}" style="min-width:88px">
+      <option value="">—忽略—</option>
+      {% for v,l in [('name','物料名称'),('code','料号'),('date','日期'),('qty','数量'),
+                     ('in_qty','进'),('out_qty','出'),('kind','进/出'),('pieces','件数'),
+                     ('per_piece','每件'),('note','备注'),('supplier','供应商'),
+                     ('category','类型'),('spec','规格'),('width','宽幅'),('unit','单位')] %}
+        <option value="{{v}}">{{l}}</option>{% endfor %}
+    </select></td>{% endfor %}</tr>
+    </table></div>
+    <div style="font-size:12px;color:#7a869a;margin:8px 0;line-height:1.8">
+    上面第二行显示的是你表格第一行的原文，照着它选就行。<br>
+    至少指定一列「物料名称」或「料号」，再加「数量」或「进」/「出」。</div>
+    <button type="submit" class="g">按我指定的解析</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>看看读到什么了</h2>
+  <div class="scroll"><table>
+  {% for r in grid %}<tr>{% for c in r %}<td style="font-size:11px;white-space:nowrap">{{c if c is not none else ''}}</td>{% endfor %}</tr>{% endfor %}
+  </table></div>
+  <div style="font-size:12px;color:#7a869a;margin-top:6px">前几行原始内容（截图发群里能快速定位问题）</div>
+</div>
+{% endif %}
+
+<a class="btn o s"{% if fixed=='出' %}出库{% elif fixed=='进' %}入库{% else %}录单{% endif %}页</a>
 {% endblock %}

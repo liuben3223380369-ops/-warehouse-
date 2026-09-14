@@ -153,8 +153,13 @@ def _read_grid(path=None, stream=None, filename=''):
     if openpyxl is None:
         raise RuntimeError('未安装 openpyxl，请先执行: pip install openpyxl')
     wb = openpyxl.load_workbook(path or io.BytesIO(stream.read()), data_only=True)
-    ws = wb[wb.sheetnames[0]]
-    return [[c for c in r] for r in ws.iter_rows(values_only=True)]
+    # 只取第一张"有内容的"表：很多人第一张表是说明/封面，数据在后面
+    for nm in wb.sheetnames:
+        ws = wb[nm]
+        rows = [[c for c in r] for r in ws.iter_rows(values_only=True)]
+        if any(any(_norm(c) for c in r) for r in rows):
+            return rows
+    return []
 
 def _cell(sh, r, c):
     v = sh.cell_value(r, c)
@@ -226,26 +231,218 @@ def map_txn_headers(header, aliases=None, mat_aliases=None):
                 out[i] = f; break
     return out
 
-def parse_txn_file(path=None, stream=None, filename='', aliases=None, mat_aliases=None,
-                   default_kind=None):
-    """解析流水表。返回 (单据列表, 识别到的字段集合, 表头行号)"""
+# ---------- 原 Excel「宽表」布局：物料一行 × 每日(进/出)两列 ----------
+WIDE_KINDS = {'进', '出'}
+MAT_HEADS = {
+    'supplier': ['供应商', '厂商', '供货商'],
+    'category': ['类型', '类别', '分类', '大类'],
+    'spec': ['规格', '规格(米)', '规格（米）', '厚度'],
+    'width': ['宽幅', '宽度', '幅宽'],
+    'name': ['物料名称', '名称', '品名', '材料名称', '物料'],
+    'code': ['料号', '物料编号', '物料编码', '编号', '编码', '型号'],
+    'unit': ['单位', '单位(卷)', '单位（卷）', '计量单位'],
+    'opening': ['上月结存', '期初结存', '期初', '上期结存'],
+}
+
+def _is_dt(v):
+    return hasattr(v, 'strftime') or isinstance(v, datetime.datetime)
+
+def _wide_kind_row(grid):
+    """找形如 [进,出,进,出...] 的那一行（原表第2行）"""
+    best, bestn = None, 0
+    for r in range(min(8, len(grid))):
+        n = sum(1 for v in grid[r] if str(v or '').strip() in WIDE_KINDS)
+        if n > bestn:
+            best, bestn = r, n
+    return best if bestn >= 4 else None
+
+def _wide_dates(grid, drow, defmonth):
+    """从日期行取每列日期；合并单元格造成的 None 沿用前一个日期"""
+    from datetime import date as _d
+    row = grid[drow] if (drow is not None and drow < len(grid)) else []
+    y, mo = (int(defmonth[:4]), int(defmonth[5:7])) if defmonth and len(defmonth) >= 7 \
+        else (datetime.date.today().year, datetime.date.today().month)
+    out, last = {}, None
+    for c, v in enumerate(row):
+        d = None
+        if _is_dt(v):
+            d = v.strftime('%Y-%m-%d')
+        elif isinstance(v, (int, float)) and 1 <= float(v) <= 31:
+            d = '%04d-%02d-%02d' % (y, mo, int(v))
+        else:
+            s = str(v or '').strip()
+            if s and (('月' in s) or ('-' in s) or ('/' in s)):
+                d = _fmt_date(v) or None
+        if d:
+            last = d
+        if last:
+            out[c] = last
+    return out
+
+def _col_by_head(grid, hrows, names):
+    """在若干候选表头行里按名字找列号"""
+    for hr in hrows:
+        if hr is None or hr >= len(grid):
+            continue
+        for c, v in enumerate(grid[hr]):
+            n = _norm(v)
+            if n and n in [_norm(x) for x in names]:
+                return c
+    return None
+
+def parse_wide(grid, defmonth=None):
+    """解析原表那种『物料 × 每日进/出』宽表。返回 (单据列表, 字段集合)"""
+    kr = _wide_kind_row(grid)
+    if kr is None:
+        return [], set()
+    drow = kr - 1 if kr > 0 else None
+    dates = _wide_dates(grid, drow, defmonth)
+    if not dates:
+        return [], set()
+    # 数据起点：进出行之后，且该行有物料名称
+    start = kr + 1
+    heads = [hr for hr in (drow, kr) if hr is not None]
+    name_c = _col_by_head(grid, heads, MAT_HEADS['name'])
+    if name_c is None:                      # 表头对不上：挑"文字最多"的那一列当物料名
+        best, bestn = None, 0
+        for c in range(min(12, max(len(r) for r in grid[:20]))):
+            n = 0
+            for r in grid[start:start + 15]:
+                if r and c < len(r):
+                    v = str(r[c] or '').strip()
+                    if v and not _num(v) and len(v) >= 2:
+                        n += 1
+            if n > bestn:
+                best, bestn = c, n
+        name_c = best
+    if name_c is None:
+        return [], set()
+    cols = {k: _col_by_head(grid, heads, v) for k, v in MAT_HEADS.items()}
+    cols['name'] = name_c
+    # 日期列 -> (列号, 进/出)
+    kind_map = {}
+    for c, v in enumerate(grid[kr] if kr < len(grid) else []):
+        s = str(v or '').strip()
+        if s in WIDE_KINDS and c in dates:
+            kind_map[c] = s
+    out = []
+    for r in grid[start:]:
+        if not r or name_c >= len(r):
+            continue
+        nm = str(r[name_c] or '').strip()
+        if not nm or nm in ('/', '-', '合计', '总计'):
+            continue
+        base = {'name': nm, 'code': '', 'date': '', 'note': '',
+                'pieces': None, 'per_piece': None}
+        for f in ('supplier', 'category', 'spec', 'width', 'unit', 'code'):
+            c = cols.get(f)
+            base[f] = '' if (c is None or c >= len(r)) else str(r[c] or '').strip()
+            if base[f] in ('/', '-'):
+                base[f] = ''
+        oc = cols.get('opening')
+        base['opening'] = _num(r[oc]) if (oc is not None and oc < len(r)) else 0.0
+        base['safety'] = 0.0
+        got = False
+        for c, kind in sorted(kind_map.items()):
+            if c >= len(r):
+                continue
+            q = _num(r[c])
+            if q > 0:
+                d = dict(base); d['kind'] = kind; d['qty'] = q
+                d['date'] = dates[c]
+                out.append(d); got = True
+        if not got:                          # 该行没有进出，但档案信息仍要保留（期初）
+            d = dict(base); d['kind'] = None; d['qty'] = 0.0
+            out.append(d)
+    return out, set(list(cols.keys()) + ['date', 'qty', 'kind'])
+
+def parse_txn_by_map(path=None, stream=None, filename='', colmap=None, start=1,
+                     default_kind=None, defdate=None):
+    """按用户手动指定的列来解析。colmap: {列索引: 字段名}，start: 数据起始行(0基)
+    字段名取值 name/code/date/kind/qty/in_qty/out_qty/pieces/per_piece/note，未列出的列忽略。"""
     grid = _read_grid(path=path, stream=stream, filename=filename)
-    grid = [r for r in grid if any(_norm(c) for c in r)]
-    if not grid:
-        return [], set(), -1
+    colmap = {int(k): v for k, v in (colmap or {}).items() if v}
+    out = []
+    for r in grid[start:]:
+        if not any(_norm(c) for c in r):
+            continue
+        def val(f):
+            for k, v in colmap.items():
+                if v == f:
+                    return r[k] if k < len(r) else None
+            return None
+        name = str(val('name') or '').strip()
+        code = str(val('code') or '').strip()
+        if not name and not code:
+            continue
+        base = dict(name=name or code, code=code,
+                    date=_fmt_date(val('date')) or (defdate or ''),
+                    note=str(val('note') or '').strip(),
+                    pieces=_num(val('pieces')) or None,
+                    per_piece=_num(val('per_piece')) or None)
+        for f in TXN_MAT_COLS:
+            v = val(f)
+            base[f] = '' if v is None else str(v).strip()
+            if f in ('opening', 'safety'):
+                base[f] = _num(v)
+        ins = _num(val('in_qty')); outs = _num(val('out_qty'))
+        q = _num(val('qty')); pcs = _num(val('pieces')); per = _num(val('per_piece'))
+        if not q and pcs and per:
+            q = round(pcs * per, 2)
+        kd = str(val('kind') or '').strip()
+        items = []
+        if ins or outs:
+            if ins: items.append(('进', ins))
+            if outs: items.append(('出', outs))
+        elif q:
+            k = default_kind or ''
+            if kd:
+                k = '出' if ('出' in kd or 'out' in kd.lower()) else '进'
+            items.append((k or '进', q))
+        elif per and pcs:
+            pass
+        for kind, qty in items:
+            if qty <= 0:
+                continue
+            d = dict(base); d['kind'] = kind; d['qty'] = qty
+            out.append(d)
+    return out
+
+def sniff_grid(grid, n=6, w=14):
+    """给诊断用：原始前几行前几列"""
+    return [[('' if c is None else str(c))[:18] for c in (r or [])[:w]]
+            for r in grid[:n]]
+
+def parse_txn_file(path=None, stream=None, filename='', aliases=None, mat_aliases=None,
+                   default_kind=None, defmonth=None):
+    """解析流水表。先按"一行一笔"解析；失败则按原表宽表解析。
+    返回 (单据列表, 识别到的字段集合, 表头行号, 诊断信息)"""
+    grid = _read_grid(path=path, stream=stream, filename=filename)
+    raw = [r for r in grid if any(_norm(c) for c in r)]
+    if not raw:
+        return [], set(), -1, {'why': '空文件', 'grid': []}
 
     hi, hmap = 0, {}
-    for i in range(min(5, len(grid))):
-        m = map_txn_headers(grid[i], aliases, mat_aliases)
+    for i in range(min(5, len(raw))):
+        m = map_txn_headers(raw[i], aliases, mat_aliases)
         has_q = ('qty' in m.values() or 'in_qty' in m.values() or 'out_qty' in m.values()
                  or ('pieces' in m.values() and 'per_piece' in m.values()))
         if 'name' in m.values() and has_q and len(m) > len(hmap):
             hi, hmap = i, m
+
     if 'name' not in hmap.values():
-        return [], set(), -1
+        # 不是"一行一笔"，试试原表那种"物料 × 每日进/出"宽表
+        wrows, wfields = parse_wide(raw, defmonth)
+        if wrows:
+            return wrows, wfields, -2, {'why': 'wide', 'grid': sniff_grid(raw)}
+        return [], set(), -1, {
+            'why': 'no-header',
+            'grid': sniff_grid(raw),
+            'heads': [str(v or '') for v in (raw[0] if raw else [])][:14],
+        }
 
     out = []
-    for r in grid[hi + 1:]:
+    for r in raw[hi + 1:]:
         def val(f):
             for k, v in hmap.items():
                 if v == f:
@@ -291,4 +488,10 @@ def parse_txn_file(path=None, stream=None, filename='', aliases=None, mat_aliase
                 continue
             d = dict(base); d['kind'] = kind; d['qty'] = qty
             out.append(d)
-    return out, set(hmap.values()), hi
+    if not out:
+        return out, set(hmap.values()), hi, {
+            'why': 'no-data', 'grid': sniff_grid(raw),
+            'heads': [str(v or '') for v in raw[hi]][:14],
+            'hi': hi,
+        }
+    return out, set(hmap.values()), hi, {'why': 'long', 'hi': hi}

@@ -316,8 +316,24 @@ def txn_import():
             if not os.path.exists(p):
                 return render_template('txn_import.html', fixed=fixed,
                                        err='预览已过期，请重新选择文件')
-            rows, _, _ = importer.parse_txn_file(path=p, default_kind=fixed or
-                                                 (request.form.get('defkind') or None))
+            if request.form.get('manual') == '1':
+                colmap = {}
+                for k in request.form.keys():
+                    if k.startswith('cm_'):
+                        v = request.form.get(k)
+                        if v:
+                            colmap[k[3:]] = v
+                try:
+                    start = int(request.form.get('startrow') or 1)
+                except ValueError:
+                    start = 1
+                rows = importer.parse_txn_by_map(
+                    path=p, colmap=colmap, start=start, default_kind=fixed,
+                    defdate=(request.form.get('defdate') or '').strip() or today())
+            else:
+                rows, _, _, _ = importer.parse_txn_file(
+                    path=p, default_kind=fixed or (request.form.get('defkind') or None),
+                    defmonth=(request.form.get('defdate') or '')[:7])
             dflt_date = (request.form.get('defdate') or '').strip() or today()
             allow_over = request.form.get('allow_over') == '1'
             fields = set((request.form.get('fields') or '').split(','))
@@ -339,6 +355,12 @@ def txn_import():
                 if not mid:
                     continue
                 newmat += is_new
+                if not d.get('kind'):          # 宽表里没进出的行：只建档/更新期初
+                    if mode == 'overwrite' or is_new:
+                        db.run("UPDATE materials SET opening=? WHERE id=?",
+                               float(d.get('opening') or 0), mid)
+                    archived += 1
+                    continue
                 kind = (d.get('kind') if has_split else (fixed or d.get('kind') or '进'))
                 qty = float(d.get('qty') or 0)
                 if filter_kind and kind != filter_kind:
@@ -369,6 +391,44 @@ def txn_import():
                 tip += f'（忽略 {skipped} 笔{"出库" if filter_kind=="进" else "入库"}行）'
             return redirect(url_for(back, msg=tip))
 
+        # 手动指定列：用户自己挑哪列是什么，绕过表头识别
+        if request.form.get('manual') == '1':
+            p = os.path.join(TMP, os.path.basename(request.form.get('f', '')))
+            if not os.path.exists(p):
+                return render_template('txn_import.html', fixed=fixed,
+                                       err='预览已过期，请重新选择文件')
+            colmap = {}
+            for k in request.form.keys():
+                if k.startswith('cm_'):
+                    v = request.form.get(k)
+                    if v:
+                        colmap[k[3:]] = v
+            try:
+                start = int(request.form.get('startrow') or 1)
+            except ValueError:
+                start = 1
+            if 'name' not in colmap.values() and 'code' not in colmap.values():
+                return render_template('txn_import.html', fixed=fixed,
+                                       err='至少要指定一列是「物料名称」或「料号」')
+            try:
+                rows = importer.parse_txn_by_map(
+                    path=p, colmap=colmap, start=start, default_kind=fixed,
+                    defdate=request.form.get('defdate') or today())
+            except Exception as e:
+                return render_template('txn_import.html', fixed=fixed, err='解析失败：%s' % e)
+            if not rows:
+                return render_template('txn_import.html', fixed=fixed,
+                                       err='按你指定的列没读到数据，检查一下起始行是不是选错了')
+            fields = sorted(set(colmap.values()))
+            return render_template('txn_import.html', fixed=fixed, preview=rows[:60],
+                                   total=len(rows), fields=fields,
+                                   fields_str=','.join(fields),
+                                   f=os.path.basename(p),
+                                   manual=1, startrow=start,
+                                   colmap=colmap,
+                                   defkind=fixed or '',
+                                   defdate=request.form.get('defdate') or today())
+
         f = request.files.get('file')
         if not f or not f.filename:
             return render_template('txn_import.html', fixed=fixed, err='请选择文件')
@@ -379,20 +439,35 @@ def txn_import():
         tmp = os.path.join(TMP, '%d_%s' % (int(time.time() * 1000), os.path.basename(fn)))
         f.save(tmp)
         try:
-            rows, fields, hi = importer.parse_txn_file(
-                path=tmp, default_kind=fixed or (request.form.get('defkind') or None))
+            rows, fields, hi, diag = importer.parse_txn_file(
+                path=tmp, default_kind=fixed or (request.form.get('defkind') or None),
+                defmonth=(request.form.get('defdate') or '')[:7])
         except Exception as e:
             return render_template('txn_import.html', fixed=fixed, err='解析失败：%s' % e)
         if not rows:
-            return render_template('txn_import.html', fixed=fixed,
-                                   err='没读到有效单据：至少需要「物料名称（或料号）」列，'
-                                            '以及「数量」列 / 「进」「出」列 / 「件数」+「每件」列 之一')
+            why = (diag or {}).get('why')
+            if why == 'no-header':
+                err = ('没认出表头。表格第一行要写列名，'
+                       '至少需要「物料名称（或料号）」，'
+                       '以及「数量」/「进」「出」/「件数」+「每件」之一。')
+            elif why == 'no-data':
+                err = '表头认出来了，但下面没有有效数据行（物料名和数量都要填）。'
+            else:
+                err = '没读到有效单据。'
+            grid = (diag or {}).get('grid') or []
+            ncol = max([len(r) for r in grid] or [0])
+            return render_template('txn_import.html', fixed=fixed, err=err, diag=diag,
+                                   grid=grid, ncol=range(ncol),
+                                   f=os.path.basename(tmp),
+                                   defkind=request.form.get('defkind') or '',
+                                   defdate=request.form.get('defdate') or today())
         return render_template('txn_import.html', fixed=fixed, preview=rows[:60],
                                total=len(rows), fields=sorted(fields),
                                fields_str=','.join(sorted(fields)),
                                f=os.path.basename(tmp),
                                defkind=request.form.get('defkind') or '',
-                               defdate=request.form.get('defdate') or today())
+                               defdate=request.form.get('defdate') or today(),
+                               wide=(hi == -2))
     return render_template('txn_import.html', fixed=fixed, defdate=today())
 
 @app.route('/txn/import/tpl')
@@ -881,7 +956,7 @@ def export_csv():
                              "attachment; filename=export.csv; filename*=UTF-8''%s.csv" % quote(fn)})
 
 def open_browser_later(port, delay=1.2):
-    """打包成 exe 后自动打开浏览器，省得用户手敲地址"""
+    """浏览器模式下自动打开浏览器"""
     import threading, webbrowser
     def go():
         time.sleep(delay)
@@ -891,9 +966,85 @@ def open_browser_later(port, delay=1.2):
             pass
     threading.Thread(target=go, daemon=True).start()
 
-if __name__ == '__main__':
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
+def main():
+    import desktop
+    args = [a for a in sys.argv[1:]]
+    # --browser 强制浏览器模式；--window 强制窗口模式
+    force_browser = '--browser' in args
+    force_window = '--window' in args
+    args = [a for a in args if not a.startswith('--')]
+
+    try:
+        port = int(args[0]) if args else desktop.free_port()
+    except ValueError:
+        port = desktop.free_port()
+
     cleanup_tmp()
+    st = db.stats()
+    banner = [
+        '-' * 46,
+        '  仓库管理系统',
+        '  数据: %s' % st['path'],
+        '  物料 %d 种 · 单据 %d 条 · 预警 %d 项'
+        % (st['materials'], st['txns'], st['alerts']),
+    ]
+    iss = db.check_integrity()
+    if iss:
+        banner.append('  ⚠ 数据体检发现 %d 个问题，访问 /sys 查看' % len(iss))
+
+    frozen = getattr(sys, 'frozen', False)
+    # 打包成 exe 默认开独立窗口；源码运行默认浏览器（方便调试）
+    want_window = force_window or (frozen and not force_browser)
+
+    if want_window and desktop.has_webview():
+        banner.append('  窗口模式: 已启动独立窗口')
+        banner.append('  日志: %s' % desktop.LOG)
+        banner.append('-' * 46)
+        for b in banner:
+            print(b); desktop.log(b.strip())
+        ok = desktop.run_window(app, port)
+        if not ok:                       # 窗口起不来就退回浏览器
+            print('  独立窗口启动失败，已退回浏览器模式')
+            open_browser_later(port)
+            app.run('127.0.0.1', port, debug=False, threaded=True)
+    else:
+        if want_window and not force_browser:
+            banner.append('  提示: 缺少 pywebview，已用浏览器模式')
+        banner.append('  访问: http://127.0.0.1:%d' % port)
+        banner.append('  停止: 关掉这个窗口 或 Ctrl+C')
+        banner.append('-' * 46)
+        for b in banner:
+            print(b)
+        if frozen:
+            open_browser_later(port)
+        try:
+            app.run('127.0.0.1', port, debug=False, threaded=True)
+        except OSError as e:
+            print('  启动失败：%s' % e)
+            print('  端口 %d 可能被占用，换个端口：仓库管理系统.exe 9000' % port)
+            if frozen:
+                time.sleep(8)
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception:
+        # 窗口模式看不见控制台，出错必须落到文件里
+        import traceback
+        try:
+            import desktop
+            desktop.log('崩溃：\n' + traceback.format_exc())
+        except Exception:
+            pass
+        traceback.print_exc()
+        time.sleep(10)
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+        if getattr(sys, 'frozen', False):
+            time.sleep(1.5)
     st = db.stats()
     print('-' * 46)
     print('  仓库管理系统')

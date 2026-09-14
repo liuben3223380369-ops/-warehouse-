@@ -2,3 +2,4 @@ Flask>=3.0
 openpyxl>=3.0
 xlrd>=2.0
 pyinstaller>=6.0
+pywebview>=4.0

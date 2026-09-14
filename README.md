@@ -171,12 +171,55 @@ chmod +x run.sh
 **换手机 / 重装**：把 `warehouse.db` 复制走即可，全部数据就这一个文件。
 出问题就把 `.bak` 改名回 `warehouse.db` 还原。
 
-### 打包成 Windows exe
+### 打包成 Windows exe（两种方式）
 
-能打包，但**必须在 Windows 上打**（PyInstaller 不支持交叉编译）。
+### 独立窗口模式
 
-双击 **`打包成exe.bat`** 即可，产物 `dist\仓库管理系统.exe`，双击自动开浏览器。
+打包后的 exe **默认开独立窗口** —— 双击出来一个程序窗口，没有浏览器地址栏，
+看起来跟普通桌面软件一样。
+
+| 启动方式 | 效果 |
+|---|---|
+| 双击 exe | 独立窗口（推荐） |
+| `仓库管理系统.exe --browser` | 用浏览器打开（排错时用） |
+
+几个细节：
+
+- **没有黑窗口**，报错会写进 exe 旁边的 `warehouse.log`
+- **自动找空闲端口**，8080 被占用也不会起不来
+- 万一 pywebview 在你的电脑上跑不起来（比如缺 WebView2 运行时），
+  会**自动退回浏览器模式**并自动打开浏览器，功能完全一样
+- 源码运行时默认浏览器模式，方便调试；想试窗口就 `python3 app.py --window`
+
+**方式 A：让 GitHub 帮你打（推荐，不用装 Python）**
+
+仓库里已经配好了自动打包流程。推送后打一个标签：
+
+```bash
+git tag v1.0 && git push origin v1.0
+```
+
+GitHub 会用官方 Windows 机器打包，几分钟后在仓库的 **Releases** 页面
+就能下载 `仓库管理系统-windows.zip`。
+
+**方式 B：本机打包**
+
+双击 **`打包成exe.bat`**，产物 `dist\仓库管理系统.exe`（必须 Windows 系统）。
 详见 **打包exe说明.md**（含杀软误报、端口占用、换图标等常见问题）。
+
+> PyInstaller 不支持交叉编译，Linux/Mac/手机上打不出 exe。
+
+### 上传到 GitHub
+
+本地已经初始化好 git 仓库并做完了首次提交，直接跑：
+
+```bash
+bash 上传到GitHub.sh
+```
+
+按提示输入用户名和 **Personal Access Token**（不是登录密码，
+在 GitHub → Settings → Developer settings 里生成，勾选 repo）。
+详见 **上传到GitHub.md**。
 
 ## 三、首次使用三步走
 

@@ -1,15 +1,27 @@
+# 数据库与备份（含真实业务数据，不上传）
 warehouse.db
 warehouse.db-wal
 warehouse.db-shm
 *.bak
+
+# Python
 __pycache__/
 *.py[cod]
+*.egg-info/
 .venv/
 venv/
+
+# 打包产物
 build/
 dist/
+*.spec.bak
+
+# 运行时临时文件
 .uploads/
 *.log
+
+# 编辑器 / 系统
 .vscode/
 .idea/
 .DS_Store
+Thumbs.db

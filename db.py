@@ -89,19 +89,35 @@ import threading
 _local = threading.local()
 
 def conn():
-    """按线程复用连接：PRAGMA 只需设一次，事务也能跨调用保持。"""
+    """按线程复用连接：PRAGMA 只需设一次，事务也能跨调用保持。
+
+    逐项降级：WAL 开不了就退回普通模式（某些文件系统/外置存储不支持 WAL），
+    绝不因为一个可选优化让整个程序起不来。
+    """
     c = getattr(_local, 'conn', None)
-    if c is None:
-        os.makedirs(os.path.dirname(DB_PATH) or '.', exist_ok=True)
+    if c is not None:
+        return c
+    os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)) or '.', exist_ok=True)
+    try:
         c = sqlite3.connect(DB_PATH, timeout=15)
-        c.row_factory = sqlite3.Row
-        c.execute("PRAGMA foreign_keys=ON")     # 外键真正生效
-        c.execute("PRAGMA busy_timeout=15000")  # 并发写不立刻报错
+    except sqlite3.Error as e:
+        raise RuntimeError(
+            '打不开数据库文件：%s\n原因：%s\n'
+            '建议：换一个有读写权限的目录（比如手机内部存储，而不是外置 SD 卡），'
+            '或用 WAREHOUSE_DB 环境变量指定路径。' % (DB_PATH, e))
+    c.row_factory = sqlite3.Row
+    for pragma in ("PRAGMA foreign_keys=ON",        # 外键真正生效
+                   "PRAGMA busy_timeout=15000",     # 并发写不立刻报错
+                   "PRAGMA journal_mode=WAL"):      # 读写不互相阻塞（可选）
         try:
-            c.execute("PRAGMA journal_mode=WAL")  # 读写不互相阻塞
+            c.execute(pragma)
         except sqlite3.DatabaseError:
-            pass
-        _local.conn = c
+            if 'journal_mode' in pragma:
+                try:                                # 退回默认的 DELETE 模式
+                    c.execute("PRAGMA journal_mode=DELETE")
+                except sqlite3.DatabaseError:
+                    pass
+    _local.conn = c
     return c
 
 class tx:
