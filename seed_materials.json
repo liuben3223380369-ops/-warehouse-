@@ -1,0 +1,263 @@
+[
+ {
+  "supplier": "",
+  "category": "有胶基材",
+  "spec": "黑化",
+  "width": "250",
+  "name": "半对三分之一双面有胶黑化",
+  "code": "",
+  "unit": "平米"
+ },
+ {
+  "supplier": "",
+  "category": "无胶压延",
+  "spec": "",
+  "width": "250",
+  "name": "双面半对半黑化压延",
+  "code": "CPDR131218KAB1",
+  "unit": "平米"
+ },
+ {
+  "supplier": "",
+  "category": "基材",
+  "spec": "",
+  "width": "250",
+  "name": "132 背光",
+  "code": "D1212RA",
+  "unit": "平米"
+ },
+ {
+  "supplier": "",
+  "category": "基材",
+  "spec": "",
+  "width": "250",
+  "name": "18/25单面有胶电解黑铜",
+  "code": "",
+  "unit": "平米"
+ },
+ {
+  "supplier": "",
+  "category": "无胶基材",
+  "spec": "0803",
+  "width": "250",
+  "name": "0803",
+  "code": "YTKDR0803LQ61",
+  "unit": "平米"
+ },
+ {
+  "supplier": "",
+  "category": "无胶基材",
+  "spec": "1003",
+  "width": "250",
+  "name": "1003无胶",
+  "code": "",
+  "unit": "箱"
+ },
+ {
+  "supplier": "",
+  "category": "有胶基材",
+  "spec": "红化",
+  "width": "250",
+  "name": "25U红化纯铜",
+  "code": "",
+  "unit": "平米"
+ },
+ {
+  "supplier": "",
+  "category": "无胶压延",
+  "spec": "",
+  "width": "250",
+  "name": "无胶压延",
+  "code": "2D1003RC",
+  "unit": "平米"
+ },
+ {
+  "supplier": "",
+  "category": "无胶压延",
+  "spec": "",
+  "width": "250",
+  "name": "一对一双面无胶压延",
+  "code": "",
+  "unit": "平米"
+ },
+ {
+  "supplier": "",
+  "category": "无胶基材",
+  "spec": "",
+  "width": "250",
+  "name": "18/25单面无胶电解",
+  "code": "",
+  "unit": "平米"
+ },
+ {
+  "supplier": "",
+  "category": "有胶基材",
+  "spec": "红化",
+  "width": "250",
+  "name": "半对三分之一红化",
+  "code": "",
+  "unit": "平米"
+ },
+ {
+  "supplier": "",
+  "category": "有胶基材",
+  "spec": "红化",
+  "width": "250",
+  "name": "12/12双面红化电解铜",
+  "code": "用背光上",
+  "unit": "平米"
+ },
+ {
+  "supplier": "",
+  "category": "基材",
+  "spec": "",
+  "width": "250",
+  "name": "0503",
+  "code": "121212E(Y)500(M)",
+  "unit": "平米"
+ },
+ {
+  "supplier": "宝时电子",
+  "category": "有胶基材",
+  "spec": "红化",
+  "width": "250",
+  "name": "红化",
+  "code": "",
+  "unit": "箱"
+ },
+ {
+  "supplier": "杜邦",
+  "category": "无胶基材",
+  "spec": "",
+  "width": "250",
+  "name": "双面无胶",
+  "code": "HKH122512E",
+  "unit": "平米"
+ },
+ {
+  "supplier": "福斯特",
+  "category": "单面基材",
+  "spec": "黑化",
+  "width": "250",
+  "name": "单面黑化",
+  "code": "ASR=1201R",
+  "unit": "平米"
+ },
+ {
+  "supplier": "福斯特",
+  "category": "基材",
+  "spec": "",
+  "width": "250",
+  "name": "多层板专用",
+  "code": "FSN-0503E",
+  "unit": "平米"
+ },
+ {
+  "supplier": "福斯特",
+  "category": "有胶基材",
+  "spec": "红化",
+  "width": "250",
+  "name": "半对半红化",
+  "code": "ADR-0130TOR",
+  "unit": "平米"
+ },
+ {
+  "supplier": "江阴俊驰",
+  "category": "基材",
+  "spec": "",
+  "width": "250",
+  "name": "JTDE2012RP1",
+  "code": "JTDE2012RP1",
+  "unit": "平米"
+ },
+ {
+  "supplier": "江阴俊驰",
+  "category": "基材",
+  "spec": "",
+  "width": "250",
+  "name": "JTDE2012KM1",
+  "code": "JTDE2012KM1",
+  "unit": "平米"
+ },
+ {
+  "supplier": "松杨电子",
+  "category": "无胶压延",
+  "spec": "",
+  "width": "250",
+  "name": "一对一单面无胶压延",
+  "code": "H-1010RS-C",
+  "unit": "平米"
+ },
+ {
+  "supplier": "无锡优泰",
+  "category": "基材",
+  "spec": "",
+  "width": "250",
+  "name": "2L层压型挠性覆铜板（250宽）",
+  "code": "YTKDE1003DJ11",
+  "unit": "平米"
+ },
+ {
+  "supplier": "新高",
+  "category": "无胶基材",
+  "spec": "0803",
+  "width": "250",
+  "name": "双面1对1/3无胶电解（0803）",
+  "code": "AS2L-AD20TPS1",
+  "unit": "平米"
+ },
+ {
+  "supplier": "新高",
+  "category": "无胶基材",
+  "spec": "0803",
+  "width": "250",
+  "name": "0803",
+  "code": "AS2L-AD20TPZ1",
+  "unit": "平米"
+ },
+ {
+  "supplier": "新高",
+  "category": "无胶基材",
+  "spec": "",
+  "width": "250",
+  "name": "AS2L-AD25TPA1",
+  "code": "AS2L-AD25TPA1",
+  "unit": "平米"
+ },
+ {
+  "supplier": "信合",
+  "category": "基材",
+  "spec": "",
+  "width": "250",
+  "name": "XH-NOE2512F0",
+  "code": "XH-NOE2512F0",
+  "unit": "平米"
+ },
+ {
+  "supplier": "长捷士",
+  "category": "无胶基材",
+  "spec": "1003",
+  "width": "250",
+  "name": "1003",
+  "code": "",
+  "unit": "平米"
+ },
+ {
+  "supplier": "智禾",
+  "category": "有胶基材",
+  "spec": "黑化",
+  "width": "250",
+  "name": "黑化电解",
+  "code": "ZHD131212KB2",
+  "unit": "平米"
+ },
+ {
+  "supplier": "",
+  "category": "无胶压延",
+  "spec": "",
+  "width": "250",
+  "name": "半对三分之一单面无胶压延",
+  "code": "12/20单面无胶压延",
+  "unit": "平米"
+ }
+]

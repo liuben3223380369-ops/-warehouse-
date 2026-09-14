@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>{% block title %}仓库管理系统{% endblock %}</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;font:15px/1.5 -apple-system,"Noto Sans CJK SC","Microsoft YaHei",sans-serif;
+background:#f2f4f7;color:#1c2430;padding-bottom:64px}
+header{background:#1f6feb;color:#fff;padding:12px 14px;position:sticky;top:0;z-index:9}
+header h1{margin:0;font-size:17px;font-weight:600}
+header .sub{opacity:.85;font-size:12px;margin-top:2px}
+main{padding:12px}
+.card{background:#fff;border-radius:12px;padding:12px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+.stat{background:#fff;border-radius:12px;padding:10px;text-align:center}
+.stat b{display:block;font-size:19px;margin-top:2px}
+.stat span{font-size:11px;color:#7a869a}
+.in{color:#12a150}.out{color:#e5484d}.warn{color:#f5a524}
+h2{font-size:15px;margin:0 0 10px}
+label{display:block;font-size:12px;color:#5b6675;margin:10px 0 4px}
+input,select,textarea,button{font:inherit}
+input,select,textarea{width:100%;padding:11px;border:1px solid #d7dce3;border-radius:9px;background:#fff;
+font-size:16px;appearance:none}
+input[type=checkbox],input[type=radio]{-webkit-appearance:checkbox;appearance:auto;
+width:22px;height:22px;min-width:22px;flex:none;padding:0;margin:0;border:0;background:none;
+accent-color:#1f6feb;vertical-align:middle;display:inline-block}
+label.ckl{display:flex;align-items:center;justify-content:center;gap:8px;
+padding:11px 8px;margin:0;cursor:pointer;-webkit-tap-highlight-color:transparent}
+tr.sel td{background:#eaf2fe}
+textarea{min-height:60px}
+button,.btn{display:block;width:100%;padding:13px;border:0;border-radius:10px;background:#1f6feb;
+color:#fff;font-size:16px;font-weight:600;text-align:center;text-decoration:none;margin-top:14px}
+.btn.g{background:#12a150}.btn.r{background:#e5484d}.btn.o{background:#6b7785}
+.btn.s{padding:9px;font-size:14px;margin-top:8px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:7px 4px;border-bottom:1px solid #eef0f3;text-align:left;white-space:nowrap}
+th{color:#7a869a;font-weight:500;font-size:12px;position:sticky;top:0;background:#fff}
+th a{white-space:nowrap}
+td.n,th.n{text-align:right}
+.low{color:#e5484d;font-weight:600}
+.pill{display:inline-block;padding:1px 7px;border-radius:20px;font-size:11px;background:#eef2f7;color:#5b6675}
+.pill.i{background:#e6f6ed;color:#12a150}.pill.o{background:#fdeced;color:#e5484d}
+nav{position:fixed;bottom:0;left:0;right:0;display:grid;grid-template-columns:repeat(6,1fr);
+background:#fff;border-top:1px solid #e3e7ec;padding-bottom:env(safe-area-inset-bottom)}
+nav a{padding:8px 0 7px;text-align:center;font-size:11px;color:#7a869a;text-decoration:none}
+nav a.on{color:#1f6feb}nav a i{display:block;font-size:19px;font-style:normal;line-height:1.2}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.empty{color:#98a2b3;text-align:center;padding:22px;font-size:13px}
+.rowflex{display:flex;gap:8px}.rowflex>*{flex:1}
+.kv{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #f0f2f5;font-size:13px}
+input.cell{padding:6px 6px;font-size:14px;border:1px solid #e3e7ec;border-radius:6px;min-width:64px;
+background:#fff}
+input.cell:focus{border-color:#1f6feb;outline:none;background:#f5f9ff}
+select.cell{padding:6px 4px;font-size:14px;border:1px solid #e3e7ec;border-radius:6px;background:#fff;min-width:70px}
+th.c,td.c{padding:4px 3px;font-size:12px}
+.bar{display:flex;gap:8px;align-items:center;margin-bottom:10px}
+.bar>a,.bar>span{flex:1;margin-top:0}
+tr.new{background:#f7fbff}
+</style>
+{% block extra_head %}{% endblock %}
+</head>
+<body>
+{% macro th(label, f, cls='') -%}
+{% set nd = 'asc' if cur_sort != f else ('desc' if cur_dir == 'asc' else '') %}
+{% set ns = f if nd else '' %}
+<th class="{{cls}}"><a href="?{{ (qs or {})|urlencode }}&sort={{ns}}&dir={{nd}}" style="color:inherit;text-decoration:none">
+{{label}}{% if cur_sort == f %}{% if cur_dir == 'asc' %} ▲{% elif cur_dir == 'desc' %} ▼{% endif %}{% endif %}</a></th>
+{%- endmacro %}
+<header><h1>{% block h1 %}仓库管理系统{% endblock %}</h1>
+<div class="sub">{% block sub %}{% endblock %}</div></header>
+<main>{% block body %}{% endblock %}</main>
+{% set ep = request.endpoint or '' %}
+<nav>
+<a href="{{url_for('index')}}" class="{{'on' if ep=='index'}}"><i>📊</i>首页</a>
+<a href="{{url_for('in')}}" class="{{'on' if ep in ('in','in_list')}}"><i>📥</i>入库</a>
+<a href="{{url_for('out')}}" class="{{'on' if ep in ('out','out_list')}}"><i>📤</i>出库</a>
+<a href="{{url_for('txns')}}" class="{{'on' if ep=='txns'}}"><i>📝</i>流水</a>
+<a href="{{url_for('report')}}" class="{{'on' if ep=='report'}}"><i>📅</i>月报</a>
+<a href="{{url_for('materials')}}" class="{{'on' if ep.startswith('material')}}"><i>🗂</i>物料</a>
+</nav>
+</body></html>

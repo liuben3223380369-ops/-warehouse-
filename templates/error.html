@@ -1,0 +1,31 @@
+{% extends 'base.html' %}
+{% block title %}{{title}}{% endblock %}
+{% block h1 %}⚠️ {{title}}{% endblock %}
+{% block sub %}{{detail}}{% endblock %}
+{% block body %}
+<div class="card" style="text-align:center;padding:28px 16px">
+  <div style="font-size:48px;margin-bottom:10px">{% if code==404 %}🧭{% else %}🔧{% endif %}</div>
+  <p style="font-size:14px;color:#5b6675;margin:0 0 6px">
+  {% if code==404 %}
+    这个地址没有对应页面，可能链接过期或输错了。
+  {% else %}
+    刚才的操作没有完成，<b>数据没有被改动</b>，可以返回重试。
+  {% endif %}
+  </p>
+</div>
+<div class="grid2">
+  <a class="btn g" href="{{url_for('index')}}">回首页</a>
+  <a class="btn o" href="javascript:history.back()">返回上一步</a>
+</div>
+{% if code!=404 %}
+<div class="card">
+  <h2>自己排查</h2>
+  <div style="font-size:12px;color:#5b6675;line-height:1.8">
+  · 若反复报错，去 <b>物料 → 系统自检</b> 看看数据是否异常<br>
+  · 数据库文件旁边的 <b>.bak</b> 是自动备份，可改回 <b>warehouse.db</b> 还原<br>
+  · 运行窗口里会打印详细错误，把它记下来便于排查
+  </div>
+  <a class="btn s o" href="{{url_for('sysinfo')}}">🔍 系统自检</a>
+</div>
+{% endif %}
+{% endblock %}

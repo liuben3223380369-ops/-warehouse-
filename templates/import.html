@@ -1,0 +1,62 @@
+{% extends 'base.html' %}
+{% block title %}批量导入物料{% endblock %}
+{% block h1 %}批量导入物料{% endblock %}
+{% block sub %}Excel / CSV 一键建档{% endblock %}
+{% block body %}
+
+<div class="card">
+  <h2>① 准备表格</h2>
+  <p style="font-size:13px;color:#5b6675;margin:0 0 8px">
+  支持 <b>.xlsx / .xlsm / .csv</b>，第一行写表头。<b>「物料名称」必填</b>，其余列可缺。</p>
+  <div class="scroll"><table>
+    <tr><th>物料名称*</th><th>料号</th><th>类型</th><th>规格</th><th>宽幅</th><th>供应商</th><th>单位</th><th>期初结存</th><th>安全库存</th><th>状态</th></tr>
+    <tr>{% for v in ['半对半黑化压延','CPDR131218KAB1','无胶压延','12/20','250','松杨电子','平米','100','30','常用'] %}
+        <td>{{v}}</td>{% endfor %}</tr>
+  </table></div>
+  <p style="font-size:12px;color:#7a869a;margin:8px 0 0">
+  表头认这些别名：名称/品名、料号/编号/型号、类型/类别、规格、宽幅、单位、期初/上月结存、安全库存/预警值、状态。<br>
+  没有表头也行，按 A=名称 B=料号 C=类型 D=单位 E=期初 读取。</p>
+  <a class="btn s o" href="{{url_for('import_tpl')}}">⬇ 下载导入模板</a>
+</div>
+
+{% if err %}<div class="card" style="background:#fdeced;border-left:3px solid #e5484d">{{err}}</div>{% endif %}
+
+{% if preview %}
+<div class="card">
+  <h2>② 确认预览 <span class="pill">共 {{total}} 行</span></h2>
+  <p style="font-size:12px;color:#5b6675">识别到的列：{{fields|join('、')}}{% if total>50 %}（仅显示前 50 行）{% endif %}</p>
+  <div class="scroll"><table>
+  <tr><th>名称</th><th>料号</th><th>类型</th><th>单位</th><th class="n">期初</th><th class="n">预警</th></tr>
+  {% for r in preview %}<tr>
+   <td>{{r.name}}</td><td>{{r.code}}</td><td>{{r.category}}</td><td>{{r.unit}}</td>
+   <td class="n">{{'%g'|format(r.opening)}}</td><td class="n">{{'%g'|format(r.safety)}}</td>
+  </tr>{% endfor %}</table></div>
+  <form method="post" enctype="multipart/form-data">
+    <input type="hidden" name="confirm" value="1">
+    <input type="hidden" name="f" value="{{f}}">
+    <label>重复物料（名称或料号已存在）怎么处理</label>
+    <select name="mode">
+      <option value="merge" {{'selected' if mode=='merge'}}>合并更新（推荐：只补空字段 + 覆盖期初/安全库存）</option>
+      <option value="overwrite" {{'selected' if mode=='overwrite'}}>完全覆盖（用表里所有非空值覆盖已有档案）</option>
+      <option value="skip" {{'selected' if mode=='skip'}}>跳过已有，只导入新物料</option>
+    </select>
+    <button type="submit" class="g">确认导入</button>
+  </form>
+</div>
+{% else %}
+<form class="card" method="post" enctype="multipart/form-data">
+  <h2>② 选择文件</h2>
+  <label>Excel / CSV 文件</label>
+  <input type="file" name="file" accept=".xlsx,.xlsm,.csv" required>
+  <label>重复物料怎么处理</label>
+  <select name="mode">
+    <option value="merge">合并更新（推荐）</option>
+    <option value="overwrite">完全覆盖</option>
+    <option value="skip">跳过已有，只导入新物料</option>
+  </select>
+  <button type="submit">解析并预览</button>
+</form>
+{% endif %}
+
+<a class="btn o s" href="{{url_for('materials')}}">返回物料列表</a>
+{% endblock %}

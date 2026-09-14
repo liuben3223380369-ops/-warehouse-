@@ -1,0 +1,38 @@
+{% extends 'base.html' %}
+{% block title %}{{m}} 进出月报表{% endblock %}
+{% block h1 %}{{m[:4]}}年{{m[5:7]}}月 进出报表{% endblock %}
+{% block sub %}复刻原表布局：物料 × 每日进/出{% endblock %}
+{% block body %}
+<form class="card" method="get">
+  <label>选择月份</label>
+  <input type="month" name="m" value="{{m}}">
+  <button type="submit">切换</button>
+</form>
+<div class="grid2" style="margin-bottom:12px">
+  <div class="stat"><span>本月入库合计</span><b class="in">{{'%g'|format(tot_in)}}</b></div>
+  <div class="stat"><span>本月出库合计</span><b class="out">{{'%g'|format(tot_out)}}</b></div>
+</div>
+<div class="card" style="padding:10px 6px">
+{% if mats %}<div class="scroll"><table>
+<tr>
+ <th rowspan="2">物料 / 料号</th>
+ {% for d in range(1,days+1) %}<th class="n" colspan="2">{{d}}</th>{% endfor %}
+ <th class="n" colspan="2">汇总</th><th class="n" rowspan="2">月末</th>
+</tr>
+<tr>{% for d in range(1,days+1) %}<th class="n">进</th><th class="n">出</th>{% endfor %}
+ <th class="n">进</th><th class="n">出</th></tr>
+{% for r in mats %}
+<tr>
+ <td>{{r.name}}{% if r.code %}<br><span class="pill">{{r.code}}</span>{% endif %}<br><span class="pill">{{r.unit}}</span></td>
+ {% for a,b in r.cells %}<td class="n in">{{'%g'|format(a) if a else ''}}</td>
+ <td class="n out">{{'%g'|format(b) if b else ''}}</td>{% endfor %}
+ <td class="n"><b class="in">{{'%g'|format(r.min) if r.min else ''}}</b></td>
+ <td class="n"><b class="out">{{'%g'|format(r.mout) if r.mout else ''}}</b></td>
+ <td class="n {{'low' if r.ending<=r.safety else ''}}"><b>{{'%g'|format(r.ending)}}</b></td>
+</tr>{% endfor %}</table></div>
+{% else %}<div class="empty">暂无物料</div>{% endif %}
+</div>
+<div class="rowflex">
+  <a class="btn g s" href="{{url_for('export_xlsx',t='report',m=m)}}">⬇ 导出 Excel（原表布局）</a>
+</div>
+{% endblock %}

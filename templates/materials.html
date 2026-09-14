@@ -1,0 +1,212 @@
+{% extends 'base.html' %}
+{% block title %}物料档案{% endblock %}
+{% block h1 %}物料档案{% endblock %}
+{% block sub %}{{rows|length}} 种{% if inline %} · 可直接改任意格{% else %} · 可勾选批量操作{% endif %}{% endblock %}
+{% block body %}
+
+{% if msg %}<div class="card" style="background:#e8f6ee;border-left:3px solid #12a150">{{msg}}</div>{% endif %}
+
+<form class="card" method="get">
+  <label>搜索名称 / 料号 / 供应商 / 类型</label>
+  <input type="text" name="kw" value="{{kw}}" placeholder="如 黑化 / CPDR">
+  {% if show_all %}<input type="hidden" name="all" value="1">{% endif %}
+  {% if inline %}<input type="hidden" name="edit" value="1">{% endif %}
+  <button type="submit">搜索</button>
+  <div class="rowflex" style="margin-top:8px">
+    {% if inline %}
+      <a class="btn s o" href="{{url_for('materials',kw=kw,all='1' if show_all else '')}}">退出编辑</a>
+    {% else %}
+      <a class="btn s" href="{{url_for('materials',kw=kw,all='1' if show_all else '',edit='1')}}">✎ 表格编辑 A-G</a>
+    {% endif %}
+    <a class="btn s o" href="{{url_for('materials',kw=kw,edit='1' if inline else '',all='1' if not show_all else '')}}">
+      {{'只看启用' if show_all else '含停用物料'}}</a>
+    <a class="btn s o" href="{{url_for('imp')}}">⬆ 批量导入</a>
+    <a class="btn s o" href="{{url_for('sysinfo')}}">🔍 自检</a>
+  </div>
+</form>
+
+{% if inline and rows %}
+{# ---------- 行内可编辑表格 ---------- #}
+<form method="post" action="{{url_for('table_save',kw=kw,all='1' if show_all else '')}}">
+{% for f in ['name','code','supplier','category','spec','width','unit','status','opening','safety'] %}<input type="hidden" name="{{f}}" value="1">{% endfor %}
+<div class="card" style="padding:10px 6px">
+  <div class="scroll"><table>
+  <tr>
+    <th>物料名称</th><th>料号</th><th>类型</th><th>规格</th><th>宽幅</th>
+    <th>供应商</th><th>单位</th><th>状态</th><th class="n">期初</th><th class="n">预警</th>
+  </tr>
+  {% for r in rows %}
+  <tr {% if not r.active %}style="opacity:.5"{% endif %}>
+    <input type="hidden" name="id" value="{{r.id}}">
+    <td><input name="name_{{r.id}}" value="{{r.name}}" style="min-width:120px"></td>
+    <td><input name="code_{{r.id}}" value="{{r.code}}" style="min-width:90px"></td>
+    <td><input name="category_{{r.id}}" value="{{r.category}}" style="min-width:80px"></td>
+    <td><input name="spec_{{r.id}}" value="{{r.spec}}" style="min-width:70px"></td>
+    <td><input name="width_{{r.id}}" value="{{r.width}}" style="min-width:56px" inputmode="numeric"></td>
+    <td><input name="supplier_{{r.id}}" value="{{r.supplier}}" style="min-width:90px"></td>
+    <td><input name="unit_{{r.id}}" value="{{r.unit}}" style="min-width:56px"></td>
+    <td><select name="status_{{r.id}}">
+      {% for s in ['常用','不常用','呆滞'] %}<option {{'selected' if r.status==s}}>{{s}}</option>{% endfor %}</select></td>
+    <td><input name="opening_{{r.id}}" value="{{'%g'|format(r.opening)}}" style="min-width:60px" inputmode="decimal"></td>
+    <td><input name="safety_{{r.id}}" value="{{'%g'|format(r.safety)}}" style="min-width:56px" inputmode="decimal"></td>
+  </tr>{% endfor %}</table></div>
+</div>
+<button type="submit" class="g" onclick="return confirm('保存全部 {{rows|length}} 项修改？')">💾 保存全部修改</button>
+<div style="font-size:12px;color:#7a869a;margin-top:8px">横向滑动表格可看到后面的列；改完记得点保存。</div>
+</form>
+
+{% else %}
+{# ---------- 勾选批量模式 ---------- #}
+<form method="post" action="{{url_for('batch')}}" id="bform">
+<div class="card">
+{% if rows %}
+  <div style="margin-bottom:4px;display:flex;align-items:center;justify-content:space-between">
+    <label class="ckl" style="padding:8px 2px"><input type="checkbox" id="ckall"> <b>全选</b></label>
+    <span id="cnt" style="font-size:12px;color:#7a869a">已选 0 项</span>
+  </div>
+  <div class="scroll"><table>
+  <tr><th style="width:40px"></th>
+    {{ th('物料 / 料号','name') }}{{ th('类型','category') }}{{ th('规格','spec') }}
+    {{ th('宽幅','width') }}{{ th('供应商','supplier') }}{{ th('料号','code') }}
+    {{ th('期初','opening','n') }}{{ th('库存','stock','n') }}<th style="width:34px">史</th></tr>
+  {% for r in rows %}
+  <tr class="row" {% if not r.active %}style="opacity:.45"{% endif %}>
+   <td class="cbox" style="padding:0;width:40px;text-align:center">
+     <label class="ckl"><input type="checkbox" name="id" value="{{r.id}}" class="ck"></label></td>
+   <td onclick="location.href='{{url_for('material_edit',mid=r.id)}}'">
+     {{r.name}}{% if r.code %}<br><span class="pill">{{r.code}}</span>{% endif %}
+     {% if not r.active %}<span class="pill">停用</span>{% endif %}</td>
+   <td><a href="{{url_for('material_history',mid=r.id)}}">📈</a></td>
+   <td>{{r.category}}</td>
+   <td>{{r.spec}}</td>
+   <td>{{r.width}}</td>
+   <td>{{r.supplier}}{% if r.unit %}<br><span class="pill">{{r.unit}}</span>{% endif %}</td>
+   <td class="n">{{'%g'|format(r.opening)}}</td>
+   <td class="n {{'low' if r.stock<=r.safety else ''}}"><b>{{'%g'|format(r.stock)}}</b></td>
+  </tr>{% endfor %}</table></div>
+{% else %}<div class="empty">没有匹配的物料</div>{% endif %}
+</div>
+
+{% if rows %}
+<div class="card">
+  <h2>批量修改（勾选后生效）</h2>
+  <label>要改哪一列</label>
+  <select name="act" id="bact" onchange="toggleMode(this.value)">
+    <option value="">— 请选择 —</option>
+    <option value="set:name">物料名称</option>
+    <option value="set:code">料号</option>
+    <option value="set:category">类型</option>
+    <option value="set:spec">规格</option>
+    <option value="set:width">宽幅</option>
+    <option value="set:supplier">供应商</option>
+    <option value="set:unit">单位</option>
+    <option value="set:status">状态（常用/不常用/呆滞）</option>
+    <option value="set:opening">期初结存</option>
+    <option value="set:safety">安全库存</option>
+    <option value="inactive">批量停用</option>
+    <option value="active">批量启用</option>
+    <option value="delete">批量删除（有单据的转停用）</option>
+  </select>
+
+  <div id="numrow" style="display:none">
+    <label>数字方式</label>
+    <select id="nummode">
+      <option value="set">设为该值</option>
+      <option value="add">在当前基础上增减（可填负数）</option>
+    </select>
+  </div>
+
+  <div id="txtrow" style="display:none">
+    <label>修改方式</label>
+    <select id="txtmode" onchange="sync()">
+      <option value="set">直接设为该值（全部统一）</option>
+      <option value="replace">只替换字段里的部分内容</option>
+    </select>
+  </div>
+
+  <div id="oldrow" style="display:none">
+    <label>被替换的旧内容</label>
+    <input type="text" id="bold" placeholder="如把 250 换成 260：这里填 250">
+  </div>
+
+  <div>
+    <label id="vallb">改成什么值</label>
+    <input type="text" name="value" id="bval" placeholder="填写新值，留空则清空该字段">
+  </div>
+
+  <input type="hidden" name="mode" id="mode" value="set">
+  <input type="hidden" name="old" id="old" value="">
+
+  <button type="submit" class="g" onclick="return go(this)">执行批量操作</button>
+</div>
+{% endif %}
+</form>
+{% endif %}
+
+<a class="btn g" href="{{url_for('material_edit')}}">＋ 新增物料</a>
+
+<script>
+var cks=document.querySelectorAll('.ck'),cnt=document.getElementById('cnt');
+if(cnt){function upd(){
+  var n=0;
+  cks.forEach(function(c){ if(c.checked){n++; c.closest('tr').classList.add('sel'); }
+                           else c.closest('tr').classList.remove('sel'); });
+  cnt.textContent='已选 '+n+' 项';
+  document.getElementById('ckall').checked = (n===cks.length && n>0);
+}
+cks.forEach(function(c){c.addEventListener('change',upd)});
+document.getElementById('ckall').addEventListener('change',function(){
+  cks.forEach(function(c){c.checked=this.checked},this);upd();});
+// 点整行任意位置也能勾选（名称单元格除外，那里是进入编辑）
+document.querySelectorAll('tr.row').forEach(function(tr){
+  tr.addEventListener('click',function(e){
+    if(e.target.closest('a,input,select,button,label')) return;
+    if(e.target.closest('td')===tr.querySelector('td:nth-child(2)')) return;
+    var c=tr.querySelector('.ck'); if(!c) return;
+    c.checked=!c.checked; upd();
+  });
+});
+upd();}
+function isNum(a){return a==='set:opening'||a==='set:safety';}
+function txtMode(){return document.getElementById('txtmode').value;}
+function sync(){
+  var rep=txtMode()==='replace';
+  document.getElementById('oldrow').style.display=rep?'block':'none';
+  document.getElementById('vallb').textContent=rep?'替换成什么':'改成什么值';
+}
+function toggleMode(v){
+  var set=v.indexOf('set:')===0, num=isNum(v);
+  document.getElementById('numrow').style.display=num?'block':'none';
+  document.getElementById('txtrow').style.display=(set&&!num)?'block':'none';
+  if(!(set&&!num))document.getElementById('oldrow').style.display='none';
+  else sync();
+  document.getElementById('vallb').textContent='改成什么值';
+}
+function go(b){
+  var n=document.querySelectorAll('.ck:checked').length;
+  if(!n){alert('请先勾选物料');return false;}
+  var a=document.getElementById('bact').value;
+  if(!a){alert('请选择要执行的操作');return false;}
+  var val=document.getElementById('bval').value;
+  if(a.indexOf('set:')!==0){document.getElementById('mode').value='set';
+    return confirm('对 '+n+' 项执行此操作？');}
+  if(isNum(a)){
+    document.getElementById('mode').value=document.getElementById('nummode').value;
+    if(document.getElementById('nummode').value==='set'&&val===''
+       &&!confirm('新值为空，会把该字段设为 0，确定？'))return false;
+    return confirm('对 '+n+' 项设为 '+val+'？');
+  }
+  var rep=txtMode()==='replace';
+  document.getElementById('mode').value=rep?'replace':'set';
+  if(rep){
+    var old=document.getElementById('bold').value;
+    if(!old){alert('请填写要被替换的旧内容');return false;}
+    document.getElementById('old').value=old;
+    return confirm('在 '+n+' 项中把「'+old+'」替换为「'+val+'」？');
+  }
+  document.getElementById('old').value='';
+  if(val===''&&!confirm('新值为空，会把该字段清空，确定？'))return false;
+  return confirm('对 '+n+' 项执行此操作？');
+}
+</script>
+{% endblock %}

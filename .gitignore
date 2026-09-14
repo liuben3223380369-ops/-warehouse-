@@ -1,0 +1,15 @@
+warehouse.db
+warehouse.db-wal
+warehouse.db-shm
+*.bak
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+build/
+dist/
+.uploads/
+*.log
+.vscode/
+.idea/
+.DS_Store

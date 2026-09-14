@@ -1,0 +1,44 @@
+{% extends 'base.html' %}
+{% block title %}{{row.name}} 库存历史{% endblock %}
+{% block h1 %}📈 库存历史{% endblock %}
+{% block sub %}{{row.name}}{% if row.code %} · {{row.code}}{% endif %} · 当前 {{'%g'|format(row.stock)}} {{row.unit}}{% endblock %}
+{% block body %}
+
+<div class="grid3" style="margin-bottom:12px">
+  <div class="stat"><span>期初</span><b>{{'%g'|format(row.opening)}}</b></div>
+  <div class="stat"><span>累计进</span><b class="in">{{'%g'|format(row.in_qty)}}</b></div>
+  <div class="stat"><span>累计出</span><b class="out">{{'%g'|format(row.out_qty)}}</b></div>
+</div>
+
+<form class="card" method="get">
+  <label>按月份筛选</label>
+  <select name="m">
+    <option value="">全部</option>
+    {% for x in months %}<option {{'selected' if m==x}}>{{x}}</option>{% endfor %}
+  </select>
+  <button type="submit">查看</button>
+</form>
+
+<div class="card">
+{% if rows %}
+  <div class="scroll"><table>
+  <tr><th>日期</th><th class="n">进</th><th class="n">出</th><th class="n">件数</th><th class="n">结存</th><th>备注</th></tr>
+  {% for r in rows %}
+  <tr>
+    <td>{{r.tdate}}</td>
+    <td class="n in">{% if r.kind=='进' %}<b>{{'%g'|format(r.qty)}}</b>{% endif %}</td>
+    <td class="n out">{% if r.kind=='出' %}<b>{{'%g'|format(r.qty)}}</b>{% endif %}</td>
+    <td class="n">{% if r.pieces %}{{'%g'|format(r.pieces)}}{% endif %}</td>
+    <td class="n {{'low' if r.balance<=row.safety else ''}}"><b>{{'%g'|format(r.balance)}}</b></td>
+    <td>{{r.note}}</td>
+  </tr>{% endfor %}</table></div>
+  <div style="font-size:12px;color:#7a869a;margin-top:8px">
+  结存 = 期初 + 进 − 出，按单据时间逐笔滚动（最新在最上）。</div>
+{% else %}<div class="empty">该物料还没有单据记录</div>{% endif %}
+</div>
+
+<div class="rowflex">
+  <a class="btn s o" href="{{url_for('material_edit',mid=row.id)}}">编辑物料</a>
+  <a class="btn s o" href="{{url_for('materials')}}">返回列表</a>
+</div>
+{% endblock %}

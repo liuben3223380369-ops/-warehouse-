@@ -1,0 +1,55 @@
+{% extends 'base.html' %}
+{% block title %}{{kind}}库流水{% endblock %}
+{% block h1 %}{{ '📤 出库' if kind=='出' else ('📥 入库' if kind=='进' else '📝 全部') }}流水{% endblock %}
+{% block sub %}{% if m %}{{m}}{% elif d %}{{d}}{% else %}全部日期{% endif %} · {{count}} 条{% endblock %}
+{% block body %}
+{% if msg %}<div class="card" style="background:#e8f6ee;border-left:3px solid #12a150">{{msg}}</div>{% endif %}
+<form class="card" method="get">
+  <label>模糊搜索（物料 / 料号 / 备注 / 类型，不分大小写）</label>
+  <input type="text" name="kw" value="{{kw}}" placeholder="如 柏威 / CPDR">
+  <div class="rowflex">
+    <div><label>按日期</label><input type="date" name="d" value="{{d}}"></div>
+    <div><label>或按月份</label><input type="month" name="m" value="{{m}}"></div>
+  </div>
+  {% if kind %}<input type="hidden" name="kind" value="{{kind}}">{% endif %}
+  {% if cur_sort %}<input type="hidden" name="sort" value="{{cur_sort}}">
+  <input type="hidden" name="dir" value="{{cur_dir}}">{% endif %}
+  <button type="submit">筛选</button>
+  <a class="btn o s" href="{{url_for(url_kind or 'txns')}}">清空</a>
+</form>
+<div class="card">
+{% if rows %}<div class="scroll"><table>
+<tr>
+  {{ th('日期', 'tdate') }}
+  {{ th('物料', 'name') }}
+  {{ th('进/出', 'kind', 'n') }}
+  {{ th('数量', 'qty', 'n') }}
+  {{ th('件数', 'pieces', 'n') }}
+  {{ th('每件', 'per', 'n') }}
+  {{ th('备注', 'note') }}
+  <th></th>
+</tr>
+{% for r in rows %}
+<tr>
+ <td>{{r.tdate}}</td>
+ <td>{{r.name}}{% if r.code %}<br><span class="pill">{{r.code}}</span>{% endif %}</td>
+ <td class="n"><span class="pill {{'i' if r.kind=='进' else 'o'}}">{{r.kind}}</span></td>
+ <td class="n"><b class="{{'in' if r.kind=='进' else 'out'}}">{{'%g'|format(r.qty)}}</b> {{r.unit}}</td>
+ <td class="n">{% if r.pieces %}{{'%g'|format(r.pieces)}}{% endif %}</td>
+ <td class="n">{% if r.per_piece %}{{'%g'|format(r.per_piece)}}{% endif %}</td>
+ <td>{{r.note}}</td>
+ <td><a href="{{url_for('txn_del',tid=r.id)}}" onclick="return confirm('删除这条单据？')">✕</a></td>
+</tr>{% endfor %}</table></div>
+{% else %}<div class="empty">没有{{kind}}库记录</div>{% endif %}
+</div>
+<div class="rowflex">
+  <a class="btn g s" href="{{url_for('export_xlsx',t='txn',kw=kw,d=d,kind=kind or '',sort=cur_sort,dir=cur_dir)}}">⬇ 导出 Excel</a>
+  <a class="btn o s" href="{{url_for('export_csv',t='txn',m=(d[:7] if d else ym))}}">导出 CSV</a>
+</div>
+<div class="grid2">
+  {% if kind %}<a class="btn g s" href="{{url_for('out') if kind=='出' else 'in'}}">＋ 继续录{{kind}}库</a>
+  <a class="btn o s" href="{{url_for('txns')}}">全部流水</a>
+  {% else %}<a class="btn g s" href="{{url_for('out')}}">📤 出库录入</a>
+  <a class="btn s" href="{{url_for('in')}}">📥 入库录入</a>{% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,45 @@
+{% extends 'base.html' %}
+{% block title %}表头映射设置{% endblock %}
+{% block h1 %}表头映射设置{% endblock %}
+{% block sub %}改表头名称 / 显示哪些列 / 导入时的别名{% endblock %}
+{% block body %}
+
+{% if msg %}<div class="card" style="background:#e8f6ee;border-left:3px solid #12a150">{{msg}}</div>{% endif %}
+
+<div class="card">
+  <p style="font-size:13px;color:#5b6675;margin:0 0 6px">
+  这里定义的是<b>入库界面每一列显示成什么、排第几、要不要出现</b>，
+  以及 Excel 导入时<b>用哪些别名认这个表头</b>。改完立刻在入库页生效。</p>
+</div>
+
+<form method="post" class="card">
+  {% for c in cols %}
+  <div style="border-bottom:1px solid #f0f2f5;padding:10px 0">
+    <div class="rowflex">
+      <div style="flex:2">
+        <label style="margin-top:0">系统字段 <span class="pill">{{c.fid}}</span></label>
+        <input name="label_{{c.fid}}" value="{{c.label}}" placeholder="显示的表头名">
+      </div>
+      <div style="flex:1">
+        <label style="margin-top:0">列序</label>
+        <input name="pos_{{c.fid}}" value="{{c.pos}}" inputmode="numeric" type="number">
+      </div>
+    </div>
+    <label>导入别名（英文逗号分隔，用于识别 Excel 表头）</label>
+    <input name="al_{{c.fid}}" value="{{c.aliases}}" placeholder="如 名称,品名,物料">
+    <label style="display:flex;align-items:center;gap:6px">
+      <input type="checkbox" name="en_{{c.fid}}" {{'checked' if c.enabled}} style="width:auto">
+      <span style="font-size:13px">在入库界面显示这一列</span>
+    </label>
+  </div>
+  {% endfor %}
+  <button type="submit">💾 保存表头映射</button>
+</form>
+
+<form method="post" onsubmit="return confirm('恢复成系统默认表头？自定义名称会丢失')">
+  <input type="hidden" name="reset" value="1">
+  <button type="submit" class="r s">↺ 恢复默认</button>
+</form>
+
+<a class="btn o s" href="{{url_for('txn')}}">返回入库页</a>
+{% endblock %}

@@ -1,0 +1,49 @@
+{% extends 'base.html' %}
+{% block title %}实时库存{% endblock %}
+{% block h1 %}实时库存{% endblock %}
+{% block sub %}期初 + 入库 − 出库 · 点表头可排序{% endblock %}
+{% block body %}
+<form class="card" method="get">
+  <label>模糊搜索（名称 / 料号 / 供应商 / 类型 / 规格，不分大小写）</label>
+  <input type="text" name="kw" value="{{kw}}" placeholder="如 黑化 / CPDR / 250">
+  {% if f %}<input type="hidden" name="f" value="{{f}}">{% endif %}
+  {% if cur_sort %}<input type="hidden" name="sort" value="{{cur_sort}}">
+  <input type="hidden" name="dir" value="{{cur_dir}}">{% endif %}
+  <button type="submit">搜索</button>
+</form>
+
+<div class="grid3" style="margin-bottom:12px">
+  <a class="btn s {{'' if f else 'o'}}" href="{{url_for('stock')}}">全部</a>
+  <a class="btn s {{'' if f=='alert' else 'o'}}" href="{{url_for('stock',f='alert',kw=kw)}}">预警</a>
+  <a class="btn s {{'' if f=='zero' else 'o'}}" href="{{url_for('stock',f='zero',kw=kw)}}">零/负</a>
+</div>
+<div class="card">
+{% if rows %}<div class="scroll"><table>
+<tr>
+  {{ th('物料', 'name') }}
+  {{ th('类型', 'category') }}
+  {{ th('料号', 'code') }}
+  {{ th('期初', 'opening', 'n') }}
+  {{ th('进', 'in_qty', 'n') }}
+  {{ th('出', 'out_qty', 'n') }}
+  {{ th('库存', 'stock', 'n') }}
+  <th></th>
+</tr>
+{% for r in rows %}
+<tr>
+ <td>{{r.name}}{% if r.status!='常用' %} <span class="pill">{{r.status}}</span>{% endif %}</td>
+ <td>{{r.category}}</td>
+ <td>{{r.code}}</td>
+ <td class="n">{{'%g'|format(r.opening)}}</td>
+ <td class="n in">{{'%g'|format(r.in_qty)}}</td>
+ <td class="n out">{{'%g'|format(r.out_qty)}}</td>
+ <td class="n {{'low' if r.stock<=r.safety else ''}}"><b>{{'%g'|format(r.stock)}}</b><br><span class="pill">{{r.unit}}</span></td>
+ <td><a href="{{url_for('material_history',mid=r.id)}}">📈</a></td>
+</tr>{% endfor %}</table></div>
+{% else %}<div class="empty">没有匹配的物料</div>{% endif %}
+</div>
+<div class="rowflex">
+  <a class="btn g s" href="{{url_for('export_xlsx',t='stock',kw=kw,f=f,sort=cur_sort,dir=cur_dir)}}">⬇ 导出 Excel</a>
+  <a class="btn o s" href="{{url_for('export_csv',t='stock')}}">导出 CSV</a>
+</div>
+{% endblock %}

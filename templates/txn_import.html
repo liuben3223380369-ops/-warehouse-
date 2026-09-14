@@ -1,0 +1,75 @@
+{% extends 'base.html' %}
+{% block title %}{% if fixed=='出' %}出库{% elif fixed=='进' %}入库{% else %}出入库{% endif %}导入{% endblock %}
+{% block h1 %}{% if fixed=='出' %}📤 出库导入{% elif fixed=='进' %}📥 入库导入{% else %}📝 出入库导入{% endif %}{% endblock %}
+{% block sub %}Excel / WPS 表格直接导入单据{% endblock %}
+{% block body %}
+
+<div class="card">
+  <h2>① 表格怎么填</h2>
+  <p style="font-size:13px;color:#5b6675;margin:0 0 8px">
+  支持 <b>.xlsx / .xlsm / .xls / .et(WPS) / .csv</b>，第一行写表头，
+  <b>「物料名称」或「料号」必填</b>，数量必填。列顺序随意，缺列也没关系。</p>
+  <div class="scroll"><table>
+    <tr>{% for h in ['日期','物料名称','料号','类型','规格','宽幅','供应商','单位','进','出','备注'] %}
+        <th>{{h}}</th>{% endfor %}</tr>
+    <tr>{% for v in ['2026-09-03','半对半黑化压延','CPDR131218KAB1','无胶压延','12/20','250','松杨电子','平米','100','30','出柏威'] %}
+        <td>{{v}}</td>{% endfor %}</tr>
+  </table></div>
+  <p style="font-size:12px;color:#7a869a;margin:8px 0 0;line-height:1.8">
+  <b>数量两种写法，任选其一：</b><br>
+  · <b>「进」「出」分两列</b>（推荐）：一行可同时有进有出，会生成两笔单据<br>
+  · <b>「数量」+「进出」两列</b>：进出列填"进"或"出"；没有进出列时按下方默认类型<br>
+  表头认这些别名：单据日期/时间、品名/名称、编号/型号、入库数量/出库数量、客户/单号/摘要、类别、幅宽…<br>
+  <b>WPS 用户</b>：直接存 .et 或另存为 .xlsx / .csv 都能导；老的 .xls 如报错，先另存为 .xlsx。</p>
+  <a class="btn s o" href="{{url_for('txn_import_tpl')}}">⬇ 下载导入模板</a>
+</div>
+
+{% if err %}<div class="card" style="background:#fdeced;border-left:3px solid #e5484d">{{err}}</div>{% endif %}
+
+{% if preview %}
+<div class="card">
+  <h2>② 确认预览 <span class="pill">共 {{total}} 笔</span></h2>
+  <p style="font-size:12px;color:#5b6675">识别到的列：{{fields|join('、')}}{% if total>60 %}（仅显示前 60 笔）{% endif %}</p>
+  <div class="scroll"><table>
+  <tr><th>日期</th><th>物料</th><th>料号</th><th>进/出</th><th class="n">数量</th><th>单位</th><th>备注</th></tr>
+  {% for r in preview %}<tr>
+   <td>{{r.date}}</td><td>{{r.name}}</td><td>{{r.code}}</td>
+   <td><span class="pill {{'i' if r.kind=='进' else 'o'}}">{{r.kind}}</span></td>
+   <td class="n"><b class="{{'in' if r.kind=='进' else 'out'}}">{{'%g'|format(r.qty)}}</b></td>
+   <td>{{r.unit}}</td><td>{{r.note}}</td>
+  </tr>{% endfor %}</table></div>
+  <form method="post">
+    <input type="hidden" name="confirm" value="1">
+    <input type="hidden" name="f" value="{{f}}">
+    <input type="hidden" name="defkind" value="{{defkind}}">
+    <input type="hidden" name="fields" value="{{fields_str}}">
+    <label>日期为空时，用这个日期</label>
+    <input type="date" name="defdate" value="{{defdate}}">
+    {% if fixed=='出' or not fixed %}
+    <label style="display:flex;align-items:center;gap:6px">
+      <input type="checkbox" name="allow_over" value="1" style="width:auto">
+      <span style="font-size:13px">允许超出库存（不勾选则自动跳过超库存的行）</span>
+    </label>{% endif %}
+    <button type="submit" class="g">确认导入</button>
+  </form>
+</div>
+{% else %}
+<form class="card" method="post" enctype="multipart/form-data">
+  <h2>② 选择文件</h2>
+  <label>Excel / WPS 表格文件</label>
+  <input type="file" name="file" accept=".xlsx,.xlsm,.xls,.et,.csv" required>
+  <label>日期为空时，用这个日期</label>
+  <input type="date" name="defdate" value="{{defdate}}">
+  {% if not fixed %}
+  <label>表里没有「进出」列时，全部按什么类型</label>
+  <select name="defkind">
+    <option value="进">全部当入库</option>
+    <option value="出">全部当出库</option>
+  </select>
+  {% endif %}
+  <button type="submit">解析并预览</button>
+</form>
+{% endif %}
+
+<a class="btn o s" href="{{url_for('out') if fixed=='出' else ('in' if fixed=='进' else 'txn')}}">返回{% if fixed=='出' %}出库{% elif fixed=='进' %}入库{% else %}录单{% endif %}页</a>
+{% endblock %}

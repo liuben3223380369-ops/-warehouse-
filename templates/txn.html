@@ -1,0 +1,173 @@
+{% extends 'base.html' %}
+{% block title %}{% if fixed=='出' %}出库录入{% elif fixed=='进' %}入库录入{% else %}录入出入库{% endif %}{% endblock %}
+{% block h1 %}{% if fixed=='出' %}📤 出库录入{% elif fixed=='进' %}📥 入库录入{% else %}录入出入库{% endif %}{% endblock %}
+{% block sub %}原表 A-G 列全部可录 · 一次可填多行{% if fixed=='出' %} · 仅出库，超库存自动拦截{% endif %}{% endblock %}
+{% block extra_head %}{% endblock %}
+{% block body %}
+
+{% if fixed=='出' %}
+<div class="card" style="padding:10px 12px;font-size:13px;color:#5b6675">
+  物料列表{% if only_stock %}<b>只显示有库存的物料（{{mats|length}} 种）</b>，
+  <a href="{{url_for('out',allm='1')}}">显示全部</a>{% else %}显示全部物料，
+  <a href="{{url_for('out')}}">只看有库存</a>{% endif %}
+</div>
+{% endif %}
+{% if msg %}<div class="card" style="background:#e8f6ee;border-left:3px solid #12a150">{{msg}}</div>{% endif %}
+
+<form method="post" id="f">
+<div class="card" style="padding:10px 6px">
+  <div class="scroll"><table id="t">
+  <tr>
+    <th>日期</th>
+    {% for c in cols %}<th>{{c.label}}</th>{% endfor %}
+    {% if not fixed %}<th>进/出</th>{% endif %}<th>数量</th><th>件数</th><th>每件</th><th>备注</th>{% if fixed=='出' %}<th class="n">可用</th>{% endif %}
+  </tr>
+  {% for i in rows %}
+  <tr class="r">
+    <td><input type="date" name="tdate_{{i}}" value="{{tdate}}" style="min-width:126px"></td>
+    {% for c in cols %}
+      {% set f = c.fid %}
+      {% if f == 'name' %}
+      <td><input name="name_{{i}}" class="mname" data-i="{{i}}" list="ml{{i}}" autocomplete="off"
+                 placeholder="选或输入" style="min-width:150px">
+          <input type="hidden" name="mid_{{i}}" id="mid_{{i}}">
+          <datalist id="ml{{i}}">
+            {% for m in mats %}<option value="{{m.name}}{% if m.code %} · {{m.code}}{% endif %}">{% endfor %}
+          </datalist></td>
+      {% elif f == 'unit' %}
+      <td><input name="unit_{{i}}" list="ul" style="min-width:62px" placeholder="平米">
+          <datalist id="ul">{% for u in ['平米','箱','卷','米','KG'] %}<option value="{{u}}">{% endfor %}</datalist></td>
+      {% elif f == 'status' %}
+      <td><select name="status_{{i}}" style="min-width:74px">
+          <option value="">—</option>
+          {% for s in ['常用','不常用','呆滞'] %}<option>{{s}}</option>{% endfor %}</select></td>
+      {% elif f in ('opening','safety') %}
+      <td><input name="{{f}}_{{i}}" inputmode="decimal" placeholder="0" style="min-width:66px"></td>
+      {% else %}
+      <td><input name="{{f}}_{{i}}" style="min-width:{{'80px' if f in ('code','supplier','category') else '60px'}}"></td>
+      {% endif %}
+    {% endfor %}
+    {% if not fixed %}<td><select name="kind_{{i}}" class="kd" style="min-width:66px">
+        <option value="进">进</option><option value="出">出</option></select></td>{% endif %}
+    <td><input name="qty_{{i}}" inputmode="decimal" placeholder="0" class="qty" data-i="{{i}}"
+               style="min-width:70px" oninput="calc({{i}});chkStock({{i}})"></td>
+    <td><input name="pieces_{{i}}" inputmode="decimal" placeholder="件" class="pc" data-i="{{i}}"
+               style="min-width:60px" oninput="calc({{i}})"></td>
+    <td><input name="per_{{i}}" inputmode="decimal" placeholder="每件" class="pe" data-i="{{i}}"
+               style="min-width:60px" oninput="calc2({{i}})"></td>
+    <td><input name="note_{{i}}" placeholder="{% if fixed=='出' %}客户/领用人{% else %}单号/客户{% endif %}" style="min-width:110px"></td>
+    {% if fixed=='出' %}<td class="n"><span id="av_{{i}}" class="pill">—</span></td>{% endif %}
+  </tr>
+  {% endfor %}
+  </table></div>
+  <input type="hidden" name="nrow" id="nrow" value="{{n}}">
+  <a class="btn s o" href="javascript:addRow()">＋ 再加一行</a>
+</div>
+
+<button type="submit" class="g" onclick="return chk()">💾 保存（{{n}} 行）</button>
+<button type="submit" name="stay" value="1" onclick="return chk()">保存并停留在本页</button>
+</form>
+
+<div class="card">
+  <div style="font-size:12px;color:#5b6675;line-height:1.7">
+  · 物料名称输入时会联想已有物料，<b>选中即自动带出其余 A-G 信息</b>；也可整行手填新物料，保存时自动建档<br>
+  · 行内改了 A-G 内容，保存时会同步更新该物料档案<br>
+  · 只有填了<b>名称或料号</b>且<b>数量>0</b>的行才会保存<br>
+  {% if fixed=='出' %}· <b>出库页只能出</b>：「可用」列实时显示当前库存，<b>超出库存的行会自动拦下不保存</b><br>{% endif %}
+  · 日期为空的行，默认用第一行日期
+  </div>
+  <a class="btn s" href="{{url_for('txn_import') if not fixed else (url_for('out_import') if fixed=='出' else url_for('in_import'))}}">⬆ 从 Excel / WPS 导入</a>
+  <a class="btn s o" href="{{url_for('columns')}}">⚙ 修改表头名称 / 显示 / 映射</a>
+  <a class="btn s o" href="{{url_for('out_list') if fixed=='出' else ('in_list' if fixed=='进' else 'txns')}}">查看{{'出库' if fixed=='出' else ('入库' if fixed=='进' else '')}}流水</a>
+  {% if fixed=='出' %}<a class="btn s o" href="{{url_for('in')}}">切到入库录入</a>
+  {% elif fixed=='进' %}<a class="btn s o" href="{{url_for('out')}}">切到出库录入</a>{% endif %}
+</div>
+
+<script>
+var MATS = {{ js_mats|tojson }};
+var COLS = {{ fids|tojson }};
+var rowIdx = {{ n }};
+
+function fill(i, key){
+  var v = (document.querySelector('input[name="name_'+i+'"]').value||'').trim();
+  var hit = null;
+  for (var k=0;k<MATS.length;k++){
+    var m=MATS[k];
+    var tag = m.name + (m.code ? ' · '+m.code : '');
+    if (tag === v || m.name === v || (m.code && m.code === v)) { hit = m; break; }
+  }
+  if(!hit) return;
+  document.getElementById('mid_'+i).value = hit.id;
+  COLS.forEach(function(f){
+    if(f==='name') return;
+    var el=document.querySelector('[name="'+f+'_'+i+'"]');
+    if(el && hit[f]!==undefined && hit[f]!==null) el.value = hit[f];
+  });
+  var av=document.getElementById('av_'+i);
+  if(av){ av.textContent = (hit.stock!==undefined? fmt(hit.stock):'—'); chkStock(i); }
+  var q=document.querySelector('.qty[data-i="'+i+'"]'); if(q&&!q.value) q.focus();
+}
+function fmt(n){ return (Math.round(n*100)/100)+''; }
+function num(i,cls){ return parseFloat((document.querySelector('.'+cls+'[data-i="'+i+'"]')||{}).value||0)||0; }
+function calc(i){    // 改数量或件数 -> 算每件
+  var q=num(i,'qty'), p=num(i,'pc');
+  var el=document.querySelector('.pe[data-i="'+i+'"]'); if(!el) return;
+  el.value = (q&&p) ? fmt(q/p) : el.value;
+}
+function calc2(i){   // 改每件 -> 算总数量；有件数也反算
+  var p=num(i,'pc'), e=num(i,'pe'), q=num(i,'qty');
+  if(p&&e){ document.querySelector('.qty[data-i="'+i+'"]').value = fmt(p*e); }
+  else if(q&&e){ document.querySelector('.pc[data-i="'+i+'"]').value = fmt(q/e); }
+  chkStock(i);
+}
+function chkStock(i){
+  var av=document.getElementById('av_'+i); if(!av) return;
+  var id=document.getElementById('mid_'+i).value;
+  var q=parseFloat(document.querySelector('.qty[data-i="'+i+'"]').value||0);
+  var hit=null; for(var k=0;k<MATS.length;k++) if(String(MATS[k].id)===String(id)) hit=MATS[k];
+  av.className='pill';
+  if(hit && hit.stock!==undefined){
+    av.textContent=fmt(hit.stock);
+    if(q>0 && q>hit.stock+1e-9){ av.className='pill o'; av.textContent=fmt(hit.stock)+' ✕超'; }
+  }
+}
+document.querySelectorAll('.mname').forEach(function(el){
+  el.addEventListener('change', function(){ fill(this.dataset.i); });
+  el.addEventListener('blur', function(){ fill(this.dataset.i); });
+});
+
+function addRow(){
+  var t=document.getElementById('t');
+  var tr=t.querySelector('tr.r');
+  var n=tr.cloneNode(true);
+  n.querySelectorAll('input,select').forEach(function(el){
+    var nm=el.name||''; var m=nm.match(/^(.+)_(\d+)$/);
+    if(m){ el.name=m[1]+'_'+rowIdx; if(el.id==='mid_'+m[2]) el.id='mid_'+rowIdx; }
+    if(el.type!=='hidden'&&el.classList.contains('qty')) el.value='';
+    if(el.tagName==='SELECT'&&el.name.indexOf('kind')===0) el.selectedIndex=0;
+    if(el.tagName==='INPUT'&&el.type==='date') el.value=document.querySelector('[name="tdate_0"]').value;
+    if(el.tagName==='INPUT'&&el.type!=='date'&&el.type!=='hidden'&&!el.classList.contains('qty')) el.value='';
+    if(el.classList&&el.classList.contains('qty')) el.dataset.i=rowIdx;
+    if(el.tagName==='SPAN'&&el.id&&el.id.indexOf('av_')===0) el.id='av_'+rowIdx;
+  });
+  var dl=n.querySelector('datalist'); if(dl) dl.id='ml'+rowIdx;
+  var mi=n.querySelector('.mname'); if(mi){ mi.setAttribute('list','ml'+rowIdx); mi.dataset.i=rowIdx;
+    mi.addEventListener('change',function(){fill(rowIdx);}); mi.addEventListener('blur',function(){fill(rowIdx);}); }
+  t.appendChild(n); rowIdx++;
+  document.getElementById('nrow').value=rowIdx;
+  document.querySelector('button[type=submit]').textContent='💾 保存（'+rowIdx+' 行）';
+  return false;
+}
+function chk(){
+  var n=0;
+  document.querySelectorAll('#t tr.r').forEach(function(tr){
+    var nm=tr.querySelector('[name^="name_"]').value.trim();
+    var cd=tr.querySelector('[name^="code_"]'); cd=cd?cd.value.trim():'';
+    var q=parseFloat(tr.querySelector('.qty').value||0);
+    if((nm||cd)&&q>0) n++;
+  });
+  if(!n){alert('请至少在某一行填写物料名称（或料号）和数量');return false;}
+  return confirm('将保存 '+n+' 条单据，确定？');
+}
+</script>
+{% endblock %}

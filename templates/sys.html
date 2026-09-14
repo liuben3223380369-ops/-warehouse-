@@ -1,0 +1,68 @@
+{% extends 'base.html' %}
+{% block title %}系统自检{% endblock %}
+{% block h1 %}🔍 系统自检{% endblock %}
+{% block sub %}数据体检 · 备份 · 运行状态{% endblock %}
+{% block body %}
+
+{% if msg %}<div class="card" style="background:#e8f6ee;border-left:3px solid #12a150">{{msg}}</div>{% endif %}
+
+<div class="card">
+  <h2>数据体检</h2>
+  {% if issues %}
+    <div style="background:#fdeced;border-left:3px solid #e5484d;padding:10px 12px;border-radius:8px;margin-bottom:10px">
+      <b style="color:#c1272d">发现 {{issues|length}} 个问题</b>
+    </div>
+    {% for x in issues %}<div style="font-size:13px;padding:6px 0;border-bottom:1px solid #f0f2f5">· {{x}}</div>{% endfor %}
+    <div style="font-size:12px;color:#7a869a;margin-top:10px">
+    名称/料号重复不影响记账，但导入时建议按<b>料号</b>匹配；留空的去「物料」页补上即可。</div>
+  {% else %}
+    <div style="background:#e8f6ee;border-left:3px solid #12a150;padding:10px 12px;border-radius:8px">
+      <b style="color:#0d8a45">✅ 数据正常，没有发现问题</b>
+    </div>
+  {% endif %}
+  <div class="rowflex" style="margin-top:10px">
+    <a class="btn s o" href="{{url_for('sysinfo')}}">重新检查</a>
+    <a class="btn s o" href="{{url_for('sysfix')}}">🧹 清理孤儿单据</a>
+  </div>
+</div>
+
+<div class="card">
+  <h2>库概况</h2>
+  <div class="grid2" style="font-size:13px;line-height:2">
+    <div>启用物料 <b>{{stats.materials}}</b> 种</div>
+    <div>含停用共 <b>{{stats.all_materials}}</b> 种</div>
+    <div>单据 <b>{{stats.txns}}</b> 条</div>
+    <div>预警 <b>{{stats.alerts}}</b> 项</div>
+    <div>最早单据 <b>{{stats.first}}</b></div>
+    <div>最新单据 <b>{{stats.last}}</b></div>
+  </div>
+  <div style="font-size:12px;color:#7a869a;margin-top:8px">
+  文件大小 {{'%.1f'|format(stats.size/1024)}} KB · Python {{py}}<br>
+  <span style="word-break:break-all">{{stats.path}}</span>
+  </div>
+</div>
+
+<div class="card">
+  <h2>备份</h2>
+  <p style="font-size:13px;color:#5b6675;margin:0 0 8px">
+  点一下就生成一个 <b>.bak</b> 文件（在程序目录里）。
+  换手机或出问题前先备份，把 .bak 复制走即可；要还原就把改名成 <b>warehouse.db</b>。</p>
+  <a class="btn g" href="{{url_for('sysbackup')}}">💾 立即备份</a>
+  {% if baks %}
+  <div style="margin-top:10px;font-size:12px;color:#7a869a">
+  已有备份：{% for b in baks %}<span class="pill">{{b}}</span> {% endfor %}</div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>数据安全说明</h2>
+  <div style="font-size:12px;color:#5b6675;line-height:1.9">
+  · 已开启 <b>外键约束</b>：删除物料时不会再留下无主单据<br>
+  · 已开启 <b>WAL 模式</b>：写数据时读操作不卡，断电也不易损坏<br>
+  · 批量删除/导入走 <b>事务</b>：中途出错整批回滚，不会写一半<br>
+  · 所有数据就一个文件 <b>warehouse.db</b>，换机复制走即可
+  </div>
+</div>
+
+<a class="btn o s" href="{{url_for('materials')}}">返回物料</a>
+{% endblock %}
