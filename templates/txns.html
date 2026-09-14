@@ -1,7 +1,64 @@
 {% extends 'base.html' %}
-{% block title %}{{kind}}库流水{% endblock %}
-{% block h1 %}{{ '📤 出库' if kind=='出' else ('📥 入库' if kind=='进' else '📝 全部') }}流水{% endblock %}
-{% block sub %}{% if m %}{{m}}{% elif d %}{{d}}{% else %}全部日期{% endif %} · {{count}} 条{% endblock %}
+{% block title %}{{kind}}库流水<script>
+var cka=document.getElementById('ckall');
+if(cka){
+  cka.addEventListener('change',function(){
+    document.querySelectorAll('.ck').forEach(function(c){c.checked=cka.checked;});
+  });
+}
+function selCount(){ return document.querySelectorAll('.ck:checked').length; }
+function delSel(){
+  var n=selCount();
+  if(!n){ alert('先勾选要删除的单据'); return false; }
+  return confirm('确定删除选中的 '+n+' 条单据？删除后库存会自动重算，且无法撤销。');
+}
+function delAll(){
+  var tip='{% if m %}当前月份 {{m}}{% elif d %}日期 {{d}}{% else %}全部日期{% endif %}{% if kind %} 的{{kind}}库单据{% endif %}';
+  if(!confirm('确定清空 '+tip+' 吗？\n共 {{count}} 条，删除后无法撤销。')) return false;
+  return confirm('再确认一次：这会把 '+tip+' 全部删除（{{count}} 条），真的继续？');
+}
+</script>
+{% endblock %}
+{% block h1 %}{{ '📤 出库' if kind=='出' else ('📥 入库' if kind=='进' else '📝 全部') }}流水<script>
+var cka=document.getElementById('ckall');
+if(cka){
+  cka.addEventListener('change',function(){
+    document.querySelectorAll('.ck').forEach(function(c){c.checked=cka.checked;});
+  });
+}
+function selCount(){ return document.querySelectorAll('.ck:checked').length; }
+function delSel(){
+  var n=selCount();
+  if(!n){ alert('先勾选要删除的单据'); return false; }
+  return confirm('确定删除选中的 '+n+' 条单据？删除后库存会自动重算，且无法撤销。');
+}
+function delAll(){
+  var tip='{% if m %}当前月份 {{m}}{% elif d %}日期 {{d}}{% else %}全部日期{% endif %}{% if kind %} 的{{kind}}库单据{% endif %}';
+  if(!confirm('确定清空 '+tip+' 吗？\n共 {{count}} 条，删除后无法撤销。')) return false;
+  return confirm('再确认一次：这会把 '+tip+' 全部删除（{{count}} 条），真的继续？');
+}
+</script>
+{% endblock %}
+{% block sub %}{% if m %}{{m}}{% elif d %}{{d}}{% else %}全部日期{% endif %} · {{count}} 条<script>
+var cka=document.getElementById('ckall');
+if(cka){
+  cka.addEventListener('change',function(){
+    document.querySelectorAll('.ck').forEach(function(c){c.checked=cka.checked;});
+  });
+}
+function selCount(){ return document.querySelectorAll('.ck:checked').length; }
+function delSel(){
+  var n=selCount();
+  if(!n){ alert('先勾选要删除的单据'); return false; }
+  return confirm('确定删除选中的 '+n+' 条单据？删除后库存会自动重算，且无法撤销。');
+}
+function delAll(){
+  var tip='{% if m %}当前月份 {{m}}{% elif d %}日期 {{d}}{% else %}全部日期{% endif %}{% if kind %} 的{{kind}}库单据{% endif %}';
+  if(!confirm('确定清空 '+tip+' 吗？\n共 {{count}} 条，删除后无法撤销。')) return false;
+  return confirm('再确认一次：这会把 '+tip+' 全部删除（{{count}} 条），真的继续？');
+}
+</script>
+{% endblock %}
 {% block body %}
 {% if msg %}<div class="card" style="background:#e8f6ee;border-left:3px solid #12a150">{{msg}}</div>{% endif %}
 <form class="card" method="get">
@@ -17,9 +74,14 @@
   <button type="submit">筛选</button>
   <a class="btn o s" href="{{url_for(url_kind or 'txns')}}">清空</a>
 </form>
+<form method="post" action="{{url_for('txns_batch')}}" id="bf">
+<input type="hidden" name="back" value="{{ request.path }}">
+<input type="hidden" name="d" value="{{d}}"><input type="hidden" name="m" value="{{m}}">
+<input type="hidden" name="kind" value="{{kind or ''}}"><input type="hidden" name="kw" value="{{kw}}">
 <div class="card">
 {% if rows %}<div class="scroll"><table>
 <tr>
+  <th style="width:34px"><input type="checkbox" id="ckall" style="width:22px"></th>
   {{ th('日期', 'tdate') }}
   {{ th('物料', 'name') }}
   {{ th('进/出', 'kind', 'n') }}
@@ -31,6 +93,7 @@
 </tr>
 {% for r in rows %}
 <tr>
+ <td><input type="checkbox" name="id" value="{{r.id}}" class="ck" style="width:22px"></td>
  <td>{{r.tdate}}</td>
  <td>{{r.name}}{% if r.code %}<br><span class="pill">{{r.code}}</span>{% endif %}</td>
  <td class="n"><span class="pill {{'i' if r.kind=='进' else 'o'}}">{{r.kind}}</span></td>
@@ -40,8 +103,13 @@
  <td>{{r.note}}</td>
  <td><a href="{{url_for('txn_del',tid=r.id)}}" onclick="return confirm('删除这条单据？')">✕</a></td>
 </tr>{% endfor %}</table></div>
+<div class="rowflex" style="margin-top:10px">
+  <button type="submit" class="r s" onclick="return delSel()">🗑 删除勾选</button>
+  <button type="submit" name="clear" value="1" class="o s" onclick="return delAll()">清空当前筛选</button>
+</div>
 {% else %}<div class="empty">没有{{kind}}库记录</div>{% endif %}
 </div>
+</form>
 <div class="rowflex">
   <a class="btn g s" href="{{url_for('export_xlsx',t='txn',kw=kw,d=d,kind=kind or '',sort=cur_sort,dir=cur_dir)}}">⬇ 导出 Excel</a>
   <a class="btn o s" href="{{url_for('export_csv',t='txn',m=(d[:7] if d else ym))}}">导出 CSV</a>
@@ -52,4 +120,23 @@
   {% else %}<a class="btn g s" href="{{url_for('out')}}">📤 出库录入</a>
   <a class="btn s" href="{{url_for('in')}}">📥 入库录入</a>{% endif %}
 </div>
+<script>
+var cka=document.getElementById('ckall');
+if(cka){
+  cka.addEventListener('change',function(){
+    document.querySelectorAll('.ck').forEach(function(c){c.checked=cka.checked;});
+  });
+}
+function selCount(){ return document.querySelectorAll('.ck:checked').length; }
+function delSel(){
+  var n=selCount();
+  if(!n){ alert('先勾选要删除的单据'); return false; }
+  return confirm('确定删除选中的 '+n+' 条单据？删除后库存会自动重算，且无法撤销。');
+}
+function delAll(){
+  var tip='{% if m %}当前月份 {{m}}{% elif d %}日期 {{d}}{% else %}全部日期{% endif %}{% if kind %} 的{{kind}}库单据{% endif %}';
+  if(!confirm('确定清空 '+tip+' 吗？\n共 {{count}} 条，删除后无法撤销。')) return false;
+  return confirm('再确认一次：这会把 '+tip+' 全部删除（{{count}} 条），真的继续？');
+}
+</script>
 {% endblock %}

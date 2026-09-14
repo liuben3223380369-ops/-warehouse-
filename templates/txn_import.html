@@ -30,6 +30,22 @@
 <div class="card">
   <h2>② 确认预览 <span class="pill">共 {{total}} 笔</span></h2>
   <p style="font-size:12px;color:#5b6675">识别到的列：{{fields|join('、')}}{% if total>60 %}（仅显示前 60 笔）{% endif %}</p>
+  {% if skipped_sum %}
+  <div class="card" style="background:#e8f6ee;border-left:3px solid #12a150;padding:10px 12px;margin-bottom:10px">
+    ✅ 已跳过 {{skipped_sum}} 个「汇总/合计」列<br>
+    <span style="font-size:12px;color:#5b6675">这些列是当月的合计值，不是某一天的单据。
+    如果一起导入，库存会翻倍。</span>
+  </div>
+  {% endif %}
+  {% if yms and yms|length > 1 %}
+  <div class="card" style="background:#fff8e6;border-left:3px solid #f5a524;padding:10px 12px;margin-bottom:10px">
+    <b>注意：这份表里有跨月数据</b><br>
+    {% for ym, n in yms|dictsort %}<span class="pill" style="margin-right:6px">{{ym}} · {{n}} 笔</span>{% endfor %}
+    <div style="font-size:12px;color:#5b6675;margin-top:6px">
+      会按每行真实的日期入库（不会都算成同一个月）。确认上面的日期列是对的再导入。
+    </div>
+  </div>
+  {% endif %}
   <div class="scroll"><table>
   <tr><th>日期</th><th>物料</th><th>料号</th><th>进/出</th><th class="n">数量</th><th>单位</th><th>备注</th></tr>
   {% for r in preview %}<tr>

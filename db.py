@@ -378,10 +378,15 @@ def check_integrity():
         issues.append('单据 #%s 进出类型异常（%s）' % (r['id'], r['kind']))
     for r in q("SELECT id, name, stock FROM v_stock WHERE stock < 0"):
         issues.append('【%s】库存为负（%g）——出库可能超过了入库' % (r['name'], r['stock']))
-    dup = q("SELECT name, COUNT(*) c FROM materials WHERE active=1"
-            " GROUP BY name HAVING c > 1")
+    # 只按名称判重会误报：原表里「0.05金」本来就有 0.04 / 0.045 两种宽幅，
+    # 它们是不同物料。真正有问题的是「名称+规格+宽幅」完全一样却建了两条。
+    dup = q("SELECT name, COALESCE(spec,'') sp, COALESCE(width,'') wd, COUNT(*) c"
+            " FROM materials WHERE active=1"
+            " GROUP BY name, COALESCE(spec,''), COALESCE(width,'') HAVING c > 1")
     for r in dup:
-        issues.append('物料名称重复：%s（%d 条）' % (r['name'], r['c']))
+        tag = r['name'] + ((' 规格' + r['sp']) if r['sp'] else '') \
+                        + ((' 宽' + r['wd']) if r['wd'] else '')
+        issues.append('物料重复：%s（%d 条，规格完全一样，建议合并）' % (tag, r['c']))
     dup2 = q("SELECT code, COUNT(*) c FROM materials WHERE active=1 AND code<>''"
              " GROUP BY code HAVING c > 1")
     for r in dup2:

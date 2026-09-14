@@ -1,8 +1,7 @@
 {% extends 'base.html' %}
 {% block title %}{% if fixed=='出' %}出库录入{% elif fixed=='进' %}入库录入{% else %}录入出入库{% endif %}{% endblock %}
 {% block h1 %}{% if fixed=='出' %}📤 出库录入{% elif fixed=='进' %}📥 入库录入{% else %}录入出入库{% endif %}{% endblock %}
-{% block sub %}原表 A-G 列全部可录 · 一次可填多行{% if fixed=='出' %} · 仅出库，超库存自动拦截{% endif %}{% endblock %}
-{% block extra_head %}{% endblock %}
+{% block sub %}卡片式填写 · 选物料自动带出全部信息{% if fixed=='出' %} · 超库存自动拦截{% endif %}{% endblock %}
 {% block body %}
 
 {% if fixed=='出' %}
@@ -15,66 +14,26 @@
 {% if msg %}<div class="card" style="background:#e8f6ee;border-left:3px solid #12a150">{{msg}}</div>{% endif %}
 
 <form method="post" id="f">
-<div class="card" style="padding:10px 6px">
-  <div class="scroll"><table id="t">
-  <tr>
-    <th>日期</th>
-    {% for c in cols %}<th>{{c.label}}</th>{% endfor %}
-    {% if not fixed %}<th>进/出</th>{% endif %}<th>数量</th><th>件数</th><th>每件</th><th>备注</th>{% if fixed=='出' %}<th class="n">可用</th>{% endif %}
-  </tr>
-  {% for i in rows %}
-  <tr class="r">
-    <td><input type="date" name="tdate_{{i}}" value="{{tdate}}" style="min-width:126px"></td>
-    {% for c in cols %}
-      {% set f = c.fid %}
-      {% if f == 'name' %}
-      <td><input name="name_{{i}}" class="mname" data-i="{{i}}" list="ml{{i}}" autocomplete="off"
-                 placeholder="选或输入" style="min-width:150px">
-          <input type="hidden" name="mid_{{i}}" id="mid_{{i}}">
-          <datalist id="ml{{i}}">
-            {% for m in mats %}<option value="{{m.name}}{% if m.code %} · {{m.code}}{% endif %}">{% endfor %}
-          </datalist></td>
-      {% elif f == 'unit' %}
-      <td><input name="unit_{{i}}" list="ul" style="min-width:62px" placeholder="平米">
-          <datalist id="ul">{% for u in ['平米','箱','卷','米','KG'] %}<option value="{{u}}">{% endfor %}</datalist></td>
-      {% elif f == 'status' %}
-      <td><select name="status_{{i}}" style="min-width:74px">
-          <option value="">—</option>
-          {% for s in ['常用','不常用','呆滞'] %}<option>{{s}}</option>{% endfor %}</select></td>
-      {% elif f in ('opening','safety') %}
-      <td><input name="{{f}}_{{i}}" inputmode="decimal" placeholder="0" style="min-width:66px"></td>
-      {% else %}
-      <td><input name="{{f}}_{{i}}" style="min-width:{{'80px' if f in ('code','supplier','category') else '60px'}}"></td>
-      {% endif %}
-    {% endfor %}
-    {% if not fixed %}<td><select name="kind_{{i}}" class="kd" style="min-width:66px">
-        <option value="进">进</option><option value="出">出</option></select></td>{% endif %}
-    <td><input name="qty_{{i}}" inputmode="decimal" placeholder="0" class="qty" data-i="{{i}}"
-               style="min-width:70px" oninput="calc({{i}});chkStock({{i}})"></td>
-    <td><input name="pieces_{{i}}" inputmode="decimal" placeholder="件" class="pc" data-i="{{i}}"
-               style="min-width:60px" oninput="calc({{i}})"></td>
-    <td><input name="per_{{i}}" inputmode="decimal" placeholder="每件" class="pe" data-i="{{i}}"
-               style="min-width:60px" oninput="calc2({{i}})"></td>
-    <td><input name="note_{{i}}" placeholder="{% if fixed=='出' %}客户/领用人{% else %}单号/客户{% endif %}" style="min-width:110px"></td>
-    {% if fixed=='出' %}<td class="n"><span id="av_{{i}}" class="pill">—</span></td>{% endif %}
-  </tr>
-  {% endfor %}
-  </table></div>
-  <input type="hidden" name="nrow" id="nrow" value="{{n}}">
-  <a class="btn s o" href="javascript:addRow()">＋ 再加一行</a>
+<input type="hidden" name="nrow" id="nrow" value="{{n}}">
+<div id="cards"></div>
+
+<div class="grid2" style="margin-top:12px">
+  <a class="btn s o" href="javascript:addCard()" style="margin-top:0">＋ 再加一笔</a>
+  <a class="btn s o" href="javascript:addCard(true)" style="margin-top:0">＋ 复制上一笔</a>
 </div>
 
-<button type="submit" class="g" onclick="return chk()">💾 保存（{{n}} 行）</button>
+<button type="submit" class="g" onclick="return chk()">💾 保存（<span id="cnt">{{n}}</span> 笔）</button>
 <button type="submit" name="stay" value="1" onclick="return chk()">保存并停留在本页</button>
 </form>
 
 <div class="card">
-  <div style="font-size:12px;color:#5b6675;line-height:1.7">
-  · 物料名称输入时会联想已有物料，<b>选中即自动带出其余 A-G 信息</b>；也可整行手填新物料，保存时自动建档<br>
-  · 行内改了 A-G 内容，保存时会同步更新该物料档案<br>
-  · 只有填了<b>名称或料号</b>且<b>数量>0</b>的行才会保存<br>
-  {% if fixed=='出' %}· <b>出库页只能出</b>：「可用」列实时显示当前库存，<b>超出库存的行会自动拦下不保存</b><br>{% endif %}
-  · 日期为空的行，默认用第一行日期
+  <div style="font-size:12px;color:#5b6675;line-height:1.8">
+  · <b>物料名称</b>输入时会实时联想，点选后自动带出 料号/类型/规格/宽幅/供应商/单位 等全部信息<br>
+  · 也可直接手填新物料，保存时自动建档（期初、安全库存可在卡片里填）<br>
+  · 数量 / 件数 / 每件 填任意两个，第三个自动算<br>
+  · 只有填了<b>名称或料号</b>且<b>数量>0</b>的卡片才会保存<br>
+  {% if fixed=='出' %}· 卡片右上角显示<b>可用库存</b>，超出会标红并拦下<br>{% endif %}
+  · 日期留空默认用第一张卡片的日期
   </div>
   <a class="btn s" href="{{url_for('txn_import') if not fixed else (url_for('out_import') if fixed=='出' else url_for('in_import'))}}">⬆ 从 Excel / WPS 导入</a>
   <a class="btn s o" href="{{url_for('columns')}}">⚙ 修改表头名称 / 显示 / 映射</a>
@@ -83,91 +42,265 @@
   {% elif fixed=='进' %}<a class="btn s o" href="{{url_for('out')}}">切到出库录入</a>{% endif %}
 </div>
 
+<style>
+.ecard{background:#fff;border-radius:14px;padding:14px;margin-bottom:12px;
+box-shadow:0 1px 3px rgba(0,0,0,.06);position:relative}
+.ecard .hd{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.ecard .no{background:#1f6feb;color:#fff;width:24px;height:24px;border-radius:50%;
+display:flex;align-items:center;justify-content:center;font-size:12px;flex:none}
+.ecard .mt{flex:1;min-width:0;font-weight:600;font-size:14px;overflow:hidden;
+text-overflow:ellipsis;white-space:nowrap;color:#1c2430}
+.ecard .av{pill}.ecard .av{font-size:11px;padding:2px 8px;border-radius:20px;background:#eef2f7;color:#5b6675;flex:none}
+.ecard .av.over{background:#fdeced;color:#e5484d;font-weight:600}
+.ecard .del{width:26px;height:26px;border-radius:50%;border:0;background:#f2f4f7;color:#7a869a;
+font-size:15px;line-height:1;flex:none;cursor:pointer;padding:0;margin:0}
+.ecard .fields{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.ecard .f{display:flex;flex-direction:column}
+.ecard .f.full{grid-column:1 / -1}
+.ecard .f label{margin:0 0 3px;font-size:11px;color:#7a869a}
+.ecard .f input,.ecard .f select{width:100%;padding:9px 10px;font-size:15px;
+border:1px solid #d7dce3;border-radius:9px;background:#fff;min-width:0}
+.ecard .f input:focus,.ecard .f select:focus{border-color:#1f6feb;outline:none;background:#f5f9ff}
+.ecard .qtyrow{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px}
+.ecard .qtyrow .f label{margin:0 0 3px}
+/* 联想下拉 */
+.sug{position:absolute;left:14px;right:14px;top:52px;background:#fff;border:1px solid #d7dce3;
+border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.14);z-index:30;max-height:280px;overflow:auto}
+.sug div{padding:10px 12px;font-size:14px;border-bottom:1px solid #f0f2f5;cursor:pointer}
+.sug div:last-child{border-bottom:0}
+.sug div:active,.sug div.hi{background:#eaf2fe}
+.sug .n{font-weight:600}
+.sug .c{color:#7a869a;font-size:12px;margin-left:6px}
+.sug .s{float:right;color:#5b6675;font-size:12px}
+.sug .none{padding:12px;color:#98a2b3;text-align:center;font-size:13px}
+@media(min-width:820px){
+  .ecard{padding:16px}
+  .ecard .fields{grid-template-columns:repeat(3,1fr);gap:10px}
+}
+</style>
+
 <script>
 var MATS = {{ js_mats|tojson }};
 var COLS = {{ fids|tojson }};
+var COLS_FULL = {{ col_defs|tojson }};
+var FIXED = {{ 'true' if fixed else 'false' }};
+var KIND = {{ ('"' + fixed + '"') if fixed else 'null' }};
+var TODAY = "{{ tdate }}";
 var rowIdx = {{ n }};
+var curCard = null;
 
-function fill(i, key){
-  var v = (document.querySelector('input[name="name_'+i+'"]').value||'').trim();
-  var hit = null;
-  for (var k=0;k<MATS.length;k++){
-    var m=MATS[k];
-    var tag = m.name + (m.code ? ' · '+m.code : '');
-    if (tag === v || m.name === v || (m.code && m.code === v)) { hit = m; break; }
-  }
-  if(!hit) return;
-  document.getElementById('mid_'+i).value = hit.id;
-  COLS.forEach(function(f){
-    if(f==='name') return;
-    var el=document.querySelector('[name="'+f+'_'+i+'"]');
-    if(el && hit[f]!==undefined && hit[f]!==null) el.value = hit[f];
-  });
-  var av=document.getElementById('av_'+i);
-  if(av){ av.textContent = (hit.stock!==undefined? fmt(hit.stock):'—'); chkStock(i); }
-  var q=document.querySelector('.qty[data-i="'+i+'"]'); if(q&&!q.value) q.focus();
-}
-function fmt(n){ return (Math.round(n*100)/100)+''; }
-function num(i,cls){ return parseFloat((document.querySelector('.'+cls+'[data-i="'+i+'"]')||{}).value||0)||0; }
-function calc(i){    // 改数量或件数 -> 算每件
-  var q=num(i,'qty'), p=num(i,'pc');
-  var el=document.querySelector('.pe[data-i="'+i+'"]'); if(!el) return;
-  el.value = (q&&p) ? fmt(q/p) : el.value;
-}
-function calc2(i){   // 改每件 -> 算总数量；有件数也反算
-  var p=num(i,'pc'), e=num(i,'pe'), q=num(i,'qty');
-  if(p&&e){ document.querySelector('.qty[data-i="'+i+'"]').value = fmt(p*e); }
-  else if(q&&e){ document.querySelector('.pc[data-i="'+i+'"]').value = fmt(q/e); }
-  chkStock(i);
-}
-function chkStock(i){
-  var av=document.getElementById('av_'+i); if(!av) return;
-  var id=document.getElementById('mid_'+i).value;
-  var q=parseFloat(document.querySelector('.qty[data-i="'+i+'"]').value||0);
-  var hit=null; for(var k=0;k<MATS.length;k++) if(String(MATS[k].id)===String(id)) hit=MATS[k];
-  av.className='pill';
-  if(hit && hit.stock!==undefined){
-    av.textContent=fmt(hit.stock);
-    if(q>0 && q>hit.stock+1e-9){ av.className='pill o'; av.textContent=fmt(hit.stock)+' ✕超'; }
-  }
-}
-document.querySelectorAll('.mname').forEach(function(el){
-  el.addEventListener('change', function(){ fill(this.dataset.i); });
-  el.addEventListener('blur', function(){ fill(this.dataset.i); });
-});
+function esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g,function(c){
+  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
 
-function addRow(){
-  var t=document.getElementById('t');
-  var tr=t.querySelector('tr.r');
-  var n=tr.cloneNode(true);
-  n.querySelectorAll('input,select').forEach(function(el){
-    var nm=el.name||''; var m=nm.match(/^(.+)_(\d+)$/);
-    if(m){ el.name=m[1]+'_'+rowIdx; if(el.id==='mid_'+m[2]) el.id='mid_'+rowIdx; }
-    if(el.type!=='hidden'&&el.classList.contains('qty')) el.value='';
-    if(el.tagName==='SELECT'&&el.name.indexOf('kind')===0) el.selectedIndex=0;
-    if(el.tagName==='INPUT'&&el.type==='date') el.value=document.querySelector('[name="tdate_0"]').value;
-    if(el.tagName==='INPUT'&&el.type!=='date'&&el.type!=='hidden'&&!el.classList.contains('qty')) el.value='';
-    if(el.classList&&el.classList.contains('qty')) el.dataset.i=rowIdx;
-    if(el.tagName==='SPAN'&&el.id&&el.id.indexOf('av_')===0) el.id='av_'+rowIdx;
+function fieldHtml(f, i, label){
+  if(f==='name') return '';
+  var ph = {'code':'料号','supplier':'供应商','category':'类型','spec':'规格',
+            'width':'宽幅','unit':'单位','status':'状态','opening':'0','safety':'0'}[f] || '';
+  if(f==='unit'){
+    return '<div class="f"><label>'+label+'</label><input name="unit_'+i+'" list="ul" placeholder="平米" value="平米"></div>';
+  }
+  if(f==='status'){
+    return '<div class="f"><label>'+label+'</label><select name="status_'+i+'">'
+      +'<option value="">—</option><option>常用</option><option>不常用</option><option>呆滞</option></select></div>';
+  }
+  if(f==='opening'||f==='safety'){
+    return '<div class="f"><label>'+label+'</label><input name="'+f+'_'+i+'" inputmode="decimal" placeholder="0"></div>';
+  }
+  return '<div class="f"><label>'+label+'</label><input name="'+f+'_'+i+'" placeholder="'+ph+'"></div>';
+}
+
+function cardHtml(i){
+  var h = '<div class="ecard" id="c'+i+'">';
+  h += '<div class="hd"><span class="no">'+(i+1)+'</span>'
+     + '<span class="mt" id="mt'+i+'">选一个物料…</span>'
+     + (KIND==='出' ? '<span class="av" id="av'+i+'">—</span>' : '')
+     + '<button type="button" class="del" onclick="delCard('+i+')" title="删掉这一笔">✕</button></div>';
+  // 物料名单独一行（宽）
+  h += '<div class="f full" style="margin-bottom:8px;position:relative">'
+     + '<label>物料名称（输入即联想，点选自动带出）</label>'
+     + '<input name="name_'+i+'" id="nm'+i+'" class="mname" data-i="'+i+'" autocomplete="off" placeholder="输入名称或料号">'
+     + '<input type="hidden" name="mid_'+i+'" id="mid'+i+'">'
+     + '<div id="sg'+i+'" style="display:none"></div></div>';
+  // 其余字段
+  h += '<div class="fields">';
+  COLS_FULL.forEach(function(c){
+    if(c.fid==='name') return;
+    h += fieldHtml(c.fid, i, c.label);
   });
-  var dl=n.querySelector('datalist'); if(dl) dl.id='ml'+rowIdx;
-  var mi=n.querySelector('.mname'); if(mi){ mi.setAttribute('list','ml'+rowIdx); mi.dataset.i=rowIdx;
-    mi.addEventListener('change',function(){fill(rowIdx);}); mi.addEventListener('blur',function(){fill(rowIdx);}); }
-  t.appendChild(n); rowIdx++;
-  document.getElementById('nrow').value=rowIdx;
-  document.querySelector('button[type=submit]').textContent='💾 保存（'+rowIdx+' 行）';
+  h += '</div>';
+  // 日期 + 数量 / 件数 / 每件（或进/出）+ 备注
+  h += (FIXED ? '<input type="hidden" name="kind_'+i+'" value="'+KIND+'">' : '');
+  h += '<div class="qtyrow">'
+     + '<div class="f"><label>日期</label><input type="date" name="tdate_'+i+'" value="'+TODAY+'"></div>'
+     + '<div class="f"><label>数量</label><input name="qty_'+i+'" inputmode="decimal" placeholder="0" class="qty" data-i="'+i+'" oninput="calc('+i+')"></div>'
+     + '<div class="f"><label>件数</label><input name="pieces_'+i+'" inputmode="decimal" placeholder="件" class="pc" data-i="'+i+'" oninput="calc('+i+')"></div>'
+     + '</div>';
+  h += '<div class="qtyrow">'
+     + '<div class="f"><label>每件</label><input name="per_'+i+'" inputmode="decimal" placeholder="每件" class="pe" data-i="'+i+'" oninput="calc2('+i+')"></div>';
+  if(!FIXED){
+    h += '<div class="f"><label>进/出</label><select name="kind_'+i+'"><option>进</option><option>出</option></select></div>';
+  }
+  h += '<div class="f"><label>备注</label>'
+     + '<input name="note_'+i+'" placeholder="'+(KIND==='出'?'客户/领用人':'单号/客户')+'"></div>';
+  h += '</div>';
+  h += '</div>';
+  return h;
+}
+
+function delCard(i){
+  var el=document.getElementById('c'+i);
+  if(!el) return;
+  if(document.querySelectorAll('.ecard').length<=1){
+    // 最后一张：清空而不是删掉，避免页面变成空白
+    el.querySelectorAll('input').forEach(function(x){ if(x.type!=='date'&&x.type!=='hidden') x.value=''; });
+    var mt=el.querySelector('.mt'); if(mt) mt.textContent='选一个物料…';
+    var av=el.querySelector('.av'); if(av){av.textContent='—';av.className='av';}
+    return;
+  }
+  el.remove(); renumber();
+}
+function renumber(){
+  document.querySelectorAll('.ecard').forEach(function(el,idx){
+    var no=el.querySelector('.no'); if(no) no.textContent=(idx+1);
+  });
+  upCnt();
+}
+function upCnt(){
+  var n=document.querySelectorAll('.ecard').length;
+  document.getElementById('nrow').value=n;
+  var c=document.getElementById('cnt'); if(c) c.textContent=n;
+}
+
+function addCard(copy){
+  var wrap=document.getElementById('cards');
+  var last=wrap.lastElementChild;
+  var d=document.createElement('div');
+  if(copy && last){
+    d.innerHTML=last.outerHTML;
+    var old=d.firstElementChild;
+    old.id='c'+rowIdx;
+    old.querySelectorAll('input,select').forEach(function(el){
+      var nm=el.name||''; var m=nm.match(/^(.+)_(\d+)$/);
+      if(m){
+        el.name=m[1]+'_'+rowIdx;
+        if(el.id==='mid'+m[2]) el.id='mid'+rowIdx;
+        if(el.id==='nm'+m[2]) el.id='nm'+rowIdx;
+      }
+      if(el.id==='mt'+m[2]) el.id='mt'+rowIdx;
+      if(el.id==='av'+m[2]) el.id='av'+rowIdx;
+      if(el.id==='sg'+m[2]) el.id='sg'+rowIdx;
+      if(el.classList&&el.classList.contains('qty')){ el.value=''; el.dataset.i=rowIdx; }
+      if(el.classList&&el.classList.contains('pc')) el.dataset.i=rowIdx;
+      if(el.classList&&el.classList.contains('pe')) el.dataset.i=rowIdx;
+      if(el.classList&&el.classList.contains('mname')) el.dataset.i=rowIdx;
+    });
+    var av=old.querySelector('.av'); if(av){av.textContent='—';av.className='av';}
+  } else {
+    d.innerHTML=cardHtml(rowIdx);
+  }
+  wrap.appendChild(d.firstElementChild);
+  bind(rowIdx);
+  rowIdx++; upCnt();
+  var el=document.getElementById('nm'+(rowIdx-1)); if(el) el.focus();
   return false;
 }
-function chk(){
-  var n=0;
-  document.querySelectorAll('#t tr.r').forEach(function(tr){
-    var nm=tr.querySelector('[name^="name_"]').value.trim();
-    var cd=tr.querySelector('[name^="code_"]'); cd=cd?cd.value.trim():'';
-    var q=parseFloat(tr.querySelector('.qty').value||0);
-    if((nm||cd)&&q>0) n++;
+
+function fmt(n){ return String(Math.round(n*100)/100); }
+function numv(i,cls){ var e=document.querySelector('.'+cls+'[data-i="'+i+'"]'); return parseFloat(e&&e.value)||0; }
+function calc(i){ var q=numv(i,'qty'),p=numv(i,'pc'); var e=document.querySelector('.pe[data-i="'+i+'"]');
+  if(e&&q&&p) e.value=fmt(q/p); }
+function calc2(i){ var p=numv(i,'pc'),pe=numv(i,'pe'),q=numv(i,'qty');
+  if(p&&pe){ document.querySelector('.qty[data-i="'+i+'"]').value=fmt(p*pe); }
+  else if(q&&pe){ document.querySelector('.pc[data-i="'+i+'"]').value=fmt(q/pe); } }
+
+function showSug(i, list){
+  var box=document.getElementById('sg'+i); if(!box) return;
+  if(!list.length){ box.innerHTML='<div class="none">没找到，直接输入也行，保存时会自动建档</div>'; box.style.display='block'; return; }
+  var h='';
+  list.slice(0,12).forEach(function(m){
+    h+='<div data-id="'+m.id+'" data-n="'+esc(m.name)+'">'
+      +'<span class="n">'+esc(m.name)+'</span>'
+      +(m.code?'<span class="c">'+esc(m.code)+'</span>':'')
+      +(m.stock!==undefined&&KIND==='出'?'<span class="s">可用 '+fmt(m.stock)+'</span>':'')
+      +'</div>';
   });
-  if(!n){alert('请至少在某一行填写物料名称（或料号）和数量');return false;}
-  return confirm('将保存 '+n+' 条单据，确定？');
+  box.innerHTML='<div class="sug">'+h+'</div>';
+  box.style.display='block';
+  box.querySelectorAll('.sug div[data-id]').forEach(function(d){
+    d.onclick=function(){ pick(i, parseInt(d.dataset.id,10)); };
+  });
+}
+function hideSug(i){ var b=document.getElementById('sg'+i); if(b){b.style.display='none';b.innerHTML='';} }
+
+function pick(i, id){
+  var hit=null; for(var k=0;k<MATS.length;k++) if(MATS[k].id===id) hit=MATS[k];
+  if(!hit) return;
+  document.getElementById('mid'+i).value=hit.id;
+  var nm=document.getElementById('nm'+i); if(nm) nm.value=hit.name;
+  var mt=document.getElementById('mt'+i); if(mt) mt.textContent=hit.name+(hit.code?' · '+hit.code:'');
+  ['code','supplier','category','spec','width','unit','status'].forEach(function(f){
+    var el=document.querySelector('[name="'+f+'_'+i+'"]');
+    if(el && hit[f]!==undefined && hit[f]!==null && hit[f]!=='') el.value=hit[f];
+  });
+  var av=document.getElementById('av'+i);
+  if(av){ av.textContent='可用 '+fmt(hit.stock); av.className='av'; }
+  hideSug(i);
+  var q=document.querySelector('.qty[data-i="'+i+'"]'); if(q){ q.focus(); }
+}
+
+function bind(i){
+  var el=document.getElementById('nm'+i); if(!el) return;
+  el.addEventListener('input', function(){
+    var v=(this.value||'').trim().toLowerCase();
+    if(!v){ hideSug(i); return; }
+    var r=[];
+    for(var k=0;k<MATS.length;k++){
+      var m=MATS[k];
+      var a=(m.name||'').toLowerCase(), b=(m.code||'').toLowerCase(), c=(m.supplier||'').toLowerCase();
+      if(a.indexOf(v)>=0||b.indexOf(v)>=0||c.indexOf(v)>=0){
+        r.push(m); if(r.length>=12) break;
+      }
+    }
+    showSug(i,r);
+  });
+  el.addEventListener('blur', function(){ setTimeout(function(){hideSug(i);},200); });
+  var q=document.querySelector('.qty[data-i="'+i+'"]');
+  if(q) q.addEventListener('input', function(){
+    var av=document.getElementById('av'+i); if(!av) return;
+    var id=document.getElementById('mid'+i).value;
+    var hit=null; for(var k=0;k<MATS.length;k++) if(String(MATS[k].id)===String(id)) hit=MATS[k];
+    var v=parseFloat(this.value)||0;
+    if(hit&&hit.stock!==undefined){
+      av.textContent='可用 '+fmt(hit.stock);
+      av.className = (v>0 && v>hit.stock+1e-9) ? 'av over' : 'av';
+    }
+  });
+}
+
+(function(){
+  var wrap=document.getElementById('cards');
+  var n0={{ n }};
+  for(var i=0;i<n0;i++){ wrap.insertAdjacentHTML('beforeend', cardHtml(i)); }
+  for(var j=0;j<n0;j++){ bind(j); }
+  upCnt();
+})();
+
+function chk(){
+  var n=0, over=[];
+  document.querySelectorAll('.ecard').forEach(function(el){
+    var nm=el.querySelector('[name^="name_"]').value.trim();
+    var cd=el.querySelector('[name^="code_"]'); cd=cd?cd.value.trim():'';
+    var q=parseFloat(el.querySelector('.qty').value||0);
+    if((nm||cd)&&q>0){
+      n++;
+      var av=el.querySelector('.av');
+      if(av&&av.className.indexOf('over')>=0) over.push(nm||cd);
+    }
+  });
+  if(!n){ alert('请至少在某一张卡片填写物料名称和数量'); return false; }
+  if(over.length && !confirm('有 '+over.length+' 笔超出库存：'+over.slice(0,3).join('、')
+      +'\n这些行不会被保存。继续保存其余 '+n+' 笔吗？')) return false;
+  return confirm('将保存 '+n+' 笔单据，确定？');
 }
 </script>
 {% endblock %}

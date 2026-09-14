@@ -21,6 +21,7 @@ from flask import Flask, render_template, request, redirect, url_for
 from datetime import datetime, date
 import calendar, io, csv, os, time, sys
 from flask import Response
+from urllib.parse import quote
 import db, importer
 
 def say(msg=''):
@@ -289,8 +290,23 @@ def index():
                            mon_out=mon_out, n_mat=n_mat, alerts=alerts, recent=recent)
 
 # ---------- 单据流水（表格录入，含原表 A-G 全部列） ----------
+def _fingerprint(vals):
+    """物料唯一指纹：名称 + 规格 + 宽幅（+供应商，若三者都相同仍冲突时区分）。
+
+    原表里同一个「0.05金」可能有 0.04 / 0.045 / 0.05 三种宽幅的批次，
+    「0.05胶」甚至分属两个不同供应商。只按名称匹配会把它们并成一个物料，
+    规格信息全部丢失、库存张冠李戴。带上规格和宽幅才能唯一定位。
+    """
+    def c(k):
+        return (str(vals.get(k) or '').strip())
+    parts = [c('name')]
+    sp, wd = c('spec'), c('width')
+    if sp: parts.append('规格' + sp)
+    if wd: parts.append('宽' + wd)
+    return '|'.join(parts)
+
 def _resolve_material(vals):
-    """按 料号 -> 名称 匹配物料；匹配到则用行内 A-G 值同步档案，否则新建。
+    """按 料号 -> 名称+规格指纹 匹配物料；匹配到则用行内 A-G 值同步档案，否则新建。
     返回 (material_id, is_new)"""
     name = (vals.get('name') or '').strip()
     code = (vals.get('code') or '').strip()
@@ -298,7 +314,18 @@ def _resolve_material(vals):
     if code:
         hit = db.q("SELECT id FROM materials WHERE code=? AND code<>''", code)
     if not hit and name:
-        hit = db.q("SELECT id FROM materials WHERE name=?", name)
+        # 先按 名称+规格+宽幅 精确匹配：同名不同规格是两种物料
+        spec = (vals.get('spec') or '').strip()
+        width = (vals.get('width') or '').strip()
+        if spec or width:
+            hit = db.q("SELECT id FROM materials WHERE name=? AND COALESCE(spec,'')=?"
+                       " AND COALESCE(width,'')=?", name, spec, width)
+        if not hit:
+            # 没有规格信息（或表里没填）时才退回只按名称
+            hit = db.q("SELECT id FROM materials WHERE name=? AND COALESCE(spec,'')=''"
+                       " AND COALESCE(width,'')=''", name) if not (spec or width) else None
+        if not hit and not (spec or width):
+            hit = db.q("SELECT id FROM materials WHERE name=?", name)
     if hit:
         mid = hit[0]['id']
         sets, vs = [], []
@@ -389,6 +416,8 @@ def txn():
                            fixed=fixed, ep=ep, only_stock=only_stock,
                            allm=request.args.get('allm') == '1',
                            tdate=today(), rows=range(n), n=n,
+                           # sqlite3.Row 不能直接 tojson，前端只需要 fid/label 两列
+                           col_defs=[{'fid': c['fid'], 'label': c['label']} for c in cols],
                            js_mats=[{k: m[k] for k in ('id','name','code','supplier','category',
                                                        'spec','width','unit','stock')} for m in mats])
 
@@ -615,6 +644,8 @@ def txn_import():
                                total=len(rows), fields=sorted(fields),
                                fields_str=','.join(sorted(fields)),
                                f=os.path.basename(tmp),
+                               yms=(diag or {}).get('yms') or {},
+                               skipped_sum=(diag or {}).get('skipped_sum') or 0,
                                defkind=request.form.get('defkind') or '',
                                defdate=request.form.get('defdate') or today(),
                                wide=(hi == -2))
@@ -680,6 +711,49 @@ def txn_del(tid):
     db.run("DELETE FROM txns WHERE id=?", tid)
     return redirect(request.referrer or url_for('txns'))
 
+@app.route('/txns/batch', methods=['POST'])
+def txns_batch():
+    """流水批量删除：勾谁删谁，也可按当前筛选条件一键清空。
+    整批放在一个事务里，中途出错全部回滚，不会删一半。"""
+    ids = ints(request.form, 'id')
+    clear = request.form.get('clear') == '1'
+    back = request.form.get('back') or ''
+    try:
+        with db.tx() as c:
+            if clear:
+                # 按当前页面筛选条件删（日期 / 月份 / 类型 / 搜索词），
+                # 与列表页看到的结果保持一致，避免"看到的和删掉的不是一批"
+                d = (request.form.get('d') or '').strip()
+                m = safe_ym(request.form.get('m')) if request.form.get('m') else ''
+                kind = (request.form.get('kind') or '').strip()
+                kw = clean_kw(request.form.get('kw'))
+                w, args = [], []
+                if d:
+                    w.append("t.tdate=?"); args.append(d)
+                elif m:
+                    w.append("t.tdate LIKE ?"); args.append(m + '%')
+                if kind in ('进', '出'):
+                    w.append("t.kind=?"); args.append(kind)
+                if kw:
+                    w.append("(m.name LIKE ? OR m.code LIKE ? OR t.note LIKE ? OR m.category LIKE ?)")
+                    args += ['%%%s%%' % kw] * 4
+                if w:
+                    sql = ("DELETE FROM txns WHERE id IN (SELECT t.id FROM txns t"
+                           " JOIN materials m ON m.id=t.material_id WHERE " + " AND ".join(w) + ")")
+                else:
+                    sql = "DELETE FROM txns"
+                c.execute(sql, tuple(args))
+                n = c.total_changes
+            else:
+                if not ids:
+                    return redirect((back or url_for('txns')) + '?msg=' + quote('未勾选任何单据'))
+                ph = ','.join('?' * len(ids))
+                c.execute("DELETE FROM txns WHERE id IN (%s)" % ph, tuple(ids))
+                n = len(ids)
+    except Exception:
+        return redirect((back or url_for('txns')) + '?msg=' + quote('删除失败，已回滚，请重试'))
+    return redirect((back or url_for('txns')) + '?msg=' + quote('已删除 %d 条单据' % n))
+
 @app.route('/txns')
 def txns():
     d = request.args.get('d') or ''
@@ -716,7 +790,9 @@ def txns():
 @app.route('/materials')
 def materials():
     kw = clean_kw(request.args.get('kw'))
-    show_all = request.args.get('all') == '1'
+    # 默认显示全部（含停用）。以前默认只看启用，用户会以为"物料少了"，
+    # 停用只是不参与录单和实时库存，档案本身不该凭空消失。
+    show_all = request.args.get('all') != '0'
     w, a = [], []
     if kw:
         w.append("(name LIKE ? OR code LIKE ? OR supplier LIKE ? OR category LIKE ? OR spec LIKE ?)")
@@ -734,8 +810,11 @@ def materials():
     else:
         sql += " ORDER BY active DESC, category, name"
     rows = db.q(sql, *a)
+    n_off = db.q("SELECT COUNT(*) c FROM materials WHERE active=0")[0]['c']
+    n_all = db.q("SELECT COUNT(*) c FROM materials")[0]['c']
     return render_template('materials.html', rows=rows, kw=kw, inline=request.args.get('edit') == '1',
-                           show_all=show_all, cur_sort=sort, cur_dir=dir_,
+                           show_all=show_all, n_off=n_off, n_all=n_all,
+                           cur_sort=sort, cur_dir=dir_,
                            qs={'kw': kw, 'all': '1' if show_all else '', 'edit': '1' if inline else ''},
                            msg=request.args.get('msg',''))
 

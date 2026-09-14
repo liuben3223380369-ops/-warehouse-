@@ -47,6 +47,32 @@ TXN_MAT_COLS = ['supplier', 'category', 'spec', 'width', 'unit', 'status', 'open
 def _norm(s):
     return str(s or '').strip().lower().replace(' ', '').replace('（', '(').replace('）', ')')
 
+def unit_from_label(label, sample_vals):
+    """「单位（卷）」这类表头，列里填的其实是卷数（50、10），不是单位名。
+
+    直接把它当单位会把 unit 存成 '50'、'9.999999999999998' 这种数字，
+    库存显示就变成"50 50"这种鬼东西。这里判断：整列都是数字 -> 不是单位列，
+    真实单位从表头括号里取，「单位（卷）」的"卷"才是单位。
+    """
+    import re as _re
+    has_num = False
+    for v in sample_vals:
+        if v is None or str(v).strip() == '':
+            continue
+        try:
+            float(str(v)); has_num = True; break
+        except (TypeError, ValueError):
+            return None                      # 有文本 -> 确实就是单位列，原样返回
+    if not has_num:
+        return None
+    m = _re.search(r'[（(]([^）)]+)[)）]', str(label or ''))
+    if m:
+        u = m.group(1).strip()
+        # 括号里可能是"卷""平米""KG"等单位名，不该是"米""㎡"这种量纲
+        if u and len(u) <= 6 and not _re.match(r'^[\d.]+$', u):
+            return u
+    return None
+
 def map_headers(header, aliases=None):
     """表头行 -> {列索引: 规范字段}。aliases 来自列映射配置，优先级高于内置别名"""
     names = {f: list(v) for f, v in ALIASES.items()}
@@ -263,13 +289,37 @@ def _wide_kind_row(grid):
             best, bestn = r, n
     return best if bestn >= 4 else None
 
+def _head_at(grid, rows, c):
+    """取第 c 列在若干表头行里的文字（优先非空的那行）"""
+    for hr in rows:
+        if hr is not None and hr < len(grid) and c < len(grid[hr]):
+            v = str(grid[hr][c] or '').strip()
+            if v:
+                return v
+    return ''
+
+# 「汇总/合计」这类列长在日期区后面，表头不是日期、进出标记却同样是「进/出」。
+# 当作日期列读进来会把当月的合计值再导一遍 —— 库存直接翻倍。必须整段跳过。
+SUM_WORDS = ('汇总', '合计', '总计', '小计', '累计', '合計')
+
+def _is_sum_col(v):
+    s = str(v or '').strip()
+    return bool(s) and any(w in s for w in SUM_WORDS)
+
 def _wide_dates(grid, drow, defmonth):
-    """从日期行取每列日期；合并单元格造成的 None 沿用前一个日期"""
+    """从日期行取每列日期；合并单元格造成的 None 沿用前一个日期。
+
+    遇到「汇总/合计」列立刻中断日期延续（last=None），
+    否则它右边的列会继续沿用汇总列之前那个日期，同样被误当成单据列。
+    """
     row = grid[drow] if (drow is not None and drow < len(grid)) else []
     y, mo = (int(defmonth[:4]), int(defmonth[5:7])) if defmonth and len(defmonth) >= 7 \
         else (datetime.date.today().year, datetime.date.today().month)
     out, last = {}, None
     for c, v in enumerate(row):
+        if _is_sum_col(v):
+            last = None
+            continue
         d = None
         if _is_dt(v):
             d = v.strftime('%Y-%m-%d')
@@ -285,14 +335,36 @@ def _wide_dates(grid, drow, defmonth):
             out[c] = last
     return out
 
+def _strip_paren(n):
+    """去掉表头末尾的括号单位：「宽幅(米)」->「宽幅」、「单位(卷)」->「单位」。
+
+    真实表格里大量写成「规格（米）」「宽幅（米）」「单位（卷）」，
+    只按全名精确匹配会整列丢失（宽幅直接变空）。
+    """
+    import re as _re
+    return _re.sub(r'[（(][^）)]*[)）]\s*$', '', n).strip()
+
 def _col_by_head(grid, hrows, names):
-    """在若干候选表头行里按名字找列号"""
+    """在若干候选表头行里按名字找列号。
+
+    先精确匹配，再退一步去掉括号后缀匹配（「宽幅(米)」按「宽幅」命中）。
+    """
+    exact = [_norm(x) for x in names]
+    loose = [_strip_paren(x) for x in exact]
+    for hr in hrows:
+        if hr is None or hr >= len(grid):
+            continue
+        # 先跑一遍精确，保证「规格」不会被「规格(米)」抢走
+        for c, v in enumerate(grid[hr]):
+            n = _norm(v)
+            if n and n in exact:
+                return c
     for hr in hrows:
         if hr is None or hr >= len(grid):
             continue
         for c, v in enumerate(grid[hr]):
-            n = _norm(v)
-            if n and n in [_norm(x) for x in names]:
+            n = _strip_paren(_norm(v))
+            if n and n in loose:
                 return c
     return None
 
@@ -345,6 +417,13 @@ def parse_wide(grid, defmonth=None):
             base[f] = '' if (c is None or c >= len(r)) else str(r[c] or '').strip()
             if base[f] in ('/', '-'):
                 base[f] = ''
+        # 「单位（卷）」列里填的是卷数，不是单位名；把真实单位从表头括号里取出来
+        uc = cols.get('unit')
+        if uc is not None:
+            fixed = unit_from_label(_head_at(grid, heads, uc),
+                                    [r[uc] if uc < len(r) else None for r in grid[start:start + 30]])
+            if fixed:
+                base['unit'] = fixed
         oc = cols.get('opening')
         base['opening'] = _num(r[oc]) if (oc is not None and oc < len(r)) else 0.0
         base['safety'] = 0.0
@@ -360,6 +439,11 @@ def parse_wide(grid, defmonth=None):
         if not got:                          # 该行没有进出，但档案信息仍要保留（期初）
             d = dict(base); d['kind'] = None; d['qty'] = 0.0
             out.append(d)
+        # 数量取整到合理精度：原表里 9.999999999999998 这种浮点尾巴
+        # 会一路带进数据库，显示成"9.999999999999998 卷"
+    for d in out:
+        if d.get('qty'):
+            d['qty'] = round(float(d['qty']), 6)
     return out, set(list(cols.keys()) + ['date', 'qty', 'kind'])
 
 def parse_txn_by_map(path=None, stream=None, filename='', colmap=None, start=1,
@@ -439,8 +523,17 @@ def parse_txn_file(path=None, stream=None, filename='', aliases=None, mat_aliase
     if 'name' not in hmap.values():
         # 不是"一行一笔"，试试原表那种"物料 × 每日进/出"宽表
         wrows, wfields = parse_wide(raw, defmonth)
+        skipped = ([c for c, v in enumerate(raw[0]) if _is_sum_col(v)]
+                   if raw else [])
         if wrows:
-            return wrows, wfields, -2, {'why': 'wide', 'grid': sniff_grid(raw)}
+            # 原表常把下月 1 号也画进来（"9月表"里含 10-01 列），
+            # 不提示的话用户会以为只导了本月，回头对不上账
+            yms = {}
+            for r in wrows:
+                ym = str(r.get('date') or '')[:7]
+                if ym: yms[ym] = yms.get(ym, 0) + 1
+            return wrows, wfields, -2, {'why': 'wide', 'grid': sniff_grid(raw),
+                                        'yms': yms, 'skipped_sum': len(skipped)}
         return [], set(), -1, {
             'why': 'no-header',
             'grid': sniff_grid(raw),

@@ -1,7 +1,7 @@
 {% extends 'base.html' %}
 {% block title %}物料档案{% endblock %}
 {% block h1 %}物料档案{% endblock %}
-{% block sub %}{{rows|length}} 种{% if inline %} · 可直接改任意格{% else %} · 可勾选批量操作{% endif %}{% endblock %}
+{% block sub %}共 {{rows|length}} 种{% if n_off %}（含停用 {{n_off}} 种）{% endif %}{% if inline %} · 可直接改任意格{% else %} · 可勾选批量操作{% endif %}{% endblock %}
 {% block body %}
 
 {% if msg %}<div class="card" style="background:#e8f6ee;border-left:3px solid #12a150">{{msg}}</div>{% endif %}
@@ -18,8 +18,8 @@
     {% else %}
       <a class="btn s" href="{{url_for('materials',kw=kw,all='1' if show_all else '',edit='1')}}">✎ 表格编辑 A-G</a>
     {% endif %}
-    <a class="btn s o" href="{{url_for('materials',kw=kw,edit='1' if inline else '',all='1' if not show_all else '')}}">
-      {{'只看启用' if show_all else '含停用物料'}}</a>
+    <a class="btn s o" href="{{url_for('materials',kw=kw,edit='1' if inline else '',all='0' if show_all else '1')}}">
+      {{'只看启用的' if show_all else '含停用物料'}}{% if n_off %}（停用 {{n_off}}）{% endif %}</a>
     <a class="btn s o" href="{{url_for('imp')}}">⬆ 批量导入</a>
     <a class="btn s o" href="{{url_for('sysinfo')}}">🔍 自检</a>
   </div>
