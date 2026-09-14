@@ -3,7 +3,7 @@
 表头自动识别（中文别名），按「料号 → 名称」优先级匹配已有物料：
   命中则更新非空白字段，未命中则新增。
 """
-import io, csv, os
+import io, csv, os, datetime
 
 try:
     import openpyxl
@@ -258,7 +258,6 @@ def _wide_kind_row(grid):
 
 def _wide_dates(grid, drow, defmonth):
     """从日期行取每列日期；合并单元格造成的 None 沿用前一个日期"""
-    from datetime import date as _d
     row = grid[drow] if (drow is not None and drow < len(grid)) else []
     y, mo = (int(defmonth[:4]), int(defmonth[5:7])) if defmonth and len(defmonth) >= 7 \
         else (datetime.date.today().year, datetime.date.today().month)

@@ -43,6 +43,7 @@
     <input type="hidden" name="f" value="{{f}}">
     <input type="hidden" name="defkind" value="{{defkind}}">
     <input type="hidden" name="fields" value="{{fields_str}}">
+    {% if wide %}<input type="hidden" name="wide" value="1">{% endif %}
     {% if manual %}<input type="hidden" name="manual" value="1">
     <input type="hidden" name="startrow" value="{{startrow}}">
     {% for k,v in colmap.items() %}<input type="hidden" name="cm_{{k}}" value="{{v}}">{% endfor %}{% endif %}

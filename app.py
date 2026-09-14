@@ -17,7 +17,7 @@ def _safe_stdio():
                 pass
 _safe_stdio()
 
-from flask import Flask, render_template, request, redirect, url_for, g, jsonify
+from flask import Flask, render_template, request, redirect, url_for
 from datetime import datetime, date
 import calendar, io, csv, os, time, sys
 from flask import Response
@@ -242,7 +242,6 @@ def txn():
     mats = [dict(r) for r in db.q(
         "SELECT * FROM v_stock WHERE active=1" + (" AND stock>0" if only_stock else "")
         + " ORDER BY name")]
-    n_all = len(mats)
     msg = request.args.get('msg', '')
 
     if request.method == 'POST':
@@ -357,13 +356,16 @@ def txn_import():
             allow_over = request.form.get('allow_over') == '1'
             fields = set((request.form.get('fields') or '').split(','))
             has_split = 'in_qty' in fields or 'out_qty' in fields
+            # 宽表（物料×每日进出）：方向由表里的"进/出"行决定，不能跟着页面走
+            is_wide = request.form.get('wide') == '1'
             # 表里有 进/出 分列时以表格方向为准；入库页只留"进"、出库页只留"出"
             filter_kind = None
-            if fixed == '进' and 'in_qty' in fields:
-                filter_kind = '进'
-            elif fixed == '出' and 'out_qty' in fields:
-                filter_kind = '出'
-            saved = newmat = blocked = skipped = 0
+            if not is_wide:
+                if fixed == '进' and 'in_qty' in fields:
+                    filter_kind = '进'
+                elif fixed == '出' and 'out_qty' in fields:
+                    filter_kind = '出'
+            saved = newmat = blocked = skipped = archived = 0
             msgs = []
             for d in rows:
                 vals = {k: d.get(k, '') for k in
@@ -380,7 +382,10 @@ def txn_import():
                                float(d.get('opening') or 0), mid)
                     archived += 1
                     continue
-                kind = (d.get('kind') if has_split else (fixed or d.get('kind') or '进'))
+                if is_wide or has_split:      # 表格自带方向，以表格为准
+                    kind = d.get('kind') or '进'
+                else:
+                    kind = fixed or d.get('kind') or '进'
                 qty = float(d.get('qty') or 0)
                 if filter_kind and kind != filter_kind:
                     skipped += 1
@@ -408,6 +413,8 @@ def txn_import():
                 tip += f'；{blocked} 行超出库存被跳过：' + '、'.join(msgs[:3])
             if skipped:
                 tip += f'（忽略 {skipped} 笔{"出库" if filter_kind=="进" else "入库"}行）'
+            if archived:
+                tip += f'；{archived} 行没填数量，只更新了物料档案'
             return redirect(url_for(back, msg=tip))
 
         # 手动指定列：用户自己挑哪列是什么，绕过表头识别

@@ -3,7 +3,7 @@
 有 pywebview 就弹出一个独立窗口，没有就自动退回浏览器模式——
 功能完全一样，只是窗口样子不同。打包成 exe 后默认走窗口模式。
 """
-import os, sys, time, threading, socket, traceback
+import os, time, threading, socket, traceback
 
 LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'warehouse.log')
 
