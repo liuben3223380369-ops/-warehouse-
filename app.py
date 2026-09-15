@@ -221,6 +221,16 @@ def scalar(sql, *a, default=0):
     r = db.q(sql, *a)
     return r[0][0] if r else default
 
+def prev_ym(m):
+    """上一个月，如 2026-01 -> 2025-12。用于月报的环比对比。"""
+    m = safe_ym(m)
+    y, mo = int(m[:4]), int(m[5:7])
+    mo -= 1
+    if mo == 0:
+        y -= 1; mo = 12
+    return '%04d-%02d' % (y, mo)
+
+
 def is_date(s):
     """只接受 YYYY-MM-DD"""
     try:
@@ -938,12 +948,51 @@ def txns():
                            msg=request.args.get('msg', ''))
 
 # ---------- 物料档案 ----------
+def _period_stats(m=None, d=None):
+    """按期间统计每个物料的「期初 / 进 / 出 / 期末」。
+
+    d=YYYY-MM-DD  → 当天；m=YYYY-MM → 整月；都为空 → 全部时间。
+    期初不是档案里的 opening，而是「截至该期间开始时的实际结存」：
+      opening + 期间之前的进 - 期间之前的出
+    这样选 9 月看到的期初是 8 月底的数，跟月报的口径一致，不会出现
+    "每个月的期初都等于档案期初"这种对不上账的情况。
+    """
+    if d:
+        lo, hi = d, d
+    elif m:
+        lo, hi = m + '-01', m + '-31'   # 2 月用 -31 也安全：字符串比较不会漏
+    else:
+        lo, hi = '0000-01-01', '9999-12-31'
+    out = {}
+    for r in db.q("SELECT material_id mid,"
+                  " SUM(CASE WHEN kind='进' AND tdate<? THEN qty ELSE 0 END) pi,"
+                  " SUM(CASE WHEN kind='出' AND tdate<? THEN qty ELSE 0 END) po,"
+                  " SUM(CASE WHEN kind='进' AND tdate BETWEEN ? AND ? THEN qty ELSE 0 END) ci,"
+                  " SUM(CASE WHEN kind='出' AND tdate BETWEEN ? AND ? THEN qty ELSE 0 END) co"
+                  " FROM txns GROUP BY material_id", lo, lo, lo, hi, lo, hi):
+        out[r['mid']] = r
+    return out
+
+
 @app.route('/materials')
 def materials():
+    """物料档案。
+
+    口径：默认看**当月**的进出存；选定日期后看**当天**的进出存；选"全部"回到累计。
+    以前这页只显示档案期初和实时库存，看不出"这个月到底走了多少"，
+    想看当月情况得跑去月报页。
+    """
     kw = clean_kw(request.args.get('kw'))
-    # 默认显示全部（含停用）。以前默认只看启用，用户会以为"物料少了"，
-    # 停用只是不参与录单和实时库存，档案本身不该凭空消失。
     show_all = request.args.get('all') != '0'
+    # d 优先于 m：选了具体日期就按当天算
+    d = (request.args.get('d') or '').strip()
+    if d and not is_date(d):
+        d = ''
+    scope = request.args.get('scope') or ''      # all = 全部时间
+    m = '' if d else (safe_ym(request.args.get('m')) if request.args.get('m') else ym())
+    if scope == 'all':
+        m = d = ''
+
     w, a = [], []
     if kw:
         w.append("(name LIKE ? OR code LIKE ? OR supplier LIKE ? OR category LIKE ? OR spec LIKE ?)")
@@ -952,21 +1001,51 @@ def materials():
         w.append("active=1")
     inline = request.args.get('edit') == '1'
     sql = "SELECT * FROM v_mats" + (" WHERE " + " AND ".join(w) if w else "")
+    sql += " ORDER BY active DESC, category, name"
+    rows = [dict(r) for r in db.q(sql, *a)]
+
+    # 挂上期间数据：期初/进/出/期末
+    ps = _period_stats(m or None, d or None)
+    sum_in = sum_out = 0.0
+    for r in rows:
+        p = ps.get(r['id'])
+        pi = float(p['pi'] or 0) if p else 0.0
+        po = float(p['po'] or 0) if p else 0.0
+        ci = float(p['ci'] or 0) if p else 0.0
+        co = float(p['co'] or 0) if p else 0.0
+        r['p_open'] = round(float(r['opening'] or 0) + pi - po, 6)
+        r['p_in'] = round(ci, 6)
+        r['p_out'] = round(co, 6)
+        r['p_end'] = round(r['p_open'] + ci - co, 6)
+        r['moved'] = bool(ci or co)
+        sum_in += ci; sum_out += co
+
     sort = request.args.get('sort') or ''
     dir_ = request.args.get('dir') or ''
-    allowed = {'name': 'name', 'code': 'code', 'category': 'category', 'spec': 'spec',
-               'width': 'width', 'supplier': 'supplier', 'opening': 'opening', 'stock': 'stock'}
-    if sort in allowed and dir_:
-        sql += " ORDER BY %s %s, name" % (allowed[sort], 'ASC' if dir_ == 'asc' else 'DESC')
-    else:
-        sql += " ORDER BY active DESC, category, name"
-    rows = db.q(sql, *a)
+    key_map = {'name': 'name', 'code': 'code', 'category': 'category', 'spec': 'spec',
+               'width': 'width', 'supplier': 'supplier',
+               'opening': 'p_open', 'stock': 'p_end',
+               'in_qty': 'p_in', 'out_qty': 'p_out'}
+    if sort in key_map and dir_:
+        rev = (dir_ != 'asc')
+        rows.sort(key=lambda x: (x[key_map[sort]] is None,
+                                 x[key_map[sort]] if not isinstance(x[key_map[sort]], str)
+                                 else x[key_map[sort]]), reverse=rev)
     n_off = db.q("SELECT COUNT(*) c FROM materials WHERE active=0")[0]['c']
     n_all = db.q("SELECT COUNT(*) c FROM materials")[0]['c']
-    return render_template('materials.html', rows=rows, kw=kw, inline=request.args.get('edit') == '1',
+    if d:
+        scope_cn, scope_tip = '当天 %s' % d, '只统计这一天的进出'
+    elif m:
+        scope_cn, scope_tip = '%s 当月' % m, '期初为上月月末，期末为当月月末'
+    else:
+        scope_cn, scope_tip = '全部时间', '累计进出与当前库存'
+    return render_template('materials.html', rows=rows, kw=kw, inline=inline,
                            show_all=show_all, n_off=n_off, n_all=n_all,
-                           cur_sort=sort, cur_dir=dir_,
-                           qs={'kw': kw, 'all': '1' if show_all else '', 'edit': '1' if inline else ''},
+                           cur_sort=sort, cur_dir=dir_, m=m, d=d, scope=scope,
+                           scope_cn=scope_cn, scope_tip=scope_tip,
+                           sum_in=round(sum_in, 6), sum_out=round(sum_out, 6),
+                           qs={'kw': kw, 'all': '1' if show_all else '',
+                               'edit': '1' if inline else '', 'm': m, 'd': d},
                            msg=request.args.get('msg',''))
 
 @app.route('/material/edit/<int:mid>', methods=['GET','POST'])
@@ -1211,14 +1290,169 @@ def stock():
                            qs={'f': f, 'kw': kw})
 
 # ---------- 月报表（复刻原模板布局） ----------
+def _report_insights(m, top=5):
+    """月报洞察：采购最多 / 使用最多 / 采购金额最多 / 每种物料环比趋势。
+
+    采购数据取自 po_receipts（到货登记）——只有真正收到货才算采购，
+    下单不算，跟"到货才入库"的口径一致。
+    数量用**采购单位**（po_items.unit），金额用到货实价（po_receipts.price），
+    因为供应商调价是常态，用实价才对得上实际付的钱。
+    """
+    m = safe_ym(m)
+    pm = prev_ym(m)
+    lo, hi = m + '-01', m + '-31'
+    plo, phi = pm + '-01', pm + '-31'
+
+    # 采购明细可能没建档（material_id 为空），这时按名称反查物料档案，
+    # 让"采购的铜箔"和"出入库的铜箔"归到同一行，否则趋势表会拆成两行。
+    _by_name = {}
+    for r in db.q("SELECT id, name FROM materials"):
+        _by_name[(r['name'] or '').strip()] = r['id']
+
+    def _mid(mid, name):
+        if mid:
+            return int(mid)
+        return _by_name.get((name or '').strip()) or ('n:' + (name or '').strip())
+
+    def _span(a, b):
+        """这个月的到货按物料汇总：数量、金额、单位"""
+        out = {}
+        for r in db.q("SELECT pi.material_id mid, pi.name, pi.unit,"
+                      " SUM(pr.qty) q, SUM(pr.qty*pr.price) amt"
+                      " FROM po_receipts pr JOIN po_items pi ON pi.id=pr.item_id"
+                      " WHERE pr.rdate BETWEEN ? AND ? GROUP BY pi.material_id, pi.name, pi.unit",
+                      a, b):
+            k = _mid(r['mid'], r['name'])
+            d = out.setdefault(k, dict(mid=r['mid'], name=(r['name'] or '').strip(),
+                                       unit=r['unit'] or '', qty=0.0, amt=0.0))
+            d['qty'] += float(r['q'] or 0)
+            d['amt'] += float(r['amt'] or 0)
+        return out
+
+    cur_p = _span(lo, hi)
+    pre_p = _span(plo, phi)
+
+    # 出库（使用）
+    def _use(a, b):
+        out = {}
+        for r in db.q("SELECT material_id mid, SUM(qty) q FROM txns"
+                      " WHERE kind='出' AND tdate BETWEEN ? AND ? GROUP BY material_id", a, b):
+            out[r['mid']] = float(r['q'] or 0)
+        return out
+
+    cur_u, pre_u = _use(lo, hi), _use(plo, phi)
+
+    # 入库（便于看趋势）
+    def _in(a, b):
+        out = {}
+        for r in db.q("SELECT material_id mid, SUM(qty) q FROM txns"
+                      " WHERE kind='进' AND tdate BETWEEN ? AND ? GROUP BY material_id", a, b):
+            out[r['mid']] = float(r['q'] or 0)
+        return out
+
+    cur_i, pre_i = _in(lo, hi), _in(plo, phi)
+
+    names = {}
+    for r in db.q("SELECT id, name, unit FROM materials"):
+        names[r['id']] = (r['name'], r['unit'] or '')
+
+    def _nm(k):
+        if isinstance(k, int) and k in names:
+            return names[k]
+        d = cur_p.get(k) or pre_p.get(k)
+        if d:
+            return (d['name'], d['unit'])
+        if isinstance(k, str) and k.startswith('n:'):
+            return (k[2:] or '（未建档）', '')
+        return ('（未建档）', '')
+
+    def _rank(cur, key):
+        rows = []
+        for k, d in cur.items():
+            v = d[key] if isinstance(d, dict) else d
+            if v <= 0:
+                continue
+            n, u = _nm(k)
+            prev = 0.0
+            if key == 'amt' or key == 'qty':
+                pd = pre_p.get(k)
+                prev = (pd[key] if pd else 0.0)
+            else:
+                prev = (pre_u.get(k) or 0.0)
+            rows.append(dict(mid=k if isinstance(k, int) else None, name=n, unit=u,
+                             val=round(v, 2), prev=round(prev, 2),
+                             delta=round(v - prev, 2),
+                             pct=(round((v - prev) / prev * 100, 1) if prev else None)))
+        rows.sort(key=lambda x: -x['val'])
+        return rows[:top]
+
+    top_pur = _rank(cur_p, 'qty')
+    top_amt = _rank(cur_p, 'amt')
+    # 使用排行（cur_u 是 {mid: qty}）
+    use_rows = []
+    for k, v in cur_u.items():
+        if v <= 0:
+            continue
+        n, u = _nm(k)
+        prev = pre_u.get(k) or 0.0
+        use_rows.append(dict(mid=k, name=n, unit=u, val=round(v, 2),
+                             prev=round(prev, 2), delta=round(v - prev, 2),
+                             pct=(round((v - prev) / prev * 100, 1) if prev else None)))
+    use_rows.sort(key=lambda x: -x['val'])
+    top_use = use_rows[:top]
+
+    # 每种物料的环比趋势：进 / 出 / 采购金额
+    trend = []
+    keys = set(cur_i) | set(pre_i) | set(cur_u) | set(pre_u) | set(cur_p) | set(pre_p)
+    for k in keys:
+        ci, pi_ = cur_i.get(k, 0.0), pre_i.get(k, 0.0)
+        cu, pu = cur_u.get(k, 0.0), pre_u.get(k, 0.0)
+        cp = cur_p.get(k)
+        pp = pre_p.get(k)
+        ca = cp['amt'] if cp else 0.0
+        pa = pp['amt'] if pp else 0.0
+        if not (ci or pi_ or cu or pu or ca or pa):
+            continue
+        n, u = _nm(k)
+        trend.append(dict(mid=k if isinstance(k, int) else None, name=n, unit=u,
+                          i_cur=round(ci, 2), i_pre=round(pi_, 2),
+                          o_cur=round(cu, 2), o_pre=round(pu, 2),
+                          a_cur=round(ca, 2), a_pre=round(pa, 2)))
+    for t in trend:
+        t['i_up'] = t['i_cur'] > t['i_pre'] + 1e-9
+        t['i_dn'] = t['i_cur'] < t['i_pre'] - 1e-9
+        t['o_up'] = t['o_cur'] > t['o_pre'] + 1e-9
+        t['o_dn'] = t['o_cur'] < t['o_pre'] - 1e-9
+        t['a_up'] = t['a_cur'] > t['a_pre'] + 1e-9
+        t['a_dn'] = t['a_cur'] < t['a_pre'] - 1e-9
+    # 按"本月动静"排序：出库多的排前面，其次入库
+    trend.sort(key=lambda x: (-(x['o_cur'] + x['i_cur']), x['name']))
+
+    tot = dict(
+        pur_qty=round(sum(d['qty'] for d in cur_p.values()), 2),
+        pur_amt=round(sum(d['amt'] for d in cur_p.values()), 2),
+        pur_amt_pre=round(sum(d['amt'] for d in pre_p.values()), 2),
+        use_qty=round(sum(cur_u.values()), 2),
+        use_pre=round(sum(pre_u.values()), 2),
+    )
+    return dict(m=m, pm=pm, top_pur=top_pur, top_use=top_use, top_amt=top_amt,
+                trend=trend, tot=tot)
+
+
 @app.route('/report')
 def report():
     m = safe_ym(request.args.get('m'))
     mats, days = _report_data(m)
     tot_in = sum(mt['min'] for mt in mats)
     tot_out = sum(mt['mout'] for mt in mats)
+    try:
+        ins = _report_insights(m)
+    except Exception:
+        _log_err('月报洞察统计失败')
+        ins = None
     return render_template('report.html', m=m, days=days, mats=mats,
-                           tot_in=tot_in, tot_out=tot_out)
+                           tot_in=tot_in, tot_out=tot_out, ins=ins)
+
 
 @app.route('/export.xlsx')
 def export_xlsx():
@@ -1406,7 +1640,22 @@ def export_po_xlsx():
         s = str(v)
         return ("'" + s) if s[:1] in ('=', '+', '-', '@') else s
 
-    if kind == 'items':
+    if kind == 'summary':
+        ws.title = '采购单汇总'
+        ws.append(['采购单号', '日期', '交期', '供应商', '状态', '税率%', '单价口径',
+                   '订购数量', '不含税金额', '税额', '价税合计',
+                   '已到货数量', '已到货金额', '已付', '欠款', '未交数量', '更新时间'])
+        srows, _ = purchase.summary_list(st=st, sup=sup, kw=kw, m=m)
+        for r in srows:
+            ws.append([cv(r['pono']), cv(r['odate']), cv(r['ddate']), cv(r['supplier']),
+                       cv(r['status']), float(r['tax_rate'] or 0),
+                       '含税' if r['price_tax'] else '不含税',
+                       float(r['qty']), float(r['amount']), float(r['tax']),
+                       float(r['total']), float(r['recv_qty']), float(r['recv_total']),
+                       float(r['paid']), float(r['owed']), float(r['open_qty']),
+                       cv(r['updated_at'])])
+        fn = '采购单汇总'
+    elif kind == 'items':
         ws.title = '采购明细'
         ws.append(['采购单号', '日期', '交期', '供应商', '物料名称', '规格', '单位',
                    '订购数', '单价', '金额', '已到货', '未到货', '状态', '备注'])
@@ -1560,6 +1809,40 @@ def purchase_home():
                            STATUS=purchase.STATUS)
 
 
+def _po_sync(po_id):
+    """采购单任何变动后重算汇总快照。失败不阻断主流程，只记日志。"""
+    try:
+        purchase.save_summary(po_id)
+    except Exception:
+        _log_err('采购汇总保存失败 po_id=%s' % po_id)
+
+
+@app.route('/po/summary')
+def po_summary():
+    """采购单汇总 —— 单独一页，看每单的数量/金额/税额/价税合计/已付/欠款/未交。
+
+    数据来自 po_summary 快照表（每次变动后重算落库），不是现场聚合，
+    所以翻历史单看到的就是当时的金额，改了税率也不会让旧单金额跟着变。
+    """
+    st = request.args.get('st') or ''
+    sup = (request.args.get('sup') or '').strip()
+    kw = clean_kw(request.args.get('kw'))
+    m = safe_ym(request.args.get('m') or '', default='')
+    rows, tot = purchase.summary_list(st=st, sup=sup, kw=kw, m=m)
+    # 老库（升级上来的）可能还没生成快照，这里补一次
+    if not rows and db.q("SELECT COUNT(*) c FROM pos")[0]['c']:
+        try:
+            purchase.sync_all()
+            rows, tot = purchase.summary_list(st=st, sup=sup, kw=kw, m=m)
+        except Exception:
+            _log_err('汇总补算失败')
+    sups = [r['name'] for r in db.q(
+        "SELECT DISTINCT supplier name FROM pos ORDER BY supplier")]
+    return render_template('po_summary.html', rows=rows, tot=tot, st=st, sup=sup,
+                           kw=kw, m=m, sups=sups, STATUS=purchase.STATUS,
+                           today=today())
+
+
 @app.route('/po/new', methods=['GET', 'POST'])
 def po_new():
     """新建采购单（含明细）"""
@@ -1577,7 +1860,11 @@ def po_new():
         ddate = (request.form.get('ddate') or '').strip()
         if ddate and not is_date(ddate):
             ddate = ''
-        tax = num(request.form.get('tax_rate'), default=0, lo=0, hi=100)
+        # 税率默认 13，没填或填了非法值都落回 13（页面默认也是 13）
+        raw_tax = (request.form.get('tax_rate') or '').strip()
+        tax = num(raw_tax, default=13, lo=0, hi=100) if raw_tax else 13
+        # 单价口径：1=含税（默认） 0=不含税
+        price_tax = 1 if (request.form.get('price_tax') or '1') == '1' else 0
         note = (request.form.get('note') or '').strip()
         names = request.form.getlist('item_name')
         qtys = request.form.getlist('item_qty')
@@ -1592,10 +1879,10 @@ def po_new():
             with db.tx() as c:
                 pono = purchase.next_pono(odate)
                 po_id = c.execute("INSERT INTO pos(pono,supplier,odate,ddate,status,"
-                                  "tax_rate,note,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                                  "tax_rate,price_tax,note,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
                                   (pono, supplier, odate, ddate,
                                    request.form.get('status') or '已下单',
-                                   tax, note, now)).lastrowid
+                                   tax, price_tax, note, now)).lastrowid
                 n = 0
                 for i in range(len(names)):
                     nm = (names[i] or '').strip()
@@ -1627,10 +1914,20 @@ def po_new():
             return render_template('po_new.html', err='至少要填一行物料（名称和数量）',
                                    mats=_mat_choices(), today=today(), sups=_sup_names())
         purchase.touch_supplier(supplier)
+        # 建单时若手工选了"已完成"却还没到货，状态必须拉回事实：
+        # 否则看板/汇总会显示"已完成"，实际一件没到，账实不符。
+        try:
+            purchase.refresh_status(po_id)
+        except Exception:
+            _log_err('采购单状态推导失败')
+        try:
+            purchase.save_summary(po_id)
+        except Exception:
+            _log_err('采购汇总保存失败')
         return redirect(url_for('po_detail', po_id=po_id,
                                 msg='采购单 %s 已创建，%d 条明细' % (pono, n)))
     return render_template('po_new.html', mats=_mat_choices(), today=today(),
-                           sups=_sup_names(), units=db.unit_choices())
+                           sups=_sup_names(), units=db.unit_choices(), tax_default=13)
 
 
 def _mat_choices():
@@ -1702,6 +1999,7 @@ def po_item_add(po_id):
            (request.form.get('stock_unit') or '').strip(), q, p,
            (request.form.get('note') or '').strip())
     purchase.refresh_status(po_id)
+    _po_sync(po_id)
     return redirect(url_for('po_detail', po_id=po_id, msg='已加入 %s' % nm))
 
 
@@ -1773,6 +2071,7 @@ def po_pay(po_id):
            amt, (request.form.get('method') or '转账').strip(),
            (request.form.get('note') or '').strip(),
            datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    _po_sync(po_id)
     return redirect(url_for('po_detail', po_id=po_id, msg='已登记付款 %.2f' % amt))
 
 
@@ -1782,6 +2081,7 @@ def po_pay_del(pid):
     if r:
         p = r[0]['po_id']
         db.run("DELETE FROM po_payments WHERE id=?", pid)
+        _po_sync(p)
         return redirect(url_for('po_detail', po_id=p, msg='付款记录已删除'))
     return redirect(url_for('purchase_home'))
 

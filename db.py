@@ -131,9 +131,29 @@ CREATE TABLE IF NOT EXISTS pos (
   ddate      TEXT DEFAULT '',             /* 要求交期 */
   status     TEXT NOT NULL DEFAULT '草稿', /* 草稿/已下单/部分到货/已完成/已取消 */
   tax_rate   REAL NOT NULL DEFAULT 0,     /* 税率 % */
+  price_tax  INTEGER NOT NULL DEFAULT 1,  /* 单价是否含税：1=含税 0=不含税 */
   note       TEXT DEFAULT '',
   created_at TEXT NOT NULL
 );
+/* 采购单汇总快照：金额原来全是现算的，查一次算一次。
+   但月底对账、翻历史单时用户想直接看到"当时这单到底多少钱"，
+   光靠现算还有个问题——税率后来被改了，历史金额也跟着变，对不上当时的凭证。
+   所以每次变动后落一份快照，单独查看用。 */
+CREATE TABLE IF NOT EXISTS po_summary (
+  po_id        INTEGER PRIMARY KEY REFERENCES pos(id) ON DELETE CASCADE,
+  qty          REAL NOT NULL DEFAULT 0,   /* 订购数量（采购单位） */
+  amount       REAL NOT NULL DEFAULT 0,   /* 不含税金额 */
+  tax          REAL NOT NULL DEFAULT 0,   /* 税额 */
+  total        REAL NOT NULL DEFAULT 0,   /* 价税合计 */
+  recv_qty     REAL NOT NULL DEFAULT 0,   /* 已到货数量（库存单位） */
+  recv_amount  REAL NOT NULL DEFAULT 0,   /* 已到货不含税金额 */
+  recv_total   REAL NOT NULL DEFAULT 0,   /* 已到货价税合计 */
+  paid         REAL NOT NULL DEFAULT 0,   /* 已付 */
+  owed         REAL NOT NULL DEFAULT 0,   /* 欠款 = 已到货价税合计 - 已付 */
+  open_qty     REAL NOT NULL DEFAULT 0,   /* 未交数量（采购单位） */
+  updated_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_posum_upd ON po_summary(updated_at);
 CREATE TABLE IF NOT EXISTS po_items (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   po_id      INTEGER NOT NULL REFERENCES pos(id) ON DELETE CASCADE,
@@ -319,6 +339,10 @@ def migrate():
                          ('stock_unit', "TEXT DEFAULT ''")):
             if col not in _cols('po_items'):
                 run("ALTER TABLE po_items ADD COLUMN %s %s" % (col, ddl))
+    # price_tax 是后加的：老采购单按"单价含税"处理（与原逻辑一致，不翻旧账）
+    if 'pos' in [r['name'] for r in q("SELECT name FROM sqlite_master WHERE type='table'")]:
+        if 'price_tax' not in _cols('pos'):
+            run("ALTER TABLE pos ADD COLUMN price_tax INTEGER NOT NULL DEFAULT 1")
 
     for col, ddl in (('pieces', 'REAL'), ('per_piece', 'REAL'), ('price', 'REAL')):
         if col not in _cols('txns'):

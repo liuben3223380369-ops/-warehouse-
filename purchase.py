@@ -18,44 +18,84 @@ STATUS = ['草稿', '已下单', '部分到货', '已完成', '已取消']
 
 
 # ---------- 金额计算（唯一入口，全系统都调这里，保证口径一致） ----------
-def line_amount(qty, price, tax_rate=0):
-    """单行金额：不含税金额、税额、价税合计"""
+def net_price(price, tax_rate=0, price_tax=1):
+    """把单价统一折算成**不含税**单价。
+
+    采购报价有两种习惯：有的供应商报含税价（多数），有的报不含税价。
+    存的 price 就是当时填的那个数，到底是哪种由 pos.price_tax 决定。
+    所有金额计算都先过这道折算，口径才不会乱。
+    """
     try:
-        q = float(qty or 0)
         p = float(price or 0)
     except (TypeError, ValueError):
-        q = p = 0.0
+        return 0.0
+    if not price_tax:
+        return p
+    try:
+        r = float(tax_rate or 0) / 100.0
+    except (TypeError, ValueError):
+        r = 0.0
+    if r <= -1:                      # 税率 -100% 及更离谱的值：不折算，免得除出负数
+        return p
+    return p / (1.0 + r)
+
+
+def line_amount(qty, price, tax_rate=0, price_tax=1):
+    """单行金额：(不含税金额, 税额, 价税合计)
+
+    price_tax=1 表示 price 是含税单价，需要先除税；0 表示本身就是不含税价。
+    """
+    try:
+        q = float(qty or 0)
+    except (TypeError, ValueError):
+        q = 0.0
+    p = net_price(price, tax_rate, price_tax)
     amt = round(q * p, 2)
     tax = round(amt * float(tax_rate or 0) / 100.0, 2)
     return amt, tax, round(amt + tax, 2)
 
 
+def po_head(po_id):
+    """取单头的税率与"单价是否含税"。所有金额计算都从这里取口径，避免各处写法不一"""
+    r = db.q("SELECT tax_rate, price_tax FROM pos WHERE id=?", po_id)
+    if not r:
+        return 0.0, 1
+    try:
+        tax = float(r[0]['tax_rate'] or 0)
+    except (TypeError, ValueError):
+        tax = 0.0
+    try:
+        pt = int(r[0]['price_tax']) if r[0]['price_tax'] is not None else 1
+    except (TypeError, ValueError):
+        pt = 1
+    return tax, (1 if pt else 0)
+
+
 def po_totals(po_id):
-    """整单汇总：订购/到货/未到 的数量与金额（均按订购价计）"""
+    """整单汇总：订购/到货/未到 的数量与金额（金额一律不含税，税额单列）"""
     items = db.q("SELECT * FROM po_items WHERE po_id=? ORDER BY id", po_id)
-    tax = 0.0
-    head = db.q("SELECT tax_rate FROM pos WHERE id=?", po_id)
-    if head:
-        tax = float(head[0]['tax_rate'] or 0)
+    tax, pt = po_head(po_id)
     tot_qty = tot_amt = tot_tax = 0.0
     recv_qty = recv_amt = 0.0
     real_amt = 0.0          # 按到货实价计的金额（可能与订购价不同）
     for it in items:
-        a, t, _ = line_amount(it['qty'], it['price'], tax)
+        a, t, _ = line_amount(it['qty'], it['price'], tax, pt)
         tot_qty += float(it['qty'] or 0)
         tot_amt += a
         tot_tax += t
         rq = float(it['recv_qty'] or 0)
         recv_qty += rq
         # 到货金额按"实收"算：先取到货记录的实价，没有就退回订购价
-        _, _, _ = 0, 0, 0
-        got = db.q("SELECT COALESCE(SUM(qty*price),0) s FROM po_receipts WHERE item_id=?", it['id'])
+        got = db.q("SELECT COALESCE(SUM(qty),0) q, COALESCE(SUM(qty*price),0) s"
+                   " FROM po_receipts WHERE item_id=?", it['id'])
+        rqty = float(got[0]['q'] or 0)
         real = float(got[0]['s'] or 0)
-        if real:
-            real_amt += real
-            recv_amt += real
+        if rqty:
+            # 到货实价与订购价同一口径，先折成不含税再汇总
+            real_amt += round(rqty * net_price(real / rqty, tax, pt), 2)
+            recv_amt += round(rqty * net_price(real / rqty, tax, pt), 2)
         else:
-            recv_amt += round(rq * float(it['price'] or 0), 2)
+            recv_amt += round(rq * net_price(it['price'], tax, pt), 2)
     return {
         'qty': tot_qty, 'amount': round(tot_amt, 2), 'tax': round(tot_tax, 2),
         'total': round(tot_amt + tot_tax, 2),
@@ -63,6 +103,7 @@ def po_totals(po_id):
         'open_qty': round(tot_qty - recv_qty, 2),
         'real_amount': round(real_amt, 2),
         'tax_rate': tax,
+        'price_tax': pt,
     }
 
 
@@ -74,8 +115,74 @@ def paid_amount(po_id):
 def owed(po_id):
     """欠款 = 到货价税合计 − 已付。只按实际到货算，没到货的不该付钱"""
     t = po_totals(po_id)
-    recv_total = round(t['recv_amount'] * (1 + t['tax_rate'] / 100.0), 2)
+    _, tax_amt, recv_total = line_amount(1, t['recv_amount'], t['tax_rate'], 0)
     return round(recv_total - paid_amount(po_id), 2), recv_total
+
+
+# ---------- 汇总快照：把整单金额落成一张表，便于单独查看与历史对账 ----------
+def save_summary(po_id):
+    """重算并保存采购单汇总快照。
+
+    为什么要落库：金额原本全是现算的，改了税率/单价后历史单的金额也跟着变，
+    跟当时打印出来给供应商的凭证对不上。落一份快照，翻旧单看到的就是当时的数。
+    建单、改明细、到货、撤销到货、付款、删付款、改税率 都要调一次。
+    """
+    t = po_totals(po_id)
+    paid = paid_amount(po_id)
+    _, recv_total = owed(po_id)
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    db.run("INSERT INTO po_summary(po_id,qty,amount,tax,total,recv_qty,recv_amount,"
+           "recv_total,paid,owed,open_qty,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)"
+           " ON CONFLICT(po_id) DO UPDATE SET qty=excluded.qty, amount=excluded.amount,"
+           " tax=excluded.tax, total=excluded.total, recv_qty=excluded.recv_qty,"
+           " recv_amount=excluded.recv_amount, recv_total=excluded.recv_total,"
+           " paid=excluded.paid, owed=excluded.owed, open_qty=excluded.open_qty,"
+           " updated_at=excluded.updated_at",
+           po_id, t['qty'], t['amount'], t['tax'], t['total'],
+           t['recv_qty'], t['recv_amount'], recv_total,
+           paid, round(recv_total - paid, 2), t['open_qty'], now)
+    return get_summary(po_id)
+
+
+def get_summary(po_id):
+    r = db.q("SELECT * FROM po_summary WHERE po_id=?", po_id)
+    return dict(r[0]) if r else None
+
+
+def summary_list(st='', sup='', kw='', m=''):
+    """汇总清单：可直接看，也可导出"""
+    w, a = [], []
+    if st:
+        w.append("p.status=?"); a.append(st)
+    if sup:
+        w.append("p.supplier=?"); a.append(sup)
+    if kw:
+        w.append("(p.pono LIKE ? OR p.supplier LIKE ?)"); a += ['%%%s%%' % kw] * 2
+    if m:
+        w.append("p.odate LIKE ?"); a.append(m + '%')
+    where = (" WHERE " + " AND ".join(w)) if w else ""
+    rows = []
+    for r in db.q("SELECT p.id,p.pono,p.odate,p.ddate,p.supplier,p.status,p.tax_rate,"
+                  " p.price_tax, s.* FROM pos p"
+                  " LEFT JOIN po_summary s ON s.po_id=p.id"
+                  + where + " ORDER BY p.odate DESC, p.id DESC LIMIT 500", *a):
+        d = dict(r)
+        for k in ('qty', 'amount', 'tax', 'total', 'recv_qty', 'recv_amount',
+                  'recv_total', 'paid', 'owed', 'open_qty'):
+            d[k] = round(float(d.get(k) or 0), 2)
+        rows.append(d)
+    tot = {k: round(sum(r[k] for r in rows), 2)
+           for k in ('amount', 'tax', 'total', 'recv_amount', 'recv_total',
+                     'paid', 'owed')}
+    return rows, tot
+
+
+def sync_all():
+    """把没有快照或已过期的采购单全部重算一遍（升级老库、或发现数据对不上时用）"""
+    n = 0
+    for r in db.q("SELECT id FROM pos ORDER BY id"):
+        save_summary(r['id']); n += 1
+    return n
 
 
 # ---------- 状态：由到货数据推导，不手工维护 ----------
@@ -197,6 +304,10 @@ def receive(item_id, rdate, qty, price=None, note=''):
     except Exception as e:
         return False, '到货登记失败：%s' % e
     refresh_status(po['id'])
+    try:
+        save_summary(po['id'])
+    except Exception:
+        pass
     if abs(conv - 1.0) > 1e-9:
         return True, ('已到货 %g%s，按 1%s=%g%s 折算入库 %g%s（成本单价 %g/%s）'
                       % (qty, it['unit'], it['unit'], conv, it['stock_unit'] or it['unit'],
@@ -240,6 +351,13 @@ def set_item_unit(item_id, unit=None, conv=None, stock_unit=None, price=None):
         return False, '没有要改的内容'
     vals.append(item_id)
     db.run("UPDATE po_items SET " + ",".join(sets) + " WHERE id=?", *vals)
+    # 换算率/单价变了，到货金额和欠款都得跟着重算，否则汇总表是旧的
+    got = db.q("SELECT po_id FROM po_items WHERE id=?", item_id)
+    if got:
+        try:
+            save_summary(got[0]['po_id'])
+        except Exception:
+            pass
     return True, '已更新：%s' % ('、'.join(
         x.split('=')[0] for x in sets))
 
@@ -266,6 +384,10 @@ def unreceive(receipt_id):
         return False, '取消失败：%s' % e
     if po_id:
         refresh_status(po_id)
+        try:
+            save_summary(po_id)
+        except Exception:
+            pass
     return True, '已取消到货 %g，库存同步扣回' % r['qty']
 
 
@@ -289,6 +411,10 @@ def delete_item(item_id):
         n += 1
     db.run("DELETE FROM po_items WHERE id=?", item_id)
     refresh_status(po_id)
+    try:
+        save_summary(po_id)
+    except Exception:
+        pass
     tip = '明细已删除' + ('（同时撤销 %d 次到货，库存已扣回）' % n if n else '')
     return True, tip
 

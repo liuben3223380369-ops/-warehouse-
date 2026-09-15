@@ -19,11 +19,26 @@
   </div>
 
   <div class="rowflex">
-    <div><label>税率 %</label><input name="tax_rate" inputmode="decimal" value="0"
+    <div><label>税率 %</label><input name="tax_rate" inputmode="decimal" value="13"
       oninput="calcAll()"></div>
     <div><label>状态</label><select name="status">
       <option>已下单</option><option>草稿</option></select></div>
   </div>
+
+  <div class="rowflex" style="align-items:flex-end">
+    <div style="flex:1">
+      <label>单价口径</label>
+      <div style="display:flex;gap:14px;padding:9px 0;font-size:var(--fs-table)">
+        <label style="display:flex;align-items:center;gap:5px;margin:0">
+          <input type="radio" name="price_tax" value="1" checked onchange="calcAll()"
+            style="width:auto;margin:0">含税单价</label>
+        <label style="display:flex;align-items:center;gap:5px;margin:0">
+          <input type="radio" name="price_tax" value="0" onchange="calcAll()"
+            style="width:auto;margin:0">不含税单价</label>
+      </div>
+    </div>
+  </div>
+  <div style="font-size:12px;color:#7a869a;margin-top:-4px" id="tax_tip"></div>
 
   <label>备注</label><input name="note" placeholder="选填">
   <datalist id="ulist">
@@ -129,12 +144,20 @@ function showUnit(i){
 }
 function calcAll(){
   var rate=parseFloat(document.querySelector('[name=tax_rate]').value)||0;
+  var ptRadio=document.querySelector('[name=price_tax]:checked');
+  var pt=ptRadio?parseInt(ptRadio.value,10):1;
+  if(document.getElementById('tax_tip')){
+    document.getElementById('tax_tip').textContent = pt
+      ? '单价按含税填：不含税金额 = 数量 × 单价 ÷ (1+税率)'
+      : '单价按不含税填：税额 = 数量 × 单价 × 税率';
+  }
   var amt=0;
   document.querySelectorAll('.q').forEach(function(q){
     var i=q.dataset.i;
     var p=document.querySelector('.p[data-i="'+i+'"]');
     var qv=parseFloat(q.value)||0, pv=parseFloat(p&&p.value)||0;
-    var line=Math.round(qv*pv*100)/100; amt+=line;
+    var up=pt?pv/(1+rate/100):pv;          /* pt=1 单价含税，先除税 */
+    var line=Math.round(qv*up*100)/100; amt+=line;
     var ln=document.querySelector('.ln[data-i="'+i+'"]');
     if(ln) ln.textContent = line? ('小计 '+line.toFixed(2)) : '';
   });

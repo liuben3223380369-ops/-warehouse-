@@ -42,6 +42,11 @@
     <a class="btn s" style="margin-top:0"
        href="{{url_for('export_po_xlsx', t='pay', kw=po.pono)}}">付款流水</a>
   </div>
+  <div class="rowflex" style="margin:8px 0 0">
+    <a class="btn s o" style="margin-top:0"
+       href="{{url_for('export_po_xlsx', t='summary', kw=po.pono)}}">本单汇总</a>
+    <a class="btn s" style="margin-top:0" href="{{url_for('po_summary')}}">全部汇总</a>
+  </div>
 </div>
 
 <div class="card">

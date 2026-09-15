@@ -1,7 +1,7 @@
 {% extends 'base.html' %}
 {% block title %}物料档案{% endblock %}
 {% block h1 %}物料档案{% endblock %}
-{% block sub %}共 {{rows|length}} 种{% if n_off %}（含停用 {{n_off}} 种）{% endif %}{% if inline %} · 可直接改任意格{% else %} · 可勾选批量操作{% endif %}{% endblock %}
+{% block sub %}{{scope_cn}} · 共 {{rows|length}} 种{% if n_off %}（含停用 {{n_off}} 种）{% endif %}{% if inline %} · 可直接改任意格{% else %} · 可勾选批量操作{% endif %}{% endblock %}
 {% block body %}
 
 {% if msg %}<div class="card" style="background:#e8f6ee;border-left:3px solid #12a150">{{msg}}</div>{% endif %}
@@ -11,14 +11,35 @@
   <input type="text" name="kw" value="{{kw}}" placeholder="如 黑化 / CPDR">
   {% if show_all %}<input type="hidden" name="all" value="1">{% endif %}
   {% if inline %}<input type="hidden" name="edit" value="1">{% endif %}
+  {% if d %}<input type="hidden" name="d" value="{{d}}">{% endif %}
+  {% if scope=='all' %}<input type="hidden" name="scope" value="all">{% endif %}
   <button type="submit">搜索</button>
+
+  <div class="rowflex" style="margin-top:10px;align-items:flex-end">
+    <div><label>按月份看（默认当月）</label>
+      <input type="month" name="m" value="{{m}}" onchange="this.form.submit()"></div>
+    <div><label>或按某一天看</label>
+      <input type="date" name="d" value="{{d}}" onchange="this.form.submit()"></div>
+  </div>
+  <div class="rowflex" style="margin-top:8px">
+    <a class="btn s {{'o' if (m and not d) else ''}}" style="margin-top:0"
+       href="{{url_for('materials',kw=kw,all='1' if show_all else '',edit='1' if inline else '')}}">当月</a>
+    <a class="btn s {{'o' if scope=='all' else ''}}" style="margin-top:0"
+       href="{{url_for('materials',kw=kw,all='1' if show_all else '',edit='1' if inline else '',scope='all')}}">全部时间</a>
+    {% if d %}<a class="btn s o" style="margin-top:0"
+       href="{{url_for('materials',kw=kw,all='1' if show_all else '',edit='1' if inline else '')}}">← 回到当月</a>{% endif %}
+  </div>
+  <div style="font-size:12px;color:#7a869a;margin-top:6px">
+    当前口径：<b>{{scope_cn}}</b> · {{scope_tip}}
+    {%- if d %}｜当天有进出的 <b>{{rows|selectattr('moved')|list|length}}</b> 种{%- endif %}
+  </div>
   <div class="rowflex" style="margin-top:8px">
     {% if inline %}
-      <a class="btn s o" href="{{url_for('materials',kw=kw,all='1' if show_all else '')}}">退出编辑</a>
+      <a class="btn s o" href="{{url_for('materials',kw=kw,all='1' if show_all else '',m=m,d=d,scope=scope)}}">退出编辑</a>
     {% else %}
-      <a class="btn s" href="{{url_for('materials',kw=kw,all='1' if show_all else '',edit='1')}}">✎ 表格编辑 A-G</a>
+      <a class="btn s" href="{{url_for('materials',kw=kw,all='1' if show_all else '',edit='1',m=m,d=d,scope=scope)}}">✎ 表格编辑 A-G</a>
     {% endif %}
-    <a class="btn s o" href="{{url_for('materials',kw=kw,edit='1' if inline else '',all='0' if show_all else '1')}}">
+    <a class="btn s o" href="{{url_for('materials',kw=kw,edit='1' if inline else '',all='0' if show_all else '1',m=m,d=d,scope=scope)}}">
       {{'只看启用的' if show_all else '含停用物料'}}{% if n_off %}（停用 {{n_off}}）{% endif %}</a>
     <a class="btn s o" href="{{url_for('imp')}}">⬆ 批量导入</a>
     <a class="btn s o" href="{{url_for('sysinfo')}}">🔍 自检</a>
@@ -70,7 +91,9 @@
   <tr><th style="width:40px"></th>
     {{ th('物料 / 料号','name') }}{{ th('类型','category') }}{{ th('规格','spec') }}
     {{ th('宽幅','width') }}{{ th('供应商','supplier') }}{{ th('料号','code') }}
-    {{ th('期初','opening','n') }}{{ th('库存','stock','n') }}<th style="width:34px">史</th></tr>
+    {{ th('期初' if not d else '前结存','opening','n') }}
+    {{ th('进','in_qty','n') }}{{ th('出','out_qty','n') }}
+    {{ th('期末' if (m or d) else '结存','stock','n') }}<th style="width:34px">史</th></tr>
   {% for r in rows %}
   <tr class="row" {% if not r.active %}style="opacity:.45"{% endif %}>
    <td class="cbox" style="padding:0;width:40px;text-align:center">
@@ -83,9 +106,15 @@
    <td>{{r.spec}}</td>
    <td>{{r.width}}</td>
    <td>{{r.supplier}}{% if r.unit %}<br><span class="pill">{{r.unit}}</span>{% endif %}</td>
-   <td class="n">{{'%g'|format(r.opening)}}</td>
-   <td class="n {{'low' if r.stock<=r.safety else ''}}"><b>{{'%g'|format(r.stock)}}</b></td>
+   <td class="n">{{'%g'|format(r.p_open)}}</td>
+   <td class="n in">{% if r.p_in %}<b>{{'%g'|format(r.p_in)}}</b>{% else %}<span style="color:#c2c8d0">-</span>{% endif %}</td>
+   <td class="n out">{% if r.p_out %}<b>{{'%g'|format(r.p_out)}}</b>{% else %}<span style="color:#c2c8d0">-</span>{% endif %}</td>
+   <td class="n {{'low' if r.p_end<=r.safety else ''}}"><b>{{'%g'|format(r.p_end)}}</b></td>
   </tr>{% endfor %}</table></div>
+  <div style="margin-top:8px;font-size:var(--fs-label);color:#5b6675">
+    本{{'天' if d else ('月' if m else '期')}}合计：进 <b>{{'%g'|format(sum_in)}}</b>
+    · 出 <b>{{'%g'|format(sum_out)}}</b>
+  </div>
 {% else %}<div class="empty">没有匹配的物料</div>{% endif %}
 </div>
 

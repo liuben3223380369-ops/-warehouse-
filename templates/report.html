@@ -12,6 +12,84 @@
   <div class="stat"><span>本月入库合计</span><b class="in">{{'%g'|format(tot_in)}}</b></div>
   <div class="stat"><span>本月出库合计</span><b class="out">{{'%g'|format(tot_out)}}</b></div>
 </div>
+
+{% if ins %}
+{# ---------- 洞察：采购最多 / 用得最多 / 采购金额最多 ---------- #}
+<div class="grid2" style="margin-bottom:12px">
+  <div class="stat"><span>本月采购到货</span><b>{{'%g'|format(ins.tot.pur_qty)}}</b></div>
+  <div class="stat"><span>采购金额（到货实价）</span>
+    <b>{{'%.2f'|format(ins.tot.pur_amt)}}</b></div>
+</div>
+
+<div class="card">
+  <h2>🏆 本月之最 <span class="pill">对比 {{ins.pm}}</span></h2>
+
+  <div style="margin-top:6px">
+    <div style="font-size:var(--fs-label);color:#7a869a;margin-bottom:4px">采购到货最多</div>
+    {% if ins.top_pur %}{% for r in ins.top_pur %}
+    <div class="kv"><span>{{loop.index}}. {{r.name}}
+      {% if r.unit %}<span class="pill">{{r.unit}}</span>{% endif %}</span>
+      <b>{{'%g'|format(r.val)}}{% if r.pct is not none %}
+        <span class="{{'up' if r.delta>0 else ('dn' if r.delta<0 else '')}}">
+          {{'↑' if r.delta>0 else ('↓' if r.delta<0 else '－')}}{{'%g%%'|format(r.pct|abs)}}</span>
+      {% endif %}</b></div>
+    {% endfor %}{% else %}<div class="empty" style="padding:6px">本月没有到货记录</div>{% endif %}
+  </div>
+
+  <div style="margin-top:12px">
+    <div style="font-size:var(--fs-label);color:#7a869a;margin-bottom:4px">用得最多（出库）</div>
+    {% if ins.top_use %}{% for r in ins.top_use %}
+    <div class="kv"><span>{{loop.index}}. {{r.name}}
+      {% if r.unit %}<span class="pill">{{r.unit}}</span>{% endif %}</span>
+      <b>{{'%g'|format(r.val)}}{% if r.pct is not none %}
+        <span class="{{'up' if r.delta>0 else ('dn' if r.delta<0 else '')}}">
+          {{'↑' if r.delta>0 else ('↓' if r.delta<0 else '－')}}{{'%g%%'|format(r.pct|abs)}}</span>
+      {% endif %}</b></div>
+    {% endfor %}{% else %}<div class="empty" style="padding:6px">本月没有出库</div>{% endif %}
+  </div>
+
+  <div style="margin-top:12px">
+    <div style="font-size:var(--fs-label);color:#7a869a;margin-bottom:4px">采购金额最多</div>
+    {% if ins.top_amt %}{% for r in ins.top_amt %}
+    <div class="kv"><span>{{loop.index}}. {{r.name}}</span>
+      <b>{{'%.2f'|format(r.val)}}{% if r.pct is not none %}
+        <span class="{{'up' if r.delta>0 else ('dn' if r.delta<0 else '')}}">
+          {{'↑' if r.delta>0 else ('↓' if r.delta<0 else '－')}}{{'%g%%'|format(r.pct|abs)}}</span>
+      {% endif %}</b></div>
+    {% endfor %}{% else %}<div class="empty" style="padding:6px">本月没有采购金额</div>{% endif %}
+  </div>
+
+  <div style="font-size:12px;color:#7a869a;margin-top:10px;line-height:1.6">
+    采购按<b>到货</b>统计（下单不算，与"到货才入库"口径一致）；金额用到货实价。
+    箭头与百分比是与 {{ins.pm}} 的环比。
+  </div>
+</div>
+
+{# ---------- 每种物料的环比趋势 ---------- #}
+<div class="card">
+  <h2>📈 环比趋势 <span class="pill">{{ins.pm}} → {{m}}</span></h2>
+  {% if ins.trend %}
+  <div class="scroll"><table>
+  <tr><th>物料</th><th class="n">入库</th><th class="n">出库</th><th class="n">采购金额</th></tr>
+  {% for t in ins.trend %}
+  <tr class="row">
+    <td>{{t.name}}{% if t.unit %}<br><span class="pill">{{t.unit}}</span>{% endif %}</td>
+    <td class="n">{{'%g'|format(t.i_cur) if t.i_cur else '－'}}
+      {% if t.i_pre %}<br><span style="font-size:11px;color:#9aa4b2">
+        {{'上月 %g'|format(t.i_pre)}} {{'↑' if t.i_up else ('↓' if t.i_dn else '＝')}}</span>{% endif %}</td>
+    <td class="n">{{'%g'|format(t.o_cur) if t.o_cur else '－'}}
+      {% if t.o_pre %}<br><span style="font-size:11px;color:#9aa4b2">
+        {{'上月 %g'|format(t.o_pre)}} {{'↑' if t.o_up else ('↓' if t.o_dn else '＝')}}</span>{% endif %}</td>
+    <td class="n">{{'%.2f'|format(t.a_cur) if t.a_cur else '－'}}
+      {% if t.a_pre %}<br><span style="font-size:11px;color:#9aa4b2">
+        {{'上月 %.2f'|format(t.a_pre)}} {{'↑' if t.a_up else ('↓' if t.a_dn else '＝')}}</span>{% endif %}</td>
+  </tr>{% endfor %}</table></div>
+  <div style="font-size:12px;color:#7a869a;margin-top:8px">
+    ↑ 比上月增加，↓ 减少，＝ 持平。没填月份的显示「－」，不参与箭头判断。
+  </div>
+  {% else %}<div class="empty">本月和上月都没有进出记录</div>{% endif %}
+</div>
+{% endif %}
 <div class="card" style="padding:10px 6px">
 {% if mats %}<div class="scroll"><table>
 <tr>

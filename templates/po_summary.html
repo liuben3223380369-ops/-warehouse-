@@ -1,0 +1,99 @@
+{% extends 'base.html' %}
+{% block title %}采购单汇总 - 仓库管理系统{% endblock %}
+{% block h1 %}采购单汇总{% endblock %}
+{% block sub %}金额快照 · 单独查看 · 与库存记录分列{% endblock %}
+{% block body %}
+
+<div class="grid2">
+  <div class="stat"><span>订购金额(不含税)</span><b>{{'%.2f'|format(tot.amount)}}</b></div>
+  <div class="stat"><span>税额</span><b>{{'%.2f'|format(tot.tax)}}</b></div>
+  <div class="stat"><span>价税合计</span><b style="color:#1f6feb">{{'%.2f'|format(tot.total)}}</b></div>
+  <div class="stat"><span>已付</span><b class="in">{{'%.2f'|format(tot.paid)}}</b></div>
+  <div class="stat"><span>{{'欠款' if tot.owed>0 else '多付'}}</span>
+    <b class="{{'out' if tot.owed>0 else 'in'}}">{{'%.2f'|format(tot.owed if tot.owed>0 else -tot.owed)}}</b></div>
+  <div class="stat"><span>已到货金额</span><b>{{'%.2f'|format(tot.recv_amount)}}</b></div>
+</div>
+
+<div class="card">
+  <form method="get" style="margin:0">
+    <div class="rowflex">
+      <select name="st">
+        <option value="">全部状态</option>
+        {% for s in STATUS %}<option {{'selected' if st==s}}>{{s}}</option>{% endfor %}
+      </select>
+      <select name="sup">
+        <option value="">全部供应商</option>
+        {% for s in sups %}<option {{'selected' if sup==s}}>{{s}}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="rowflex" style="margin-top:8px">
+      <input type="month" name="m" value="{{m}}">
+      <input name="kw" value="{{kw}}" placeholder="搜单号 / 供应商">
+    </div>
+    <div class="rowflex" style="margin-top:8px">
+      <button type="submit" style="width:auto;padding:11px 18px;margin-top:0">筛选</button>
+      <a class="btn s" style="margin-top:0" href="{{url_for('po_summary')}}">重置</a>
+    </div>
+  </form>
+</div>
+
+<div class="rowflex">
+  <a class="btn s o" style="margin-top:0" href="{{url_for('export_po_xlsx', t='summary', st=st, sup=sup, kw=kw, m=m)}}">⬇ 导出汇总 Excel</a>
+  <a class="btn s" style="margin-top:0" href="{{url_for('purchase_home')}}">返回采购台</a>
+</div>
+
+{% if rows %}
+{% for r in rows %}
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap">
+    <div>
+      <b style="font-size:var(--fs-title)">
+        <a href="{{url_for('po_detail', po_id=r.id)}}">{{r.pono}}</a></b>
+      <span class="pill">{{r.status}}</span>
+    </div>
+    <div style="font-size:var(--fs-label);color:#7a869a">{{r.odate}}
+      {% if r.ddate %}· 交期 {{r.ddate}}{% endif %}</div>
+  </div>
+  <div style="margin-top:4px;font-size:var(--fs-table);color:#5b6675">
+    {{r.supplier}} · 税率 {{'%g'|format(r.tax_rate or 0)}}%
+    · 单价<b>{{'含税' if r.price_tax else '不含税'}}</b>
+  </div>
+
+  <div class="kv"><span>订购数量</span><b>{{'%g'|format(r.qty)}}</b></div>
+  <div class="kv"><span>不含税金额</span><b>{{'%.2f'|format(r.amount)}}</b></div>
+  <div class="kv"><span>税额</span><span>{{'%.2f'|format(r.tax)}}</span></div>
+  <div class="kv"><span>价税合计</span><b style="color:#1f6feb">{{'%.2f'|format(r.total)}}</b></div>
+  <div class="kv" style="border-bottom:none;padding-top:8px;margin-top:4px;border-top:1px solid #f0f2f5">
+    <span>已到货</span>
+    <span>{{'%g'|format(r.recv_qty)}} · {{'%.2f'|format(r.recv_total)}}</span></div>
+  <div class="kv"><span>未交数量</span>
+    <b class="{{'out' if r.open_qty>0 else 'in'}}">{{'%g'|format(r.open_qty)}}</b></div>
+  <div class="kv"><span>已付</span><b class="in">{{'%.2f'|format(r.paid)}}</b></div>
+  <div class="kv" style="border-bottom:none"><span>{{'欠款' if r.owed>0 else '多付'}}</span>
+    <b class="{{'out' if r.owed>0 else 'in'}}">{{'%.2f'|format(r.owed if r.owed>0 else -r.owed)}}</b></div>
+  {% if r.updated_at %}
+  <div style="font-size:11px;color:#9aa4b2;margin-top:6px">快照时间 {{r.updated_at}}</div>
+  {% endif %}
+</div>
+{% endfor %}
+<div style="font-size:var(--fs-label);color:#7a869a;text-align:center;padding:8px">
+  共 {{rows|length}} 张采购单 · 显示前 500 张
+</div>
+{% else %}
+<div class="card"><div class="empty">
+  还没有采购单汇总。去<a href="{{url_for('po_new')}}">新建采购单</a>，
+  保存后这里会自动生成金额快照。
+</div></div>
+{% endif %}
+
+<div class="card" style="background:#f7f9fc">
+  <div style="font-size:var(--fs-label);color:#5b6675;line-height:1.7">
+    <b>关于这页数据</b><br>
+    · 金额来自 <b>po_summary 快照表</b>，每次建单 / 改明细 / 到货 / 撤销 / 付款后自动重算<br>
+    · 与库存记录分列：这页是<b>采购口径</b>（订了多少、付了多少、还欠多少），
+      库存看的是<b>实收数量</b><br>
+    · 历史单金额不会因后来改了税率而变动，可对应当时的凭证
+  </div>
+</div>
+
+{% endblock %}
