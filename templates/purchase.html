@@ -76,8 +76,15 @@
   <div class="kv"><span>税率 / 税额</span><span>{{'%g'|format(r.tax_rate)}}% →
     {{'%.2f'|format(r.tax)}}</span></div>
   <div class="kv"><span>价税合计</span><b>{{'%.2f'|format(r.total)}}</b></div>
-  <div class="kv"><span>已付 / 欠款</span><span>{{'%.2f'|format(r.paid)}} /
-    <b class="{{'out' if (r.total - r.paid) > 0 else 'in'}}">{{'%.2f'|format(r.total - r.paid)}}</b></span></div>
+  <div class="kv"><span>已付 / 到货价税</span><span>{{'%.2f'|format(r.paid)}} /
+    {{'%.2f'|format(r.recv_total)}}</span></div>
+  {% if r.owed < -0.005 %}
+  <div class="kv"><span>多付（预付溢余）</span>
+    <b class="in">{{'%.2f'|format(-r.owed)}}</b></div>
+  {% else %}
+  <div class="kv"><span>欠款（按到货计）</span>
+    <b class="{{'out' if r.owed > 0 else 'in'}}">{{'%.2f'|format(r.owed)}}</b></div>
+  {% endif %}
 
   <div class="rowflex" style="margin-top:8px">
     <a class="btn s" href="{{url_for('po_detail',po_id=r.id)}}" style="margin-top:0">详情 / 收货</a>

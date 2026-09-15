@@ -97,7 +97,7 @@ function rowHtml(i, src){
    + '<input name="item_name" list="ml'+i+'" autocomplete="off" placeholder="输入即联想" class="nm" data-i="'+i+'">'
    + '<input type="hidden" name="item_mid" class="mid" data-i="'+i+'">'
    + '<div class="sg" id="sg'+i+'" style="display:none"></div></div>'
-   + '<div><label>数量 *</label><input name="item_qty" inputmode="decimal" placeholder="0" class="q" data-i="'+i+'" oninput="calcAll()"></div></div>'
+   + '<div><label>数量 *</label><input name="item_qty" inputmode="decimal" placeholder="" class="q" data-i="'+i+'" oninput="calcAll()"></div></div>'
    + '<div class="rowflex"><div><label>单价</label><input name="item_price" inputmode="decimal" placeholder="0.00" class="p" data-i="'+i+'" oninput="calcAll()"></div>'
    + '<div><label>单位（可直接改）</label><input name="item_unit" class="u" data-i="'+i+'" list="ulist" placeholder="个" oninput="showUnit('+i+')"></div></div>'
    + '<div class="rowflex"><div><label>1 采购单位 =</label><input name="item_conv" inputmode="decimal" value="1" class="cv" data-i="'+i+'" oninput="showUnit('+i+')"></div>'

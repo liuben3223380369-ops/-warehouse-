@@ -22,13 +22,12 @@
 <div class="card">
 {% if rows %}
   <div class="scroll"><table>
-  <tr><th>日期</th><th class="n">进</th><th class="n">出</th><th class="n">件数</th><th class="n">单价</th><th class="n">金额</th><th class="n">结存</th><th>备注</th></tr>
+  <tr><th>日期</th><th class="n">进</th><th class="n">出</th><th class="n">单价</th><th class="n">金额</th><th class="n">结存</th><th>备注</th></tr>
   {% for r in rows %}
   <tr>
     <td>{{r.tdate}}</td>
     <td class="n in">{% if r.kind=='进' %}<b>{{'%g'|format(r.qty)}}</b>{% endif %}</td>
     <td class="n out">{% if r.kind=='出' %}<b>{{'%g'|format(r.qty)}}</b>{% endif %}</td>
-    <td class="n">{% if r.pieces %}{{'%g'|format(r.pieces)}}{% endif %}</td>
     <td class="n">{% if r.price %}{{'%.2f'|format(r.price)}}{% endif %}</td>
     <td class="n">{% if r.price %}{{'%.2f'|format(r.amount or 0)}}{% endif %}</td>
     <td class="n {{'low' if r.balance<=row.safety else ''}}"><b>{{'%g'|format(r.balance)}}</b></td>

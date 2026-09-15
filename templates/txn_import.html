@@ -166,8 +166,8 @@
     <tr>{% for i in ncol %}<td><select name="cm_{{i}}" style="min-width:88px">
       <option value="">—忽略—</option>
       {% for v,l in [('name','物料名称'),('code','料号'),('date','日期'),('qty','数量'),
-                     ('in_qty','进'),('out_qty','出'),('kind','进/出'),('pieces','件数'),
-                     ('per_piece','每件'),('price','单价'),('amount','金额'),
+                     ('in_qty','进'),('out_qty','出'),('kind','进/出'),
+                     ('price','单价'),('amount','金额'),
                      ('note','备注'),('supplier','供应商'),
                      ('category','类型'),('spec','规格'),('width','宽幅'),('unit','单位')] %}
         <option value="{{v}}">{{l}}</option>{% endfor %}

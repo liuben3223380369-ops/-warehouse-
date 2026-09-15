@@ -34,11 +34,20 @@ QTY_MAX = 1e9
 #      也支持 入库数量 / 出库数量 分列写法（一行可生成两笔）
 TXN_ALIASES = {
     'date':  ['日期', '单据日期', '出入库日期', '入库日期', '出库日期', '时间', '业务日期', 'date'],
-    'name':  ['物料名称', '名称', '品名', '物料', '材料名称', '货品名', 'name'],
-    'code':  ['料号', '物料编号', '物料编码', '编号', '编码', '型号', '规格型号', 'code'],
+    # 真实采购单 / 送货单的表头往往写得很长（如「物品/服务名称及规格型号」），
+    # 精确匹配认不出就整行表头作废，等于这类单据根本导不进来，故逐个收录。
+    'name':  ['物料名称', '名称', '品名', '物料', '材料名称', '货品名', 'name',
+              '物品/服务名称及规格型号', '物品名称', '物品/服务名称',
+              '货物名称', '商品名称', '产品名称', '名称及规格', '名称规格',
+              '品名及规格', '物料名称及规格', '名称及规格型号', '材料',
+              '产品名称及规格', '货物名称及规格'],
+    'code':  ['料号', '物料编号', '物料编码', '编号', '编码', '型号', '规格型号', 'code',
+              '物料代码', '商品编码', '商品代码', '物品编码', '物品代码',
+              '产品编码', '产品代码', '货号'],
     'kind':  ['进出', '进/出', '出入库', '方向', '收发明细', '出入库类型', '类型进销',
               '进出标志', 'in/out', 'type'],
-    'qty':   ['数量', '出入库数量', '数量(平米)', '数量（平米）', '重量', '平米数', '收发数量', 'qty'],
+    'qty':   ['数量', '出入库数量', '数量(平米)', '数量（平米）', '重量', '平米数', '收发数量', 'qty',
+              '订单数量', '应发数量', '订购数量'],
     'in_qty':  ['进', '入库', '入库数量', '进货数量', '收入数量', '入库数', '进仓数量', 'in'],
     'out_qty': ['出', '出库', '出库数量', '出货数量', '发出数量', '出库数', '出仓数量', '领用数量', 'out'],
     'note':  ['备注', '客户', '单号', '用途', '领用人', '说明', '摘要', 'note'],
@@ -53,6 +62,19 @@ TXN_MAT_COLS = ['supplier', 'category', 'spec', 'width', 'unit', 'status', 'open
 
 def _norm(s):
     return str(s or '').strip().lower().replace(' ', '').replace('（', '(').replace('）', ')')
+
+def _is_num_col(vals):
+    """整列都是数字（且至少有一个非空）-> 这一列不是单位列。"""
+    n = 0
+    for v in vals:
+        if v is None or str(v).strip() == '':
+            continue
+        try:
+            float(str(v)); n += 1
+        except (TypeError, ValueError):
+            return False
+    return n > 0
+
 
 def unit_from_label(label, sample_vals):
     """「单位（卷）」这类表头，列里填的其实是卷数（50、10），不是单位名。
@@ -319,6 +341,19 @@ def map_txn_headers(header, aliases=None, mat_aliases=None):
         if f in mat:
             mat[f] = list(v) + [x for x in ALIASES.get(f, []) if x not in v]
     out = {}
+    # 送货单常同时有「订单数量」和「实发数量」两列。入库要按实际收到的算，
+    # 否则按订单数入账会凭空多出库存（欠交时尤其明显），故实发列优先占位。
+    for i, h in enumerate(header):
+        if _norm(h) in ('实发数量', '实收数量', '实发数', '实收数', '本次数量',
+                        '送货数量', '实际数量', '实发'):
+            out[i] = 'qty'
+            break
+    # 数量口径列：「数量单位」「计量口径」等，表里写了就按写的算
+    for i, h in enumerate(header):
+        n = _norm(h)
+        if n in ('数量单位', '计量单位', '数量口径', '口径', '计量口径', '单位口径'):
+            out[i] = 'qty_unit'
+            break
     # 先匹配流水专用列（避免「数量」被物料列抢走）
     for i, h in enumerate(header):
         n = _norm(h)
@@ -349,6 +384,14 @@ def map_txn_headers(header, aliases=None, mat_aliases=None):
                     pool.append(x)
             if n in [_norm(x) for x in pool]:
                 out[i] = f; break
+            # 兜底：表头带单位（界面显示「长（米）」，使用者照抄成「长（米）」
+            # 「长 (米) 」等写法）时，去掉括号内容再匹配一次，避免这一列
+            # 认不出来、值静默丢失。
+            n_bare = re.sub(r'\(.*?\)', '', n).strip()
+            if n_bare and n_bare != n:
+                pool_bare = [re.sub(r'\(.*?\)', '', _norm(x)).strip() for x in pool]
+                if n_bare in pool_bare:
+                    out[i] = f; break
     return out
 
 # ---------- 原 Excel「宽表」布局：物料一行 × 每日(进/出)两列 ----------
@@ -388,6 +431,12 @@ def _head_at(grid, rows, c):
 # 「汇总/合计」这类列长在日期区后面，表头不是日期、进出标记却同样是「进/出」。
 # 当作日期列读进来会把当月的合计值再导一遍 —— 库存直接翻倍。必须整段跳过。
 SUM_WORDS = ('汇总', '合计', '总计', '小计', '累计', '合計')
+
+def _nm_sum_word(nm):
+    """物料名是不是「总计/合计」这类汇总行（去掉括号内容后整名比对）"""
+    import re as _r
+    t = _r.sub(r'[（(].*?[)）]', '', str(nm or '')).strip()
+    return t in SUM_WORDS or str(nm or '').strip() in SUM_WORDS
 
 def _is_sum_col(v):
     s = str(v or '').strip()
@@ -571,7 +620,12 @@ def parse_wide(grid, defmonth=None):
         if not r or name_c >= len(r):
             continue
         nm = str(r[name_c] or '').strip()
-        if not nm or nm in ('/', '-', '合计', '总计'):
+        if not nm or nm in ('/', '-'):
+            continue
+        # 表末尾常有「总计/合计/小计」这种汇总行。它是上面各行的和，
+        # 当成普通行导进来会凭空多出一笔，库存和金额全部虚增。
+        # 用 SUM_WORDS 统一判断（去掉括号内容后比对，如「总计（卷）」）。
+        if _nm_sum_word(nm):
             continue
         base = {'name': nm, 'code': '', 'date': '', 'note': '',
                 'pieces': None, 'per_piece': None, 'price': None}
@@ -723,7 +777,20 @@ def parse_txn_file(path=None, stream=None, filename='', aliases=None, mat_aliase
             if not n:
                 continue
             for x in xcols:
-                if n == _norm(x['label']):
+                # 自定义列也可能配了单位，界面显示「膜厚（丝）」，使用者照抄
+                # 过来就是这个写法；表头还可能带空格。精确匹配不上时，
+                # 去掉括号内容再比一次，否则这一列静默丢失。
+                _lb = x['label'] or ''
+                _u = (x['unit'] if 'unit' in x.keys() else '') or ''
+                _hit = False
+                for _w in ([_lb]
+                           + (['%s（%s）' % (_lb, _u), '%s(%s)' % (_lb, _u)] if _lb and _u else [])):
+                    if n == _norm(_w):
+                        _hit = True; break
+                if not _hit and _lb:
+                    if re.sub(r'\(.*?\)', '', n).strip() == re.sub(r'\(.*?\)', '', _norm(_lb)).strip():
+                        _hit = True
+                if _hit:
                     hmap[i] = x['fid']
                     break
 
@@ -738,8 +805,14 @@ def parse_txn_file(path=None, stream=None, filename='', aliases=None, mat_aliase
         code = str(val('code') or '').strip()
         if not name and not code:
             continue
+        # 「总计/合计」这类汇总行是上面各行的和，导进来会凭空多一笔
+        if _nm_sum_word(name):
+            continue
         base = dict(name=name or code, code=code,
                     date=_fmt_date(val('date')),
+                    # 表里写了「数量单位」列就采信（按平米 / 按卷），
+                    # 决定卷料列是「数量÷一卷平米」还是直接等于数量
+                    qty_unit=str(val('qty_unit') or '').strip(),
                     note=str(val('note') or '').strip(),
                     pieces=_num(val('pieces'), hi=QTY_MAX) or None,
                     per_piece=_num(val('per_piece'), hi=QTY_MAX) or None)
@@ -748,6 +821,18 @@ def parse_txn_file(path=None, stream=None, filename='', aliases=None, mat_aliase
             base[f] = '' if v is None else str(v).strip()
             if f in ('opening', 'safety'):
                 base[f] = _num(v, hi=QTY_MAX)
+        # 「单位（卷）」这类表头，列里填的其实是卷数（50、9.999999999999998），
+        # 不是单位名 —— 直接存会把 unit 存成数字（v2.1 已在宽表路径修过，
+        # 这是普通表路径，同一处陷阱）。真实单位从表头括号里取。
+        _uc = [k for k, f in hmap.items() if f == 'unit']
+        if _uc:
+            _u0 = _uc[0]
+            _fixed = unit_from_label(_head_at(raw, [hi], _u0),
+                                     [r[_u0] if _u0 < len(r) else None for r in raw[hi + 1:hi + 31]])
+            if _fixed:
+                base['unit'] = _fixed
+            elif _is_num_col([r[_u0] if _u0 < len(r) else None for r in raw[hi + 1:hi + 31]]):
+                base['unit'] = ''        # 整列是数字又不认得单位 -> 留白，别塞数字
         # 自定义列的值：hmap 里已按列名对上，这里原样带出去
         for k, f in hmap.items():
             if str(f).startswith('x_') and k < len(r):

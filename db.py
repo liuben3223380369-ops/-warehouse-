@@ -222,6 +222,7 @@ CREATE TABLE IF NOT EXISTS tpl_cols (
   xtype   TEXT    DEFAULT 'text',   /* text 文本 | number 数字 | date 日期 | select 单选 | calc 公式 */
   xopt    TEXT    DEFAULT '',       /* select 的选项，逗号分隔 */
   xform   TEXT    DEFAULT '',       /* calc 的公式，如 qty*price */
+  unit    TEXT    DEFAULT '',       /* 这一列的单位，如 米/平米/卷；空=不带单位 */
   PRIMARY KEY(tpl_id, fid)
 );
 """
@@ -371,6 +372,13 @@ def migrate():
     for col, ddl in (('pieces', 'REAL'), ('per_piece', 'REAL'), ('price', 'REAL')):
         if col not in _cols('txns'):
             run("ALTER TABLE txns ADD COLUMN %s %s" % (col, ddl))
+    # 列级单位（v3.21）：老库的 tpl_cols 没有 unit，补上才能给每列配单位
+    if 'tpl_cols' in [r['name'] for r in q("SELECT name FROM sqlite_master WHERE type='table'")]:
+        if 'unit' not in _cols('tpl_cols'):
+            run("ALTER TABLE tpl_cols ADD COLUMN unit TEXT DEFAULT ''")
+        # 单位不再单独占一列（v3.21）：老模板里的「单位」列删掉，
+        # 改用每一列自己配单位。老物料档案里的 unit 字段保留（历史数据不动）。
+        run("DELETE FROM tpl_cols WHERE fid='unit'")
     # 长宽→平米→卷料：老库要补这两个数值列（materials 存档、txns 记每笔）
     for tb in ('materials', 'txns'):
         for col in NUM_EXTRA_COLS:
@@ -395,6 +403,12 @@ def migrate():
         run("ALTER TABLE materials ADD COLUMN extra TEXT DEFAULT ''")
     if 'extra' not in _cols('txns'):
         run("ALTER TABLE txns ADD COLUMN extra TEXT DEFAULT ''")
+    # 数量口径（按平米 / 按卷）：记在物料上当默认值，单据上也留一份，
+    # 保证改了物料口径后，历史单据还按当时口径显示。
+    if 'qty_unit' not in _cols('materials'):
+        run("ALTER TABLE materials ADD COLUMN qty_unit TEXT DEFAULT '平米'")
+    if 'qty_unit' not in _cols('txns'):
+        run("ALTER TABLE txns ADD COLUMN qty_unit TEXT DEFAULT ''")
     # 视图改成聚合 JOIN 后，老库里的旧视图不会自动更新，这里重建
     old = q("SELECT sql FROM sqlite_master WHERE type='view' AND name='v_stock'")
     if old and ('COALESCE(a.i' not in (old[0]['sql'] or '')
@@ -407,6 +421,27 @@ def migrate():
                      ('idx_mat_active', "CREATE INDEX IF NOT EXISTS idx_mat_active ON materials(active)")):
         run(ddl)
     _migrate_tpl()
+
+
+def _patch_unit_aliases(tid):
+    """给配了单位的列补「列名（单位）」别名。
+
+    界面上表头显示成「长（米）」，使用者照着做 Excel 时表头就会这么写；
+    导入必须能认，否则这一列匹配不上、值静默丢失（单据建了但字段空）。
+    """
+    for r in q("SELECT fid,label,unit,aliases FROM tpl_cols WHERE tpl_id=? AND unit<>''", tid):
+        lb = (r['label'] or '').strip()
+        u = (r['unit'] or '').strip()
+        if not lb or not u:
+            continue
+        parts = [x.strip() for x in (r['aliases'] or '').split(',') if x.strip()]
+        changed = False
+        for w in ('%s（%s）' % (lb, u), '%s(%s)' % (lb, u)):
+            if w not in parts:
+                parts.append(w); changed = True
+        if changed:
+            run("UPDATE tpl_cols SET aliases=? WHERE tpl_id=? AND fid=?",
+                ','.join(parts), tid, r['fid'])
 
 
 def _migrate_tpl():
@@ -435,6 +470,13 @@ def _migrate_tpl():
                         " VALUES(?,?,?,?,?,?)", tid, fid, label, pos, en, al)
         else:
             reset_tpl_cols(tid)
+    # 列级单位是 v3.21 才有的，老模板补上预设值（长=米 / 平米=平米 / 卷料=卷）
+    if not q("SELECT COUNT(*) c FROM tpl_cols WHERE tpl_id=? AND unit<>''", tid)[0]['c']:
+        preset_col_units(tid)
+    # v3.21b：配了单位的列，界面上表头显示成「长（米）」，导入也必须能认这个写法。
+    # 老配置的别名里没有带单位的形式，这里统一补上，否则导入时该列匹配不上、
+    # 单据建了但值静默丢失。
+    _patch_unit_aliases(tid)
     # 老数据归入默认模板
     run("UPDATE materials SET tpl_id=? WHERE tpl_id IS NULL", tid)
     run("UPDATE txns SET tpl_id=? WHERE tpl_id IS NULL", tid)
@@ -454,7 +496,7 @@ def init():
                 c.execute("INSERT INTO materials(supplier,category,spec,width,name,code,unit)"
                           " VALUES(?,?,?,?,?,?,?)",
                           (m['supplier'], m['category'], m['spec'], str(m['width']),
-                           name, m['code'], m['unit'] or '平米'))
+                           name, m['code'], (m.get('unit') or '').strip()))
         for fid, label, pos, en, al in DEFAULT_COLS:
             c.execute("INSERT OR IGNORE INTO colmap(fid,label,pos,enabled,aliases)"
                       " VALUES(?,?,?,?,?)", (fid, label, pos, en, al))
@@ -584,9 +626,8 @@ DEFAULT_COLS = [
     ('sqm',   '平米', 7, 0, '平米,平方米,面积,平方,m2,m²'),
     ('rolls', '卷料', 8, 0, '卷料,卷,卷数,米数'),
     ('code',  '料号', 9, 0, '料号,物料编号,物料编码,编号,编码,型号,规格型号'),
-    ('unit',  '单位', 10, 0, '单位,计量单位,单位（卷）,单位(卷)'),
-    ('opening', '期初结存', 11, 0, '期初结存,期初,上月结存,上期结存,库存,当前库存'),
-    ('safety',  '安全库存', 12, 0, '安全库存,预警值,库存预警,最低库存'),
+    ('opening', '期初结存', 10, 0, '期初结存,期初,上月结存,上期结存,库存,当前库存'),
+    ('safety',  '安全库存', 11, 0, '安全库存,预警值,库存预警,最低库存'),
 ]
 
 # 计算列：值由别的列算出来，不手填。
@@ -597,10 +638,42 @@ CALC_COLS = {'sqm': ('spec', 'width'), 'rolls': ('sqm', 'width')}
 # 需要存进数据库的数值列（老库升级时要补）
 NUM_EXTRA_COLS = ('sqm', 'rolls')
 
-def calc_area(vals):
-    """长 × 宽 = 平米；平米 ÷ 宽 = 卷料（取整，余料写进备注）。
+def col_label(c, with_unit=True):
+    """列显示名：配了单位就显示成「长（米）」，没配就是「长」。
 
-    只在启用且填了长、宽时才算；算不出来就保持原值，绝不瞎填 0。
+    使用者在「改表头」里给每列单独选单位，也可以选「不用」——留空即不显示。
+    """
+    lb = (c.get('label') if hasattr(c, 'get') else c['label']) or ''
+    if not with_unit:
+        return lb
+    try:
+        u = (c.get('unit') or '').strip() if hasattr(c, 'get') else ((c['unit'] if 'unit' in c.keys() else '') or '').strip()
+    except Exception:
+        u = ''
+    return '%s（%s）' % (lb, u) if u else lb
+
+
+QTY_UNITS = ('平米', '卷')      # 数量列的两种口径
+
+
+def calc_area(vals):
+    """长 × 宽 = 一卷的平米；再由「数量口径」算出卷数（取整，余料写进备注）。
+
+    卷料列记的是「卷数」不是米数 —— v3.21 定，v3.27 补双口径：
+
+      按平米（默认）：数量填的是总面积
+          卷数 = 总面积 ÷ 一卷平米
+          余料 = 总面积 − 卷数 × 一卷平米（不足一卷的零头）
+
+      按卷：数量填的就是卷数
+          卷数 = 数量（取整）
+          余料 = 小数部分 × 一卷平米
+
+    为什么两种都要：实际收货有时按面积进（500 平米），有时按卷数点
+    （100 卷），同一批物料两种填法都会碰到。口径由物料档案记，录单时
+    可临时改，改完自动存档，下次带出。
+
+    只在启用且填了长、宽时才算；算不出来就保持 None，绝不瞎填 0。
     返回 (sqm, rolls, rest)，任一算不出就是 None。
     """
     def f(v):
@@ -611,15 +684,28 @@ def calc_area(vals):
         return x if x > 0 else None
     L = f(vals.get('spec'))      # 长
     W = f(vals.get('width'))     # 宽
+    qu = str(vals.get('qty_unit') or '平米').strip()
     sqm = rolls = rest = None
     if L is not None and W is not None:
-        sqm = round(L * W, 6)
-        # 卷料 = 平米 ÷ 宽，向下取整；除不尽的部分是余料
-        raw = sqm / W
-        rolls = int(raw + 1e-9)          # 1e-9 抵消浮点误差，避免 3.0 算成 2
-        rest = round(sqm - rolls * W, 6)
-        if rest < 1e-6:
-            rest = None
+        per_roll = L * W                  # 一卷多少平米
+        sqm = round(per_roll, 6)
+        rolls = None
+        rest = None
+        if per_roll > 0:
+            total = f(vals.get('qty'))
+            if total is not None:
+                if qu == '卷':
+                    # 数量就是卷数：整数部分为整卷，小数部分换算成平米余料
+                    rolls = int(total + 1e-9)
+                    frac = round(total - rolls, 6)
+                    rest = round(frac * per_roll, 6) if frac > 1e-6 else None
+                else:
+                    # 数量是总面积：除以一卷平米得卷数
+                    raw = total / per_roll
+                    rolls = int(raw + 1e-9)   # 1e-9 抵消浮点误差，避免 3.0 算成 2
+                    rest = round(total - rolls * per_roll, 6)
+                if rest is not None and rest < 1e-6:
+                    rest = None
     return sqm, rolls, rest
 
 
@@ -813,6 +899,15 @@ def default_tpl_id():
     r = q("SELECT id FROM tpl ORDER BY pos, id LIMIT 1")
     return r[0]['id'] if r else None
 
+def preset_col_units(tid):
+    """新建模板时的预设单位：长=米、宽=米、平米=平米、卷料=卷。
+
+    只是省事用的默认值 —— 使用者在「改表头」里可以改，也可以清空表示不带单位。
+    """
+    for fid, u in (('spec', '米'), ('width', '米'), ('sqm', '平米'), ('rolls', '卷')):
+        run("UPDATE tpl_cols SET unit=? WHERE tpl_id=? AND fid=?", u, tid, fid)
+
+
 def add_tpl(name, note='', copy_from=None):
     """新建模板。copy_from 给定时复制该模板的列配置"""
     name = (name or '').strip() or '未命名模板'
@@ -821,14 +916,15 @@ def add_tpl(name, note='', copy_from=None):
               name, note, mx + 1,
               datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
     if copy_from:
-        for r in q("SELECT fid,label,pos,enabled,aliases FROM tpl_cols WHERE tpl_id=?", copy_from):
-            run("INSERT INTO tpl_cols(tpl_id,fid,label,pos,enabled,aliases)"
-                " VALUES(?,?,?,?,?,?)", tid, r['fid'], r['label'], r['pos'],
-                r['enabled'], r['aliases'])
+        for r in q("SELECT fid,label,pos,enabled,aliases,unit FROM tpl_cols WHERE tpl_id=?", copy_from):
+            run("INSERT INTO tpl_cols(tpl_id,fid,label,pos,enabled,aliases,unit)"
+                " VALUES(?,?,?,?,?,?,?)", tid, r['fid'], r['label'], r['pos'],
+                r['enabled'], r['aliases'], r['unit'] or '')
     else:
         for fid, label, pos, en, al in DEFAULT_COLS:
             run("INSERT INTO tpl_cols(tpl_id,fid,label,pos,enabled,aliases)"
                 " VALUES(?,?,?,?,?,?)", tid, fid, label, pos, en, al)
+        preset_col_units(tid)
     return tid
 
 def rename_tpl(tid, name, note=None):
@@ -862,11 +958,12 @@ def tpl_cols(tid, only_enabled=True):
 def save_tpl_cols(tid, rows):
     with tx() as c:
         c.executemany("UPDATE tpl_cols SET label=?,pos=?,enabled=?,aliases=?,"
-                      " xtype=?,xopt=?,xform=?"
+                      " xtype=?,xopt=?,xform=?,unit=?"
                       " WHERE tpl_id=? AND fid=?",
                       [(r['label'], r['pos'], r['enabled'], r['aliases'],
                         r.get('xtype') or 'text', r.get('xopt') or '',
-                        r.get('xform') or '', tid, r['fid'])
+                        r.get('xform') or '', (r.get('unit') or '').strip(),
+                        tid, r['fid'])
                        for r in rows])
     return True
 
@@ -875,6 +972,7 @@ def reset_tpl_cols(tid):
     for fid, label, pos, en, al in DEFAULT_COLS:
         run("INSERT INTO tpl_cols(tpl_id,fid,label,pos,enabled,aliases)"
             " VALUES(?,?,?,?,?,?)", tid, fid, label, pos, en, al)
+    preset_col_units(tid)
 
 def tpl_stat(tid):
     """模板下的物料数、单据数"""

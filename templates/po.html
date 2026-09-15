@@ -51,12 +51,22 @@
 </div>
 
 <div class="card">
+  <div class="kv"><span>单价口径</span>
+    <b>{% if po.price_tax %}含税{% else %}不含税{% endif %}</b>
+    <span class="pill">税率 {{'%g'|format(po.tax_rate or 0)}}%</span></div>
   <div class="kv"><span>已付款</span><b class="in">{{'%.2f'|format(paid)}}</b></div>
   <div class="kv"><span>到货价税合计</span><span>{{'%.2f'|format(recv_total)}}</span></div>
+  {% if owed < -0.005 %}
+  <div class="kv"><span>多付（预付溢余）</span>
+    <b class="in">{{'%.2f'|format(-owed)}}</b></div>
+  {% else %}
   <div class="kv"><span>欠款（按到货计）</span>
     <b class="{{'out' if owed>0 else 'in'}}">{{'%.2f'|format(owed)}}</b></div>
+  {% endif %}
   <div style="font-size:12px;color:#7a869a;margin-top:6px">
     只按实际到货计欠款 —— 还没到的货不该先付钱。
+    {% if po.price_tax %}单价按<b>含税</b>填写，不含税金额 = 含税 ÷ (1+税率)。
+    {% else %}单价按<b>不含税</b>填写，价税合计 = 不含税 × (1+税率)。{% endif %}
   </div>
 </div>
 
@@ -126,7 +136,7 @@
     <input name="name" list="pml" autocomplete="off" placeholder="输入即联想已有物料">
     <datalist id="pml">{% for m in mats %}<option value="{{m.name}}">{% endfor %}</datalist>
     <div class="rowflex">
-      <div><label>数量 *</label><input name="qty" inputmode="decimal" placeholder="0"></div>
+      <div><label>数量 *</label><input name="qty" inputmode="decimal" placeholder=""></div>
       <div><label>单价</label><input name="price" inputmode="decimal" placeholder="0.00"></div>
     </div>
     <div class="rowflex">
@@ -161,7 +171,7 @@
     </select>
     <div class="rowflex">
       <div><label>到货日期</label><input type="date" name="rdate" value="{{today}}"></div>
-      <div><label>数量 *</label><input name="qty" inputmode="decimal" placeholder="0"></div>
+      <div><label>数量 *</label><input name="qty" inputmode="decimal" placeholder=""></div>
     </div>
     <div class="rowflex">
       <div><label>实际单价</label><input name="price" inputmode="decimal"

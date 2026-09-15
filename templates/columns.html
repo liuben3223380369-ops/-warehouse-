@@ -27,6 +27,10 @@
   以及 Excel 导入时<b>用哪些别名认这个表头</b>。改完立刻在入库页生效。</p>
 </div>
 
+<datalist id="unitList">
+  {% for u in UNITS %}<option value="{{u}}">{% endfor %}
+</datalist>
+
 <form method="post" class="card">
   {% for c in cols %}
   <div style="border-bottom:1px solid #f0f2f5;padding:10px 0">
@@ -38,6 +42,11 @@
       <div style="flex:1">
         <label style="margin-top:0">列序</label>
         <input name="pos_{{c.fid}}" value="{{c.pos}}" inputmode="numeric" type="number">
+      </div>
+      <div style="flex:1">
+        <label style="margin-top:0">单位（留空=不带单位）</label>
+        <input name="un_{{c.fid}}" value="{{c.unit or ''}}" list="unitList"
+               placeholder="不用" autocomplete="off">
       </div>
     </div>
     <label>导入别名（英文逗号分隔，用于识别 Excel 表头）</label>
@@ -68,6 +77,10 @@
   </div>
   {% endfor %}
   <button type="submit">💾 保存表头映射</button>
+  <div style="font-size:12px;color:#5b6675;line-height:1.8;margin-top:10px">
+    · <b>单位</b>填了之后，表头会显示成「长（米）」；留空就只显示「长」，<b>每一列都能单独配</b><br>
+    · 直接打字可以填字典里没有的单位，也可以清空表示这一列不带单位
+  </div>
 </form>
 
 {% if TID and EXTRA %}
@@ -115,7 +128,7 @@
     <input name="xform" placeholder="如 qty*单价、qty*price、sqm/宽">
     <div style="font-size:12px;color:#5b6675;margin-top:4px;line-height:1.7">
     可直接写<b>列名</b>（如 <code>数量*单价</code>），也可用这些变量名：
-    <code>qty</code>数量 <code>pieces</code>件数 <code>per</code>每件
+    <code>qty</code>数量 
     <code>spec</code>长 <code>width</code>宽 <code>sqm</code>平米 <code>rolls</code>卷料
     <code>opening</code>期初 <code>safety</code>安全库存<br>
     例：<code>qty*单价</code>、<code>(qty*单价)*1.13</code> 含税、<code>sqm/宽</code>、<code>round(qty*单价,2)</code>

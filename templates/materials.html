@@ -124,13 +124,9 @@
   <label>要改哪一列</label>
   <select name="act" id="bact" onchange="toggleMode(this.value)">
     <option value="">— 请选择 —</option>
-    <option value="set:name">物料名称</option>
-    <option value="set:code">料号</option>
-    <option value="set:category">类型</option>
-    <option value="set:spec">规格</option>
-    <option value="set:width">宽幅</option>
-    <option value="set:supplier">供应商</option>
-    <option value="set:unit">单位</option>
+    {% for c in bcols %}
+    <option value="set:{{c.fid}}">{{c.label}}</option>
+    {% endfor %}
     <option value="set:status">状态（常用/不常用/呆滞）</option>
     <option value="set:opening">期初结存</option>
     <option value="set:safety">安全库存</option>

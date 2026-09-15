@@ -12,9 +12,29 @@
    不会出现"明细都到齐了，单头还写着部分到货"这种脏数据。
 """
 from datetime import datetime
+import os
 import db
 
 STATUS = ['草稿', '已下单', '部分到货', '已完成', '已取消']
+
+
+def _log_err(tag, detail=''):
+    """把异常写进程序目录的 warehouse.log。
+
+    为什么不能 except: pass —— 汇总快照保存失败时用户看不到任何提示，
+    汇总页会静静显示上一版旧数据。这种"静默失败"最坑：数字看着正常，
+    其实是过期的。窗口模式没有控制台，不落盘就永远查不到原因。
+    """
+    try:
+        import traceback
+        base = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(base, 'warehouse.log'), 'a', encoding='utf-8',
+                  errors='replace') as f:
+            f.write('[%s] %s\n%s\n%s\n' % (
+                datetime.now().strftime('%Y-%m-%d %H:%M:%S'), tag,
+                detail or traceback.format_exc(), '-' * 46))
+    except Exception:
+        pass
 
 
 # ---------- 金额计算（唯一入口，全系统都调这里，保证口径一致） ----------
@@ -313,8 +333,10 @@ def receive(item_id, rdate, qty, price=None, note=''):
     refresh_status(po['id'])
     try:
         save_summary(po['id'])
-    except Exception:
-        pass
+    except Exception as _e:
+        # 不静默：快照失败必须留痕，否则汇总页显示旧数据用户还以为是对的
+        _log_err('采购汇总快照保存失败 po_id=%s（到货后）' % po['id'],
+                 'save_summary: %s' % _e)
     if abs(conv - 1.0) > 1e-9:
         return True, ('已到货 %g%s，按 1%s=%g%s 折算入库 %g%s（成本单价 %g/%s）'
                       % (qty, it['unit'], it['unit'], conv, it['stock_unit'] or it['unit'],
@@ -363,8 +385,9 @@ def set_item_unit(item_id, unit=None, conv=None, stock_unit=None, price=None):
     if got:
         try:
             save_summary(got[0]['po_id'])
-        except Exception:
-            pass
+        except Exception as _e:
+            _log_err('采购汇总快照保存失败 po_id=%s（改单位/单价后）' % got[0]['po_id'],
+                     'save_summary: %s' % _e)
     return True, '已更新：%s' % ('、'.join(
         x.split('=')[0] for x in sets))
 
@@ -393,8 +416,9 @@ def unreceive(receipt_id):
         refresh_status(po_id)
         try:
             save_summary(po_id)
-        except Exception:
-            pass
+        except Exception as _e:
+            _log_err('采购汇总快照保存失败 po_id=%s（撤销到货后）' % po_id,
+                     'save_summary: %s' % _e)
     return True, '已取消到货 %g，库存同步扣回' % r['qty']
 
 
@@ -420,8 +444,9 @@ def delete_item(item_id):
     refresh_status(po_id)
     try:
         save_summary(po_id)
-    except Exception:
-        pass
+    except Exception as _e:
+        _log_err('采购汇总快照保存失败 po_id=%s（删明细后）' % po_id,
+                 'save_summary: %s' % _e)
     tip = '明细已删除' + ('（同时撤销 %d 次到货，库存已扣回）' % n if n else '')
     return True, tip
 

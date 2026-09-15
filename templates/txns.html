@@ -30,8 +30,6 @@
   {{ th('物料', 'name') }}
   {{ th('进/出', 'kind', 'n') }}
   {{ th('数量', 'qty', 'n') }}
-  {{ th('件数', 'pieces', 'n') }}
-  {{ th('每件', 'per', 'n') }}
   {{ th('单价', 'price', 'n') }}
   {{ th('金额', 'amount', 'n') }}
   {{ th('备注', 'note') }}
@@ -45,8 +43,6 @@
  <td>{{r.name}}{% if r.code %}<br><span class="pill">{{r.code}}</span>{% endif %}</td>
  <td class="n"><span class="pill {{'i' if r.kind=='进' else 'o'}}">{{r.kind}}</span></td>
  <td class="n"><b class="{{'in' if r.kind=='进' else 'out'}}">{{'%g'|format(r.qty)}}</b> {{r.unit}}</td>
- <td class="n">{% if r.pieces %}{{'%g'|format(r.pieces)}}{% endif %}</td>
- <td class="n">{% if r.per_piece %}{{'%g'|format(r.per_piece)}}{% endif %}</td>
  <td class="n">{% if r.price %}{{'%.2f'|format(r.price)}}{% endif %}</td>
  <td class="n">{% if r.price %}<b>{{'%.2f'|format(r.amount or 0)}}</b>{% endif %}</td>
  <td>{{r.note}}</td>

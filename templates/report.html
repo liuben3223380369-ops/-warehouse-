@@ -159,7 +159,7 @@
  <th class="n">进</th><th class="n">出</th></tr>
 {% for r in mats %}
 <tr>
- <td>{{r.name}}{% if r.code %}<br><span class="pill">{{r.code}}</span>{% endif %}<br><span class="pill">{{r.unit}}</span></td>
+ <td>{{r.name}}{% if r.code %}<br><span class="pill">{{r.code}}</span>{% endif %}{% if r.unit %}<br><span class="pill">{{r.unit}}</span>{% endif %}</td>
  {% for a,b in r.cells %}<td class="n in">{{'%g'|format(a) if a else ''}}</td>
  <td class="n out">{{'%g'|format(b) if b else ''}}</td>{% endfor %}
  <td class="n"><b class="in">{{'%g'|format(r.min) if r.min else ''}}</b></td>

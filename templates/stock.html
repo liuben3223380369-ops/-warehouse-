@@ -48,7 +48,7 @@
  <td class="n">{{'%g'|format(r.opening)}}</td>
  <td class="n in">{{'%g'|format(r.in_qty)}}</td>
  <td class="n out">{{'%g'|format(r.out_qty)}}</td>
- <td class="n {{'low' if r.stock<=r.safety else ''}}"><b>{{'%g'|format(r.stock)}}</b><br><span class="pill">{{r.unit}}</span></td>
+ <td class="n {{'low' if r.stock<=r.safety else ''}}"><b>{{'%g'|format(r.stock)}}</b>{% if r.unit %}<br><span class="pill">{{r.unit}}</span>{% endif %}</td>
  <td><a href="{{url_for('material_history',mid=r.id)}}">📈</a></td>
 </tr>{% endfor %}</table></div>
 {% else %}<div class="empty">没有匹配的物料</div>{% endif %}

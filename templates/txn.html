@@ -61,15 +61,14 @@
   <a class="btn s o" href="javascript:addCard(true)" style="margin-top:0">＋ 复制上一笔</a>
 </div>
 
-<button type="submit" class="g" onclick="return chk()">💾 保存（<span id="cnt">{{n}}</span> 笔）</button>
-<button type="submit" name="stay" value="1" onclick="return chk()">保存并停留在本页</button>
+<button type="submit" class="g" onclick="return chk()">💾 保存并继续录（<span id="cnt">{{n}}</span> 笔）</button>
+<button type="submit" name="goto_txn" value="1" onclick="return chk()">保存并去看流水</button>
 </form>
 
 <div class="card">
   <div style="font-size:12px;color:#5b6675;line-height:1.8">
   · <b>物料名称</b>输入时会实时联想，点选后自动带出该物料已录入的信息（类型/供应商等）<br>
   · 也可直接手填新物料，保存时自动建档（期初、安全库存可在卡片里填）<br>
-  · 数量 / 件数 / 每件 填任意两个，第三个自动算<br>
   · 只有填了<b>名称或料号</b>且<b>数量>0</b>的卡片才会保存<br>
   {% if fixed=='出' %}· 卡片右上角显示<b>可用库存</b>，超出会标红并拦下<br>{% endif %}
   · 日期留空默认用第一张卡片的日期
@@ -137,17 +136,16 @@ function gridCols(){
   var a = COLS_FULL.slice();
   XCOLS.forEach(function(x){
     if(!a.some(function(c){return c.fid===x.fid;}))
-      a.push({fid:x.fid,label:x.label,xtype:x.xtype||'text',xopt:x.xopt||''});
+      a.push({fid:x.fid,label:lbl(x),xtype:x.xtype||'text',xopt:x.xopt||''});
   });
   /* 录单必需的几列放最后，跟卡片一致 */
-  [['tdate','日期'],['qty','数量'],['pieces','件数'],['per','每件'],['note','备注']]
+  [['tdate','日期'],['qty','数量'],['note','备注']]
     .forEach(function(p){ a.push({fid:p[0],label:p[1],xtype:p[0]==='tdate'?'date':(p[0]==='note'?'text':'num')}); });
   return a;
 }
 
 function gridCell(c,i){
-  var nm = (c.fid==='tdate'||c.fid==='qty'||c.fid==='pieces'||c.fid==='per'||c.fid==='note')
-           ? c.fid+'_'+i : c.fid+'_'+i;
+  var nm = c.fid+'_'+i;
   var v = (c.fid==='tdate'? TODAY : '');
   var st = 'width:'+(c.fid==='note'?150:(c.fid==='name'?130:92))+'px;border:1px solid #e6e9ee;'
          + 'padding:5px 6px;font-size:13px;box-sizing:border-box';
@@ -158,8 +156,8 @@ function gridCell(c,i){
   }
   if((c.xtype||'')==='calc')
     return '<input name="'+nm+'" style="'+st+';background:#f4f6f9" readonly data-g="1" placeholder="自动算">';
-  var t = (c.fid==='tdate')?'date':((c.xtype==='number'||c.fid==='qty'||c.fid==='pieces'||c.fid==='per')?'text':'text');
-  var im = (c.fid==='qty'||c.fid==='pieces'||c.fid==='per'||c.xtype==='number')?' inputmode="decimal"':'';
+  var t = (c.fid==='tdate')?'date':'text';
+  var im = (c.fid==='qty'||c.xtype==='number')?' inputmode="decimal"':'';
   return '<input type="'+t+'" name="'+nm+'" value="'+esc(v)+'" style="'+st+'"'+im+' data-g="1"'
        + (c.fid==='name'?' list="mList" autocomplete="off"':'')+'>';
 }
@@ -167,7 +165,8 @@ function gridCell(c,i){
 function buildGrid(nrow){
   var cs = gridCols();
   var h = '<tr>' + cs.map(function(c){ return '<th style="position:sticky;top:0;background:#f7f9fc;'
-    + 'border:1px solid #e6e9ee;padding:6px;font-size:12px;white-space:nowrap">'+esc(c.label)+'</th>'; }).join('') + '</tr>';
+    + 'border:1px solid #e6e9ee;padding:6px;font-size:12px;white-space:nowrap">'
+    + esc(typeof c==='string'? c : lbl(c))+'</th>'; }).join('') + '</tr>';
   var b = '';
   for(var i=0;i<nrow;i++){
     b += '<tr>' + cs.map(function(c){ return '<td style="padding:0;border:1px solid #e6e9ee">'+gridCell(c,i)+'</td>'; }).join('') + '</tr>';
@@ -261,24 +260,28 @@ function syncDisabled(){
 }
 
 var rowIdx = {{ n|int }};
+var HAS_AREA = {{ 'true' if (cols_has_area) else 'false' }};
 var curCard = null;
 
 function esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g,function(c){
   return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
 
+/* 列显示名：配了单位就显示「长（米）」，没配就是「长」 */
+function lbl(c){
+  var u = (c && c.unit ? String(c.unit).trim() : '');
+  return (c ? (c.label||'') : '') + (u ? '（'+u+'）' : '');
+}
 function fieldHtml(f, i, label){
   if(f==='name') return '';
-  var ph = {'code':'料号','supplier':'供应商','category':'类型','spec':'长',
-            'width':'宽','unit':'单位','status':'状态','opening':'0','safety':'0'}[f] || '';
-  if(f==='unit'){
-    return '<div class="f"><label>'+label+'</label><input name="unit_'+i+'" list="ul" placeholder="平米" value="平米"></div>';
-  }
+  /* 没填就空着留白：不再预填"0"或列名当占位，免得看着像有值 */
+  var ph = '';
+  if(f==='unit') return '';   // 单位列已取消：单位改由每列自己配（v3.21）
   if(f==='status'){
     return '<div class="f"><label>'+label+'</label><select name="status_'+i+'">'
       +'<option value="">—</option><option>常用</option><option>不常用</option><option>呆滞</option></select></div>';
   }
   if(f==='opening'||f==='safety'){
-    return '<div class="f"><label>'+label+'</label><input name="'+f+'_'+i+'" inputmode="decimal" placeholder="0"></div>';
+    return '<div class="f"><label>'+label+'</label><input name="'+f+'_'+i+'" inputmode="decimal" placeholder=""></div>';
   }
   if(f==='sqm'||f==='rolls'){
     return '<div class="f"><label>'+label+' <span style="color:#1f6feb;font-weight:400">自动算</span></label>'
@@ -304,31 +307,32 @@ function cardHtml(i){
   // 其余字段
   h += '<div class="fields">';
   COLS_FULL.forEach(function(c){
-    if(c.fid==='name') return;
-    h += fieldHtml(c.fid, i, c.label);
+    if(c.fid==='name'||c.fid==='unit') return;
+    h += fieldHtml(c.fid, i, lbl(c));
   });
   h += '</div>';
   // 自定义列（使用者自己加的，只属于这个模板）
   if(XCOLS.length){
     h += '<div class="fields" style="margin-top:8px">';
     XCOLS.forEach(function(c){
-      h += xfieldHtml(c, i);
+      h += xfieldHtml(c, i, lbl(c));
     });
     h += '</div>';
   }
-  // 日期 + 数量 / 件数 / 每件（或进/出）+ 备注
+  // 日期 + 数量（或进/出）+ 备注
   h += (FIXED ? '<input type="hidden" name="kind_'+i+'" value="'+KIND+'">' : '');
   h += '<div class="qtyrow">'
      + '<div class="f"><label>日期</label><input type="date" name="tdate_'+i+'" value="'+TODAY+'"></div>'
-     + '<div class="f"><label>数量</label><input name="qty_'+i+'" inputmode="decimal" placeholder="0" class="qty" data-i="'+i+'" oninput="calc('+i+')"></div>'
-     + '<div class="f"><label>件数</label><input name="pieces_'+i+'" inputmode="decimal" placeholder="件" class="pc" data-i="'+i+'" oninput="calc('+i+')"></div>'
-     + '</div>';
-  h += '<div class="qtyrow">'
-     + '<div class="f"><label>每件</label><input name="per_'+i+'" inputmode="decimal" placeholder="每件" class="pe" data-i="'+i+'" oninput="calc2('+i+')"></div>';
+     + '<div class="f"><label>数量</label><input name="qty_'+i+'" inputmode="decimal" placeholder="" class="qty" data-i="'+i+'" oninput="calc('+i+');calcArea('+i+')"></div>'
+     + (HAS_AREA ? '<div class="f" style="max-width:96px"><label>数量按</label>'
+       + '<select name="qty_unit_'+i+'" class="qunit" data-i="'+i+'" onchange="calcArea('+i+')">'
+       + '<option value="平米">平米</option><option value="卷">卷</option></select></div>' : '');
   if(!FIXED){
     h += '<div class="f"><label>进/出</label><select name="kind_'+i+'"><option>进</option><option>出</option></select></div>';
   }
-  h += '<div class="f"><label>备注</label>'
+  h += '</div>';
+  h += '<div class="qtyrow">'
+     + '<div class="f" style="flex:1"><label>备注</label>'
      + '<input name="note_'+i+'" placeholder="'+(KIND==='出'?'客户/领用人':'单号/客户')+'"></div>';
   h += '</div>';
   h += '</div>';
@@ -337,8 +341,9 @@ function cardHtml(i){
 
 // 长 × 宽 = 平米；平米 ÷ 宽 = 卷料（取整，余料自动写进备注）
 // 自定义列：文本/数字/日期/单选/公式
-function xfieldHtml(c, i){
+function xfieldHtml(c, i, label){
   var v = c.xtype;
+  var _lb = (label===undefined? c.label : label);
   var inp;
   if(v==='select'){
     var opts=(c.xopt||'').split(',').map(function(o){
@@ -354,10 +359,10 @@ function xfieldHtml(c, i){
   } else {
     inp='<input name="x_'+i+'_'+c.fid+'">';
   }
-  return '<div class="f"><label>'+c.label+(v==='calc'?'（自动）':'')+'</label>'+inp+'</div>';
+  return '<div class="f"><label>'+_lb+(v==='calc'?'（自动）':'')+'</label>'+inp+'</div>';
 }
 function escq(s){ return String(s||'').replace(/"/g,'&quot;'); }
-// 公式列：数字列或数量/件数变化时重算
+// 公式列：数字列或数量变化时重算
 function calcX(i){
   XCOLS.forEach(function(c){
     if(c.xtype!=='calc') return;
@@ -390,20 +395,38 @@ function evalForm(form, i){
   }catch(e){ return ''; }
 }
 function numOf(v){ var x=parseFloat(String(v==null?'':v).trim()); return isFinite(x)&&x>0?x:null; }
+/* v3.27：平米 = 长 × 宽（一卷多少平米）。
+   卷料记「卷数」，两种填法都支持：
+     数量按平米 → 卷数 = 数量 ÷ 一卷平米（余料 = 零头平米）
+     数量按卷   → 卷数 = 数量取整（余料 = 小数部分 × 一卷平米）
+   为什么两种：实际收货有时按面积进（500 平米），有时按卷点（100 卷）。
+   算不出来就清空留白，不填 0。 */
+function qtyUnit(i){
+  var el=document.querySelector('[name=qty_unit_'+i+']');
+  return el ? String(el.value||'平米') : '平米';
+}
 function calcArea(i){
   var L=numOf((document.querySelector('[name=spec_'+i+']')||{}).value);
   var W=numOf((document.querySelector('[name=width_'+i+']')||{}).value);
+  var Q=numOf((document.querySelector('[name=qty_'+i+']')||{}).value);
   var sq=(document.getElementById('sqm_'+i));
   var ro=(document.getElementById('rolls_'+i));
   var nt=(document.querySelector('[name=note_'+i+']'));
-  if(nt) nt.value = String(nt.value||'').replace(/\s*余料\s*[\d.]+\s*平米/g,'').trim();
+  if(nt) nt.value = String(nt.value||'').replace(/\s*余料\s*[\d.]+\s*\S*/g,'').trim();
   if(L==null||W==null){ if(sq)sq.value=''; if(ro)ro.value=''; return; }
-  var s=Math.round(L*W*1e6)/1e6;
-  if(sq) sq.value=s;
+  var per=Math.round(L*W*1e6)/1e6;          // 一卷多少平米
+  if(sq) sq.value=per;
   if(ro){
-    var r=Math.floor(s/W + 1e-9);
+    if(per<=0 || Q==null){ ro.value=''; return; }
+    var r, rest;
+    if(qtyUnit(i)==='卷'){
+      r=Math.floor(Q + 1e-9);               // 数量本身就是卷数
+      rest=Math.round((Q-r)*per*1e6)/1e6;
+    }else{
+      r=Math.floor(Q/per + 1e-9);           // 数量是总面积
+      rest=Math.round((Q-r*per)*1e6)/1e6;
+    }
     ro.value=r;
-    var rest=Math.round((s-r*W)*1e6)/1e6;
     if(rest>1e-6 && nt){
       nt.value = (nt.value?nt.value+' ':'') + '余料 '+rest+' 平米';
     }
@@ -476,12 +499,9 @@ function addCard(copy){
 
 function fmt(n){ return String(Math.round(n*100)/100); }
 function numv(i,cls){ var e=document.querySelector('.'+cls+'[data-i="'+i+'"]'); return parseFloat(e&&e.value)||0; }
-function calc(i){
-  try{calcX(i);}catch(e){} var q=numv(i,'qty'),p=numv(i,'pc'); var e=document.querySelector('.pe[data-i="'+i+'"]');
-  if(e&&q&&p) e.value=fmt(q/p); }
-function calc2(i){ var p=numv(i,'pc'),pe=numv(i,'pe'),q=numv(i,'qty');
-  if(p&&pe){ document.querySelector('.qty[data-i="'+i+'"]').value=fmt(p*pe); }
-  else if(q&&pe){ document.querySelector('.pc[data-i="'+i+'"]').value=fmt(q/pe); } }
+/* 件数 / 每件已移除（v3.20）：数量直接填，不再做三者换算。
+   calcX 仍需保留——自定义公式列要跟着数量重算。 */
+function calc(i){ try{calcX(i);}catch(e){} }
 
 
 function showSug(i, list){
@@ -515,8 +535,12 @@ function pick(i, id){
   });
   var av=document.getElementById('av'+i);
   if(av){ av.textContent='可用 '+fmt(hit.stock); av.className='av'; }
+  // 带出这个物料上次用的数量口径（按平米 / 按卷），不用每次重选
+  var qu=document.querySelector('[name="qty_unit_'+i+'"]');
+  if(qu && hit.qty_unit) qu.value=hit.qty_unit;
   hideSug(i);
   var q=document.querySelector('.qty[data-i="'+i+'"]'); if(q){ q.focus(); }
+  calcArea(i);
 }
 
 function bind(i){

@@ -18,6 +18,7 @@ def _safe_stdio():
 _safe_stdio()
 
 from flask import Flask, render_template, request, redirect, url_for
+from werkzeug.exceptions import HTTPException
 from datetime import datetime, date
 import calendar, io, csv, os, time, sys, json
 from flask import Response
@@ -149,7 +150,14 @@ def e500(e):
 
 @app.errorhandler(Exception)
 def eall(e):
-    """兜底：业务异常转成友好提示，不暴露堆栈"""
+    """兜底：业务异常转成友好提示，不暴露堆栈
+
+    HTTPException（404/405/400…）必须原样放行：
+    否则"用 GET 访问只收 POST 的路由"会被当成服务器错误报 500，
+    错误分类失真，用户看到"操作未完成"却不知真正原因。
+    """
+    if isinstance(e, HTTPException):
+        return e
     import traceback
     traceback.print_exc()
     code = 500
@@ -325,6 +333,10 @@ def js_mats_with_price(mats):
     for m in mats:
         d = {k: m[k] for k in ('id', 'name', 'code', 'supplier', 'category',
                                'spec', 'width', 'unit', 'stock')}
+        try:
+            d['qty_unit'] = m['qty_unit'] or '平米'
+        except (IndexError, KeyError):
+            d['qty_unit'] = '平米'
         p = lp.get(m['id'])
         if p:
             d['price'] = p
@@ -408,7 +420,7 @@ def _fingerprint(vals):
     if wd: parts.append('宽' + wd)
     return '|'.join(parts)
 
-def _resolve_material(vals, sqm=None, rolls=None, tpl_id=None):
+def _resolve_material(vals, sqm=None, rolls=None, tpl_id=None, qty_unit=None):
     """按 料号 -> 名称+规格指纹 匹配物料；匹配到则用行内 A-G 值同步档案，否则新建。
     返回 (material_id, is_new)"""
     # 没指定模板（比如从 Excel 导入）时归入默认模板，
@@ -442,18 +454,22 @@ def _resolve_material(vals, sqm=None, rolls=None, tpl_id=None):
         for f, v in (('sqm', sqm), ('rolls', rolls)):
             if v is not None:
                 sets.append("%s=?" % f); vs.append(v)
+        if qty_unit in db.QTY_UNITS:
+            # 记住这个物料的口径，下次联想选中时自动带出，不用每次重选
+            sets.append("qty_unit=?"); vs.append(qty_unit)
         if sets:
             vs.append(mid)
             db.run("UPDATE materials SET " + ",".join(sets) + " WHERE id=?", *vs)
         return mid, False
     if not name:
         return None, False
-    mid = db.run("INSERT INTO materials(supplier,category,spec,width,name,code,unit,opening,safety,status,sqm,rolls,tpl_id)"
-                 " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    mid = db.run("INSERT INTO materials(supplier,category,spec,width,name,code,unit,opening,safety,status,sqm,rolls,tpl_id,qty_unit)"
+                 " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                  vals.get('supplier', ''), vals.get('category', ''), vals.get('spec', ''),
-                 vals.get('width', ''), name, code, (vals.get('unit') or '').strip() or '平米',
+                 vals.get('width', ''), name, code, (vals.get('unit') or '').strip() or '',
                  float(vals.get('opening') or 0), float(vals.get('safety') or 0),
-                 (vals.get('status') or '').strip() or '常用', sqm, rolls, tpl_id)
+                 (vals.get('status') or '').strip() or '', sqm, rolls, tpl_id,
+                 qty_unit if qty_unit in db.QTY_UNITS else '平米')
     return mid, True
 
 @app.route('/txn', methods=['GET', 'POST'], endpoint='txn')
@@ -468,7 +484,8 @@ def txn():
     if not db.tpl(tid):
         tid = db.default_tpl_id()
     cols = db.tpl_cols(tid)
-    fids = [c['fid'] for c in cols]
+    # 单位列已整体取消（v3.21）：单位改由每一列自己配，不再有独立的一列
+    fids = [c['fid'] for c in cols if c['fid'] != 'unit']
     only_stock = fixed == '出' and request.args.get('allm') != '1'
     mats = [dict(r) for r in db.q(
         "SELECT * FROM v_stock WHERE active=1" + (" AND stock>0" if only_stock else "")
@@ -496,20 +513,55 @@ def txn():
                         ('name', 'code', 'supplier', 'category', 'spec', 'width', 'unit', 'status')}
                 vals['opening'] = num(request.form.get(f'opening_{i}'))
                 vals['safety'] = num(request.form.get(f'safety_{i}'))
-                qty, pieces, per = calc_qty(qty, request.form.get(f'pieces_{i}'),
-                                            request.form.get(f'per_{i}'))
+                # 件数 / 每件已移除（v3.20），不再从表单读取
+                pieces = per = None
                 if qty <= 0 or (not vals['name'] and not vals['code']):
                     continue
-                # 长 × 宽 = 平米；平米 ÷ 宽 = 卷料（取整，余料自动写备注）
+                # 长 × 宽 = 平米；再由数量口径算卷料（取整，余料自动写备注）
                 # 使用者没启用这两列时算不出来，保持空，不瞎填 0
                 sqm = rolls = rest = None; note_rest = ''
+                # 物料档案里记的默认口径：联想选中、或按名称匹配到已有物料时用
+                _mqu = ''
+                _mq = None
+                if vals.get('code'):
+                    _mq = db.q("SELECT qty_unit FROM materials WHERE code=? AND tpl_id=? LIMIT 1",
+                               vals['code'], tid)
+                if not _mq and vals.get('name'):
+                    _mq = db.q("SELECT qty_unit FROM materials WHERE name=? AND tpl_id=? LIMIT 1",
+                               vals['name'], tid)
+                if _mq:
+                    _mqu = (_mq[0]['qty_unit'] or '').strip()
+                # 数量口径：本行选了就用选的，没选（联想/导入）就跟随物料档案
+                qu = (request.form.get('qty_unit_%d' % i) or '').strip()
+                if qu not in db.QTY_UNITS:
+                    qu = (request.form.get('qty_unit') or '').strip()
+                if qu not in db.QTY_UNITS:
+                    qu = _mqu or '平米'
                 if 'sqm' in fids or 'rolls' in fids:
-                    sqm, rolls, rest = db.calc_area(vals)
+                    # 卷数 = 总量 ÷ 一卷平米，所以要带上这一笔的数量
+                    sqm, rolls, rest = db.calc_area(dict(vals, qty=qty, qty_unit=qu))
                     if rest:
                         note_rest = db.rest_note(rest)
-                mid, is_new = _resolve_material(vals, sqm=sqm, rolls=rolls, tpl_id=tid)
+                mid, is_new = _resolve_material(vals, sqm=sqm, rolls=rolls, tpl_id=tid,
+                                                qty_unit=qu)
                 if not mid:
                     continue
+                # 录单页没填长宽时（出库页通常不填、联想也可能没带出），
+                # 回退到物料档案里的长宽再算一次 —— 否则出库单的平米/卷料
+                # 永远是空的，流水页里进有出没有，对不上账。
+                if sqm is None and rolls is None and ('sqm' in fids or 'rolls' in fids):
+                    _mrow = db.q("SELECT spec,width FROM materials WHERE id=?", mid)
+                    if _mrow and (_mrow[0]['spec'] or _mrow[0]['width']):
+                        # 注意用 or 而不是 setdefault：表单里这两列往往存在
+                        # 但值是空串，setdefault 不会覆盖空串，照样算不出来
+                        _v2 = dict(vals)
+                        _v2['spec'] = (vals.get('spec') or '').strip() or _mrow[0]['spec']
+                        _v2['width'] = (vals.get('width') or '').strip() or _mrow[0]['width']
+                        _v2['qty'] = qty
+                        _v2['qty_unit'] = qu
+                        sqm, rolls, rest = db.calc_area(_v2)
+                        if rest:
+                            note_rest = db.rest_note(rest)
                 newmat += is_new
                 d = safe_date(request.form.get(f'tdate_{i}'), dflt)
                 kind = fixed or (request.form.get(f'kind_{i}') or '进')
@@ -528,10 +580,10 @@ def txn():
                         continue
                 # 单价不在录单页填 —— 入库成本来自采购单，采购到货时写入
                 _cx.execute("INSERT INTO txns(tdate,material_id,kind,qty,pieces,per_piece,"
-                       "note,created_at,sqm,rolls,tpl_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                       "note,created_at,sqm,rolls,tpl_id,qty_unit) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                        (d, mid, kind, qty, pieces, per, note,
                         datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                        sqm, rolls, tid))
+                        sqm, rolls, tid, qu))
                 _tid_new = _cx.execute("SELECT last_insert_rowid()").fetchone()[0]
                 # 自定义列：文本/数字/日期/单选 直接存；
                 # 公式列**不信前端**，后端按公式重算一遍，防手改表单提交假数
@@ -574,13 +626,20 @@ def txn():
                 detail='这批单据一条都没保存（已回滚），请返回重试。'
                        '错误详情已写入 warehouse.log。'), 500
         back = 'out' if ep == 'out' else ('in' if ep == 'in' else 'txn')
-        tip = f'已保存 {saved} 条{"出库" if fixed=="出" else ("入库" if fixed=="进" else "")}单' \
-              + (f'，新建物料 {newmat} 种' if newmat else '')
-        if blocked:
+        if saved:
+            tip = f'已保存 {saved} 条{"出库" if fixed=="出" else ("入库" if fixed=="进" else "")}单' \
+                  + (f'，新建物料 {newmat} 种' if newmat else '')
+        elif blocked:
+            tip = f'一条都没保存：{blocked} 行超出库存（{"、".join(names[:3])}）'
+        else:
+            # 一条没存又不是超库存 —— 说明用户没填必填项，得说清楚，别只报 0
+            tip = '一条都没保存：每行都要填「物料名称」和「数量」，数量要大于 0'
+        if saved and blocked:
             tip += '；%d 行因超出库存未保存：%s' % (blocked, '、'.join(names[:3]))
-        if request.form.get('stay'):
-            return redirect(url_for(back, msg=tip, n=request.form.get('nrow'), tpl=tid))
-        return redirect(url_for('txns', msg=tip, kind=fixed or '', tpl=tid))
+        # 连续录入是主场景：默认留在录入页，省得反复点回来
+        if request.form.get('goto_txn'):
+            return redirect(url_for('txns', msg=tip, kind=fixed or '', tpl=tid))
+        return redirect(url_for(back, msg=tip, n=request.form.get('nrow'), tpl=tid))
 
     n = min(int(request.args.get('n') or 5), MAX_ROWS)
     return render_template('txn.html', cols=cols, fids=fids, mats=mats, msg=msg,
@@ -589,12 +648,17 @@ def txn():
                            tdate=today(), rows=range(n), n=n, tid=tid,
                            TPLS=db.tpls(),
                            # sqlite3.Row 不能直接 tojson，前端只需要 fid/label 两列
-                           col_defs=[{'fid': c['fid'], 'label': c['label']} for c in cols],
+                           col_defs=[{'fid': c['fid'], 'label': c['label'],
+                                      'unit': (c['unit'] if 'unit' in c.keys() else '') or ''}
+                                     for c in cols if c['fid'] != 'unit'],
                            xcols=[{'fid': x['fid'], 'label': x['label'],
                                    'xtype': x['xtype'] or 'text',
-                                   'xopt': x['xopt'] or '', 'xform': x['xform'] or ''}
+                                   'xopt': x['xopt'] or '', 'xform': x['xform'] or '',
+                                   'unit': (x['unit'] if 'unit' in x.keys() else '') or ''}
                                   for x in db.tpl_custom_cols(tid)],
-                           js_mats=js_mats_with_price(mats))
+                           js_mats=js_mats_with_price(mats),
+                           # 启用了平米/卷料列才显示「数量按 平米/卷」的口径选择
+                           cols_has_area=('sqm' in fids or 'rolls' in fids))
 
 def _all_custom_cols():
     """所有模板的自定义列（按列名去重），供流水页 / 导出显示"""
@@ -602,8 +666,34 @@ def _all_custom_cols():
     for t in db.tpls():
         for x in db.tpl_custom_cols(t['id']):
             if x['label'] not in [y['label'] for y in out]:
-                out.append(x)
+                out.append(dict(x, label=db.col_label(x)))
     return out
+
+
+def _cell_val(row, col):
+    '''取一行数据里某列的值：系统列直接取字段，自定义列从 extra JSON 取。
+
+    库存导出按列配置生成表头时靠它取值，保证表头和数据一一对应。
+    '''
+    fid = col['fid']
+    try:
+        v = row[fid] if fid in row.keys() else None
+    except (IndexError, TypeError, KeyError):
+        v = None
+    if v is not None:
+        return v
+    raw = None
+    try:
+        raw = row['extra'] if 'extra' in row.keys() else None
+    except (IndexError, TypeError, KeyError):
+        raw = None
+    if not raw:
+        return ''
+    try:
+        import json as _json
+        return (_json.loads(raw) or {}).get(fid, '')
+    except ValueError:
+        return ''
 
 
 def _extra_map(rows):
@@ -731,6 +821,7 @@ def txn_import():
                   if not mid:
                       continue
                   newmat += is_new
+                  _fids = [x['fid'] for x in db.tpl_cols(tid)]
                   if is_new and not (vals.get('code') or '').strip() \
                           and not (vals.get('category') or '').strip():
                       new_miss += 1
@@ -757,18 +848,69 @@ def txn_import():
                   qty, pc, per = calc_qty(qty, d.get('pieces'), d.get('per_piece'))
                   if qty <= 0:
                       continue
+                  # 平米 / 卷料：导入也得起作用，否则 Excel 导进来的单子这两列
+                  # 永远空着，跟手工录入的对不上（进有出没有、手工有导入没有）。
+                  # 优先采信表里直接给的值；只给了长宽就按长宽算；都没有就回退
+                  # 物料档案的长宽。
+                  _sq = num(d.get('sqm')) or None
+                  _rl = num(d.get('rolls')) or None
+                  # 先初始化，别等到下面的 if 里才定义 —— INSERT 时要读它，
+                  # 若那分支没进（表里直接给了平米/卷料，或没启用这两列），
+                  # 就会 NameError，整批导入静默回滚。
+                  _vv = dict(d); _vv['qty'] = qty
+                  _qu = str(d.get('qty_unit') or '').strip()
+                  if _qu not in db.QTY_UNITS:
+                      _mr = db.q("SELECT qty_unit FROM materials WHERE id=?", mid)
+                      _qu = ((_mr[0]['qty_unit'] or '').strip() if _mr else '') or '平米'
+                  _vv['qty_unit'] = _qu
+                  if _sq is None and _rl is None and ('sqm' in _fids or 'rolls' in _fids):
+                      _vv['qty'] = qty
+                      _vv['qty_unit'] = _qu
+                      if not (str(_vv.get('spec') or '').strip()
+                              and str(_vv.get('width') or '').strip()):
+                          _mr = db.q("SELECT spec,width FROM materials WHERE id=?", mid)
+                          if _mr:
+                              _vv['spec'] = _mr[0]['spec']
+                              _vv['width'] = _mr[0]['width']
+                      _sq, _rl, _rest = db.calc_area(_vv)
+                      if _rest:
+                          _nt = db.rest_note(_rest)
+                          if _nt and _nt not in (d.get('note') or ''):
+                              d['note'] = ((d.get('note') or '') + ' ' + _nt).strip()
                   db.run("INSERT INTO txns(tdate,material_id,kind,qty,pieces,per_piece,price,"
-                         "note,created_at,tpl_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                         "note,created_at,tpl_id,sqm,rolls,qty_unit) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                          d.get('date') or dflt_date, mid, kind, qty, pc, per,
                          (num(d.get('price')) or None), d.get('note', ''),
-                         datetime.now().strftime('%Y-%m-%d %H:%M:%S'), tid)
+                         datetime.now().strftime('%Y-%m-%d %H:%M:%S'), tid, _sq, _rl,
+                         _vv.get('qty_unit') or '')
                   # Excel 里列名能对上自定义列的，一并存进 extra
                   _new_id = scalar("SELECT last_insert_rowid()")
                   _xv = {}
                   for _xc in db.tpl_custom_cols(tid):
                       if (_xc['xtype'] or 'text') == 'calc':
                           continue      # 公式列后端算，不认表格里的值
-                      _v = d.get(_xc['fid']) or d.get(_xc['label']) or ''
+                      # 自定义列也可能配了单位，界面上显示成「膜厚（丝）」，
+                      # 使用者照抄过来就是这个写法 —— 得认，否则这一列静默丢失。
+                      _lb = _xc['label'] or ''
+                      # sqlite3.Row 没有 .get()，只能用 keys() 判断（踩过一次：
+                      # 写成 _xc.get('unit') 直接抛异常，整批导入回滚）
+                      _u = ((_xc['unit'] if 'unit' in _xc.keys() else '') or '').strip()
+                      _cands = [_xc['fid'], _lb]
+                      if _lb and _u:
+                          _cands += ['%s（%s）' % (_lb, _u), '%s(%s)' % (_lb, _u)]
+                      _v = ''
+                      for _c in _cands:
+                          if d.get(_c) not in ('', None):
+                              _v = d.get(_c); break
+                      if _v in ('', None):
+                          # 兜底：表头带括号（含手写空格变体）时去括号再比一次
+                          import re as _re2
+                          _want = _re2.sub(r'\(.*?\)', '', _lb).strip()
+                          for _k, _val in d.items():
+                              if _val in ('', None):
+                                  continue
+                              if _re2.sub(r'\(.*?\)', '', str(_k)).strip() == _want:
+                                  _v = _val; break
                       if _v not in ('', None):
                           _xv[_xc['fid']] = _v
                   if _xv:
@@ -891,7 +1033,7 @@ def txn_import():
             if why == 'no-header':
                 err = ('没认出表头。表格第一行要写列名，'
                        '至少需要「物料名称（或料号）」，'
-                       '以及「数量」/「进」「出」/「件数」+「每件」之一。')
+                       '以及「数量」/「进」「出」之一。')
             elif why == 'no-data':
                 err = '表头认出来了，但下面没有有效数据行（物料名和数量都要填）。'
             else:
@@ -1067,6 +1209,14 @@ def tpl_cols_set(tid):
             parts = [x.strip() for x in aliases.split(',') if x.strip()]
             if label and label not in parts:
                 parts.insert(0, label)
+            # 配了单位后，界面上表头显示成「长（米）」。使用者照着界面做 Excel 时
+            # 表头就会写成「长（米）」，所以这个带单位的写法也必须能认 —— 否则
+            # 这一列导入时匹配不上，单据建了但值静默丢失（不报错，最难查）。
+            _u = (request.form.get(f'un_{fid}') or '').strip()
+            if label and _u:
+                for w in ('%s（%s）' % (label, _u), '%s(%s)' % (label, _u)):
+                    if w not in parts:
+                        parts.append(w)
             rows.append(dict(fid=fid, label=label,
                              pos=int(request.form.get(f'pos_{fid}') or 0),
                              enabled=1 if request.form.get(f'en_{fid}') else 0,
@@ -1077,6 +1227,8 @@ def tpl_cols_set(tid):
             r['xtype'] = (request.form.get(f'xt_{fid}') or 'text').strip()
             r['xopt'] = (request.form.get(f'xo_{fid}') or '').strip()
             r['xform'] = (request.form.get(f'xf_{fid}') or '').strip()
+            # 列级单位：留空表示这一列不带单位（表头就只显示列名）
+            r['unit'] = (request.form.get(f'un_{fid}') or '').strip()[:20]
         db.save_tpl_cols(tid, rows)
         return redirect(url_for('tpl_cols_set', tid=tid, msg='表头映射已保存'))
     # 旧模板残留检测：只开 供应商/类型/状态/物料名称 之外的列，说明还是老配置
@@ -1090,7 +1242,7 @@ def tpl_cols_set(tid):
             _extra.append(r['label'])
     return render_template('columns.html', cols=db.tpl_cols(tid, False),
                            msg=request.args.get('msg', ''), CALC=db.CALC_COLS,
-                           tpl=t, TID=tid, EXTRA=_extra,
+                           tpl=t, TID=tid, EXTRA=_extra, UNITS=db.unit_choices(),
                            SAMPLE=['物料名称', '料号', '类型', '长', '宽', '供应商', '单位'])
 
 # ---------- 列（表头）映射设置 ----------
@@ -1110,6 +1262,11 @@ def columns():
             parts = [x.strip() for x in aliases.split(',') if x.strip()]
             if label and label not in parts:
                 parts.insert(0, label)
+            _u = (request.form.get(f'un_{fid}') or '').strip()
+            if label and _u:
+                for w in ('%s（%s）' % (label, _u), '%s(%s)' % (label, _u)):
+                    if w not in parts:
+                        parts.append(w)
             rows.append(dict(fid=fid, label=label,
                              pos=int(request.form.get(f'pos_{fid}') or 0),
                              enabled=1 if request.form.get(f'en_{fid}') else 0,
@@ -1118,8 +1275,8 @@ def columns():
         return redirect(url_for('columns', msg='表头映射已保存'))
     cols = db.cols(False)
     return render_template('columns.html', cols=cols, msg=request.args.get('msg', ''),
-                           CALC=db.CALC_COLS,
-                           SAMPLE=['物料名称', '料号', '类型', '长', '宽', '供应商', '单位', '期初结存', '安全库存', '状态'])
+                           CALC=db.CALC_COLS, UNITS=db.unit_choices(),
+                           SAMPLE=['物料名称', '料号', '类型', '长', '宽', '供应商', '期初结存', '安全库存', '状态'])
 
 @app.route('/txn/del/<int:tid>')
 def txn_del(tid):
@@ -1326,7 +1483,18 @@ def materials():
         scope_cn, scope_tip = '%s 当月' % m, '期初为上月月末，期末为当月月末'
     else:
         scope_cn, scope_tip = '全部时间', '累计进出与当前库存'
+    # 批量修改的列选项跟随模板列名（用户改过名就显示新名字，不再是写死的旧名）
+    _tid = db.default_tpl_id()
+    _bcols = []
+    for _c in db.cols(_tid):
+        _f = _c['fid']
+        if _f in ('name', 'code', 'category', 'spec', 'width', 'supplier',
+                  'unit', 'status', 'opening', 'safety'):
+            _u = _c['unit'] if 'unit' in _c.keys() else ''
+            _bcols.append({'fid': _f,
+                           'label': (_c['label'] or '') + (('（%s）' % _u) if _u else '')})
     return render_template('materials.html', rows=rows, kw=kw, inline=inline,
+                           bcols=_bcols,
                            show_all=show_all, n_off=n_off, n_all=n_all,
                            cur_sort=sort, cur_dir=dir_, m=m, d=d, scope=scope,
                            scope_cn=scope_cn, scope_tip=scope_tip,
@@ -1349,8 +1517,8 @@ def material_edit(mid=None):
             return render_template('material_edit.html', row=row,
                                    err='物料名称和料号至少要填一个')
         data = (f.get('supplier',''), f.get('category',''), f.get('spec',''), f.get('width',''),
-                name, f.get('code',''), f.get('unit','') or '平米',
-                num(f.get('opening')), num(f.get('safety')), f.get('status','') or '常用')
+                name, f.get('code',''), (f.get('unit','') or '').strip(),
+                num(f.get('opening')), num(f.get('safety')), (f.get('status','') or '').strip())
         if mid:
             db.run("UPDATE materials SET supplier=?,category=?,spec=?,width=?,name=?,code=?,"
                    "unit=?,opening=?,safety=?,status=? WHERE id=?", (*data, mid))
@@ -1491,7 +1659,7 @@ def imp():
                       db.run("INSERT INTO materials(supplier,category,spec,width,name,code,unit,opening,safety,status)"
                              " VALUES(?,?,?,?,?,?,?,?,?,?)",
                              d['supplier'], d['category'], d['spec'], d['width'], d['name'], d['code'],
-                             d['unit'] or '平米', d['opening'], d['safety'], d['status'] or '常用')
+                             (d['unit'] or '').strip(), d['opening'], d['safety'], (d['status'] or '').strip())
                       added += 1
             except Exception as e:
                 try: os.remove(p)
@@ -1795,12 +1963,18 @@ def export_xlsx():
     if kind == 'stock':
         rows = _stock_rows(kw, f, sort, dir_)
         ws.title = '库存'
-        ws.append(['供应商', '类型', '规格', '宽幅', '物料名称', '料号', '单位',
-                   '期初', '入库', '出库', '当前库存', '安全库存', '状态'])
+        # 表头跟随列配置：使用者把「规格」改名「长」、给它配了单位「米」，
+        # 界面上显示「长（米）」，导出也必须一致 —— 否则导出的表跟屏幕上
+        # 看到的对不上，照着导出文件填再导回来就认不出列（值静默丢失）。
+        # 另外 v3.21 已取消独立的「单位」列，这里不能再导出它。
+        _tpl = int(request.args.get('tpl') or 0) or db.default_tpl_id()
+        _cols = [x for x in db.tpl_cols(_tpl) if x['fid'] != 'unit']
+        _head = [db.col_label(x) for x in _cols] + ['入库', '出库', '当前库存']
+        ws.append(_head)
         for r in rows:
-            ws.append([r['supplier'], r['category'], r['spec'], r['width'], r['name'],
-                       r['code'], r['unit'], r['opening'], r['in_qty'], r['out_qty'],
-                       r['stock'], r['safety'], r['status']])
+            _line = [_cell_val(r, x) for x in _cols]
+            _line += [r['in_qty'], r['out_qty'], r['stock']]
+            ws.append(_line)
         fn = '库存'
     elif kind == 'report':
         mats, days = _report_data(m)
@@ -1823,9 +1997,22 @@ def export_xlsx():
                 continue
             for _xc in db.tpl_custom_cols(_t['id']):
                 if _xc['label'] not in [x['label'] for x in _xcs]:
-                    _xcs.append(_xc)
-        _head = ['日期', '物料名称', '料号', '类型', '进/出', '数量', '件数', '每件',
-                 '单位', '单价', '金额', '备注'] + [x['label'] for x in _xcs]
+                    _xcs.append(dict(_xc, label=db.col_label(_xc)))
+        # 平米 / 卷料：录单时按长宽自动算出来的，导出去却看不到就说不过去
+        # （使用者要对账、要发给别人看，这两列是核心数据）。
+        # 只有启用过这两列的模板才导出，没启用就不添乱。
+        _sq_on, _rl_on = False, False
+        for _t in (db.tpls() if not _xtid else [db.tpl(_xtid)]):
+            if not _t:
+                continue
+            for _c2 in db.tpl_cols(_t['id']):
+                if _c2['fid'] == 'sqm' and _c2['enabled']:
+                    _sq_on = True
+                elif _c2['fid'] == 'rolls' and _c2['enabled']:
+                    _rl_on = True
+        _calc_head = (['平米'] if _sq_on else []) + (['卷料'] if _rl_on else [])
+        _head = ['日期', '物料名称', '料号', '类型', '进/出', '数量'] \
+                + _calc_head + ['单价', '金额', '备注'] + [x['label'] for x in _xcs]
         ws.append(_head)
         for r in rows:
             _ex = {}
@@ -1835,9 +2022,14 @@ def export_xlsx():
                 except ValueError:
                     # 不能静默吞掉：之前就是静默 except 把 NameError 藏了三天
                     _log_err('导出解析自定义列失败 txn extra=%r' % (r['extra'],)[:200])
+            _calc = []
+            if _sq_on:
+                _calc.append(r['sqm'] if 'sqm' in r.keys() else '')
+            if _rl_on:
+                _calc.append(r['rolls'] if 'rolls' in r.keys() else '')
             ws.append([r['tdate'], r['name'], r['code'], r['category'], r['kind'],
-                       r['qty'], r['pieces'], r['per_piece'], r['unit'],
-                       r['price'], (r['amount'] if r['price'] else None), r['note']]
+                       r['qty']] + _calc +
+                      [r['price'], (r['amount'] if r['price'] else None), r['note']]
                       + [csv_safe(_ex.get(x['fid'], '')) for x in _xcs])
         fn = ('出入库流水' + (d or m))
     for c in ws[1]:
@@ -2074,22 +2266,35 @@ def export_po_xlsx():
 def export_csv():
     kind = request.args.get('t', 'stock')
     if kind == 'stock':
-        rows, head = db.stock_rows(), ['供应商','类型','规格','宽幅','物料名称','料号','单位','期初','入库','出库','当前库存','预警值','状态']
-        data = [[csv_safe(r['supplier']),csv_safe(r['category']),csv_safe(r['spec']),
-                 csv_safe(r['width']),csv_safe(r['name']),csv_safe(r['code']),csv_safe(r['unit']),
-                 r['opening'],r['in_qty'],r['out_qty'],r['stock'],r['safety'],
-                 csv_safe(r['status'])] for r in rows]
+        # 跟 xlsx 导出保持一致：表头跟随列配置（含自定义名与单位），
+        # 且不再导出 v3.21 已取消的「单位」列
+        _tpl = int(request.args.get('tpl') or 0) or db.default_tpl_id()
+        _cols = [x for x in db.tpl_cols(_tpl) if x['fid'] != 'unit']
+        rows, head = db.stock_rows(), [db.col_label(x) for x in _cols] + ['入库','出库','当前库存']
+        data = [[csv_safe(_cell_val(r, x)) for x in _cols]
+                + [r['in_qty'], r['out_qty'], r['stock']] for r in rows]
         fn = '库存'
     else:
         m = safe_ym(request.args.get('m'))
-        rows = db.q("SELECT t.tdate,m.name,m.code,m.unit,t.kind,t.qty,t.price,"
+        rows = db.q("SELECT t.tdate,m.name,m.code,m.unit,t.kind,t.qty,t.sqm,t.rolls,t.price,"
                     " %s AS amount, t.note FROM txns t"
                     " JOIN materials m ON m.id=t.material_id WHERE t.tdate LIKE ?"
                     " ORDER BY t.tdate,t.id"
                     % AMT.replace('t.', 't.'), m + '%')
-        head, data = ['日期','物料名称','料号','单位','类型','数量','单价','金额','备注'], \
-            [[r['tdate'],csv_safe(r['name']),csv_safe(r['code']),csv_safe(r['unit']),
-              r['kind'],r['qty'],r['price'],(r['amount'] if r['price'] else None),
+        # 平米/卷料跟 xlsx 导出保持一致（录单算了就得导得出来）
+        _sq_on, _rl_on = False, False
+        for _t in db.tpls():
+            for _c2 in db.tpl_cols(_t['id']):
+                if _c2['fid'] == 'sqm' and _c2['enabled']:
+                    _sq_on = True
+                elif _c2['fid'] == 'rolls' and _c2['enabled']:
+                    _rl_on = True
+        _ch = (['平米'] if _sq_on else []) + (['卷料'] if _rl_on else [])
+        head, data = ['日期','物料名称','料号','类型','数量'] + _ch + ['单价','金额','备注'], \
+            [[r['tdate'],csv_safe(r['name']),csv_safe(r['code']),
+              r['kind'],r['qty']]
+             + ([r['sqm']] if _sq_on else []) + ([r['rolls']] if _rl_on else [])
+             + [r['price'],(r['amount'] if r['price'] else None),
               csv_safe(r['note'])] for r in rows]
         fn = f'流水{m}'
     out = io.StringIO(); out.write('\ufeff')
@@ -2139,6 +2344,13 @@ def purchase_home():
         d['tax'] = tax
         d['total'] = round(float(d['amt'] or 0) + tax, 2)
         d['paid'] = purchase.paid_amount(d['id'])
+        # 欠款统一按「到货」算，跟详情页 / 汇总页口径一致；
+        # 用 SUM(qty*price) 一次算出到货金额，避免逐单再查
+        d['recv_amt'] = float(db.q(
+            "SELECT COALESCE(SUM(r.qty*r.price),0) s FROM po_receipts r"
+            " JOIN po_items i ON i.id=r.item_id WHERE i.po_id=?", d['id'])[0]['s'] or 0)
+        _, _, d['recv_total'] = purchase.line_amount(1, d['recv_amt'], d['tax_rate'])
+        d['owed'] = round(float(d['recv_total'] or 0) - float(d['paid'] or 0), 2)
         d['open_qty'] = round(float(d['tq'] or 0) - float(d['rq'] or 0), 2)
         today_s = today()
         d['late'] = bool(d['ddate'] and d['ddate'] < today_s
@@ -2321,9 +2533,23 @@ def po_detail(po_id):
 
 @app.route('/po/<int:po_id>/status', methods=['POST'])
 def po_status(po_id):
+    if not take_nonce(request.form.get('_n')):
+        return redirect(url_for('po_detail', po_id=po_id,
+                                err='这一下点重了，状态没改，请刷新后重试'))
     st = (request.form.get('status') or '').strip()
     if st in purchase.STATUS:
         db.run("UPDATE pos SET status=? WHERE id=?", st, po_id)
+        # 手工选了「已下单/部分到货/已完成」这三种业务状态时，必须按到货
+        # 事实再核定一次：没到齐的货不能标成已完成，否则采购台和汇总页
+        # 全显示已完成、实物却没到，这种失真的数字比报错更难查。
+        # 「草稿/已取消」是人工终态，derive_status 会原样保留，不受影响。
+        if st not in ('草稿', '已取消'):
+            purchase.refresh_status(po_id)
+            got = db.q("SELECT status FROM pos WHERE id=?", po_id)
+            real = got[0]['status'] if got else st
+            if real != st:
+                return redirect(url_for('po_detail', po_id=po_id,
+                    msg='状态按到货事实定为「%s」（%s不成立）' % (real, st)))
     return redirect(url_for('po_detail', po_id=po_id, msg='状态已改为「%s」' % st))
 
 
