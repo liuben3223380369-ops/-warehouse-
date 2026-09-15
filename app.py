@@ -56,7 +56,12 @@ BASE = db.app_dir()
 # 场景：网络卡顿时用户连点两下"保存"，同一批单据会记两遍，
 # 库存平白多出一笔，而且很难发现。所以每个表单发一个一次性令牌，
 # 提交时核销；令牌用掉再提交就是重复，直接挡下。
-_nonces = set()
+# 用 OrderedDict 而不是 set：淘汰时必须淘汰"最早发的"那一批。
+# set 的迭代顺序由哈希决定，是随机的 —— 满仓淘汰时会随机丢掉一半，
+# 用户正在填的表单令牌有 50% 概率被误淘汰，提交时判成"重复提交"，
+# 填了半天的数据全丢。改为先进先出后，淘汰的一定是最老的那批。
+from collections import OrderedDict
+_nonces = OrderedDict()
 _NONCE_MAX = 500          # 上限：防止开着几十个页面把内存撑大
 
 
@@ -64,10 +69,13 @@ def new_nonce():
     """发一个新令牌（渲染表单时调用）"""
     import uuid
     n = uuid.uuid4().hex[:16]
-    _nonces.add(n)
-    if len(_nonces) > _NONCE_MAX:      # 超量就淘汰最早的一批
-        for x in list(_nonces)[:_NONCE_MAX // 2]:
-            _nonces.discard(x)
+    _nonces[n] = True
+    if len(_nonces) > _NONCE_MAX:      # 超量就淘汰最早的一批（FIFO）
+        for _ in range(_NONCE_MAX // 2):
+            try:
+                _nonces.popitem(last=False)
+            except KeyError:
+                break
     return n
 
 
@@ -76,7 +84,7 @@ def take_nonce(n):
     if not n:
         return False
     if n in _nonces:
-        _nonces.discard(n)
+        _nonces.pop(n, None)
         return True
     return False
 TMP = os.path.join(BASE, '.uploads')
@@ -1982,6 +1990,9 @@ def po_status(po_id):
 
 @app.route('/po/<int:po_id>/item/add', methods=['POST'])
 def po_item_add(po_id):
+    if not take_nonce(request.form.get('_n')):
+        return redirect(url_for('po_detail', po_id=po_id,
+                                err='这一下点重了，明细没加，请刷新后重试'))
     nm = (request.form.get('name') or '').strip()
     q = num(request.form.get('qty'))
     p = num(request.form.get('price'))
@@ -2007,6 +2018,13 @@ def po_item_add(po_id):
 def po_item_unit():
     """随时改采购单位 / 换算率 / 库存单位 / 单价。
     改单位只影响之后的到货，已入库存量不动（历史记的是当时实际入库数）。"""
+    if not take_nonce(request.form.get('_n')):
+        rid = request.form.get('item_id')
+        hit = db.q("SELECT po_id FROM po_items WHERE id=?", rid) if str(rid or '').isdigit() else None
+        if hit:
+            return redirect(url_for('po_detail', po_id=hit[0]['po_id'],
+                                    err='这一下点重了，单位没改，请刷新后重试'))
+        return redirect(url_for('purchase_home'))
     iid = request.form.get('item_id')
     if not str(iid or '').isdigit():
         return redirect(url_for('purchase_home'))
@@ -2037,6 +2055,9 @@ def po_item_del(iid):
 
 @app.route('/po/<int:po_id>/receive', methods=['POST'])
 def po_receive(po_id):
+    if not take_nonce(request.form.get('_n')):
+        return redirect(url_for('po_detail', po_id=po_id,
+                                err='这一下点重了，没有重复收货，请刷新后重试'))
     iid = request.form.get('item_id')
     if not str(iid or '').isdigit():
         return redirect(url_for('po_detail', po_id=po_id, err='请选择要收货的物料'))
@@ -2063,6 +2084,9 @@ def po_receive_del(rid):
 
 @app.route('/po/<int:po_id>/pay', methods=['POST'])
 def po_pay(po_id):
+    if not take_nonce(request.form.get('_n')):
+        return redirect(url_for('po_detail', po_id=po_id,
+                                err='这一下点重了，没有重复付款，请刷新后重试'))
     amt = num(request.form.get('amount'))
     if amt <= 0:
         return redirect(url_for('po_detail', po_id=po_id, err='付款金额要大于 0'))
