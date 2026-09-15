@@ -46,7 +46,10 @@ def line_amount(qty, price, tax_rate=0, price_tax=1):
     price_tax=1 表示 price 是含税单价，需要先除税；0 表示本身就是不含税价。
     """
     try:
+        QMAX = 1e9      # 与 app/importer 的 QTY_MAX 一致
         q = float(qty or 0)
+        if q > QMAX:
+            raise ValueError('数量太大（上限 %d），请检查是否多输了几个零' % int(QMAX))
     except (TypeError, ValueError):
         q = 0.0
     p = net_price(price, tax_rate, price_tax)

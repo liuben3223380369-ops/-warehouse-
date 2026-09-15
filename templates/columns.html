@@ -42,19 +42,88 @@
     </div>
     <label>导入别名（英文逗号分隔，用于识别 Excel 表头）</label>
     <input name="al_{{c.fid}}" value="{{c.aliases}}" placeholder="如 名称,品名,物料">
+    <div class="rowflex" style="gap:8px">
+      <div style="flex:1">
+        <label style="margin-top:0">字段类型</label>
+        <select name="xt_{{c.fid}}">
+          {% for k,v in [('text','文本'),('number','数字'),('date','日期'),('select','单选'),('calc','公式')] %}
+          <option value="{{k}}" {{'selected' if (c.xtype or 'text')==k}}>{{v}}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div style="flex:2">
+        <label style="margin-top:0">选项 / 公式（单选填"甲,乙"；公式填 qty*price）</label>
+        <input name="xo_{{c.fid}}" value="{{c.xopt or ''}}" placeholder="选项：甲,乙">
+        <input name="xf_{{c.fid}}" value="{{ (c.xform or '') if (c.xtype or 'text')=='calc' else '' }}" placeholder="公式：如 qty*price、sqm/width" style="margin-top:4px">
+      </div>
+    </div>
     <label style="display:flex;align-items:center;gap:6px">
       <input type="checkbox" name="en_{{c.fid}}" {{'checked' if c.enabled}} style="width:auto">
       <span style="font-size:13px">在入库界面显示这一列</span>
     </label>
+    {% if c.fid.startswith('x_') %}
+    <div style="margin-top:6px"><a class="btn r s" href="{{url_for('tpl_col_del',tid=TID,fid=c.fid)}}"
+      onclick="return confirm('删除自定义列「{{c.label}}」？已填的值会一并清除')">🗑 删除这个自定义列</a></div>
+    {% endif %}
   </div>
   {% endfor %}
   <button type="submit">💾 保存表头映射</button>
 </form>
 
-<form method="post" onsubmit="return confirm('恢复成系统默认表头？自定义名称会丢失')">
+{% if TID and EXTRA %}
+<div class="card" style="background:#fff7e6;border-left:3px solid #d99b00">
+  <b style="font-size:14px">⚠️ 这个表还是旧模板的列</b>
+  <div style="margin-top:6px;color:#5b4a2a;font-size:13px;line-height:1.7">
+    现在开着 <b>{{ EXTRA|length }} 个多余的列</b>：{{ EXTRA|join('、') }}<br>
+    这些是早期版本沿用原 Excel 的 A-G 列，不是你现在要的。
+  </div>
+  <form method="post" style="margin-top:8px" onsubmit="return confirm('只保留 供应商 / 类型 / 状态 / 物料名称，其余列全部关掉（数据不会丢，随时能再开）？')">
+    <input type="hidden" name="reset" value="1">
+    <button type="submit" class="r" style="width:100%">🧹 一键摒弃旧模板，只留 供应商/类型/状态</button>
+  </form>
+</div>
+{% endif %}
+
+<form method="post" onsubmit="return confirm('恢复精简默认：只保留 供应商 / 类型 / 状态 / 物料名称，其余列全部关掉（自定义名称会丢失，数据不会丢）？')">
   <input type="hidden" name="reset" value="1">
-  <button type="submit" class="r s">↺ 恢复默认</button>
+  <button type="submit" class="r s">↺ 恢复精简默认（只留 供应商/类型/状态）</button>
 </form>
+
+{% if TID %}
+<div class="card">
+  <h2>＋ 新增自定义列</h2>
+  <p style="font-size:13px;color:#5b6675;margin:0 0 8px">
+  系统已有 12 个固定字段（改名字就行）。要加<b>系统里没有的字段</b>（如客户订单号、单价、金额），在这里加。
+  加出来的列<b>只属于这个模板</b>，录入、导入、导出都会带上。</p>
+  <form method="post" action="{{url_for('tpl_col_add',tid=TID)}}">
+    <input type="hidden" name="_n" value="{{ new_nonce() }}">
+    <div class="rowflex" style="gap:8px">
+      <div style="flex:2"><label style="margin-top:0">列名</label>
+        <input name="label" placeholder="如 客户订单号 / 单价 / 金额" required></div>
+      <div style="flex:1"><label style="margin-top:0">类型</label>
+        <select name="xtype">
+          <option value="text">文本</option>
+          <option value="number">数字</option>
+          <option value="date">日期</option>
+          <option value="select">单选</option>
+          <option value="calc">公式</option>
+        </select></div>
+    </div>
+    <label>选项（单选类型填，逗号分隔）</label>
+    <input name="xopt" placeholder="如 未付,已付,部分付">
+    <label>公式（公式类型填）</label>
+    <input name="xform" placeholder="如 qty*单价、qty*price、sqm/宽">
+    <div style="font-size:12px;color:#5b6675;margin-top:4px;line-height:1.7">
+    可直接写<b>列名</b>（如 <code>数量*单价</code>），也可用这些变量名：
+    <code>qty</code>数量 <code>pieces</code>件数 <code>per</code>每件
+    <code>spec</code>长 <code>width</code>宽 <code>sqm</code>平米 <code>rolls</code>卷料
+    <code>opening</code>期初 <code>safety</code>安全库存<br>
+    例：<code>qty*单价</code>、<code>(qty*单价)*1.13</code> 含税、<code>sqm/宽</code>、<code>round(qty*单价,2)</code>
+    </div>
+    <button type="submit">＋ 添加这一列</button>
+  </form>
+</div>
+{% endif %}
 
 <a class="btn o s" href="{{url_for('txn')}}">返回入库页</a>
 {% endblock %}

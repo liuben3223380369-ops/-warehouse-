@@ -4,6 +4,17 @@
 {% block sub %}卡片式填写 · 选物料自动带出全部信息{% if fixed=='出' %} · 超库存自动拦截{% endif %}{% endblock %}
 {% block body %}
 
+<div class="card" style="padding:8px 10px">
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <b style="font-size:14px">填写方式</b>
+    <button type="button" class="btn s" id="mCard" onclick="setMode('card')">▤ 卡片</button>
+    <button type="button" class="btn s o" id="mGrid" onclick="setMode('grid')">▦ 表格（可从 Excel 粘贴）</button>
+    <span style="flex:1"></span>
+    <span style="font-size:12px;color:#5b6675">记住选择</span>
+  </div>
+</div>
+
+
 {% if fixed=='出' %}
 <div class="card" style="padding:10px 12px;font-size:13px;color:#5b6675">
   物料列表{% if only_stock %}<b>只显示有库存的物料（{{mats|length}} 种）</b>，
@@ -35,6 +46,16 @@
 <input type="hidden" name="tpl" value="{{tid}}">
 <div id="cards"></div>
 
+<div id="gridBox" class="card" style="display:none;padding:0;overflow-x:auto">
+  <div style="padding:8px 10px;font-size:12px;color:#5b6675;background:#f7f9fc;border-bottom:1px solid #eef1f5">
+    从 Excel 复制一片区域，点任意单元格按 <b>Ctrl+V</b> 即可整片粘贴；
+    <b>Enter</b> 下一行，<b>Tab</b> 下一格。
+    <button type="button" class="btn s o" style="float:right" onclick="gridAdd(10)">＋ 加 10 行</button>
+  </div>
+  <table id="gridTbl" style="border-collapse:collapse;width:max-content;min-width:100%"></table>
+</div>
+
+
 <div class="grid2" style="margin-top:12px">
   <a class="btn s o" href="javascript:addCard()" style="margin-top:0">＋ 再加一笔</a>
   <a class="btn s o" href="javascript:addCard(true)" style="margin-top:0">＋ 复制上一笔</a>
@@ -46,7 +67,7 @@
 
 <div class="card">
   <div style="font-size:12px;color:#5b6675;line-height:1.8">
-  · <b>物料名称</b>输入时会实时联想，点选后自动带出 料号/类型/规格/宽幅/供应商/单位 等全部信息<br>
+  · <b>物料名称</b>输入时会实时联想，点选后自动带出该物料已录入的信息（类型/供应商等）<br>
   · 也可直接手填新物料，保存时自动建档（期初、安全库存可在卡片里填）<br>
   · 数量 / 件数 / 每件 填任意两个，第三个自动算<br>
   · 只有填了<b>名称或料号</b>且<b>数量>0</b>的卡片才会保存<br>
@@ -101,9 +122,144 @@ border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.14);z-index:30;max-height:2
 var MATS = {{ js_mats|tojson }};
 var COLS = {{ fids|tojson }};
 var COLS_FULL = {{ col_defs|tojson }};
+var XCOLS = {{ xcols|default([],true)|tojson }};
 var FIXED = {{ 'true' if fixed else 'false' }};
 var KIND = {{ fixed|tojson }};
 var TODAY = {{ tdate|tojson }};
+/* localStorage 在某些环境（file://、隐私模式、部分 WebView）会直接抛异常。
+   不包 try 的话整段脚本挂掉，卡片也跟着不出来 —— 记住选择只是锦上添花，不能拖垮录入页。 */
+var MODE = 'card';
+try { MODE = localStorage.getItem('wh_mode') || 'card'; } catch (e) {}
+
+/* ---------- 表格模式：可编辑网格 + 从 Excel 整片粘贴 ---------- */
+/* 列的顺序跟模板一致，自定义列（XCOLS）也一起进来 */
+function gridCols(){
+  var a = COLS_FULL.slice();
+  XCOLS.forEach(function(x){
+    if(!a.some(function(c){return c.fid===x.fid;}))
+      a.push({fid:x.fid,label:x.label,xtype:x.xtype||'text',xopt:x.xopt||''});
+  });
+  /* 录单必需的几列放最后，跟卡片一致 */
+  [['tdate','日期'],['qty','数量'],['pieces','件数'],['per','每件'],['note','备注']]
+    .forEach(function(p){ a.push({fid:p[0],label:p[1],xtype:p[0]==='tdate'?'date':(p[0]==='note'?'text':'num')}); });
+  return a;
+}
+
+function gridCell(c,i){
+  var nm = (c.fid==='tdate'||c.fid==='qty'||c.fid==='pieces'||c.fid==='per'||c.fid==='note')
+           ? c.fid+'_'+i : c.fid+'_'+i;
+  var v = (c.fid==='tdate'? TODAY : '');
+  var st = 'width:'+(c.fid==='note'?150:(c.fid==='name'?130:92))+'px;border:1px solid #e6e9ee;'
+         + 'padding:5px 6px;font-size:13px;box-sizing:border-box';
+  if((c.xtype||'')==='select' && c.xopt){
+    var o='<option value=""></option>';
+    (c.xopt||'').split(',').forEach(function(x){ if(x.trim()) o+='<option>'+esc(x.trim())+'</option>'; });
+    return '<select name="'+nm+'" style="'+st+'" data-g="1">'+o+'</select>';
+  }
+  if((c.xtype||'')==='calc')
+    return '<input name="'+nm+'" style="'+st+';background:#f4f6f9" readonly data-g="1" placeholder="自动算">';
+  var t = (c.fid==='tdate')?'date':((c.xtype==='number'||c.fid==='qty'||c.fid==='pieces'||c.fid==='per')?'text':'text');
+  var im = (c.fid==='qty'||c.fid==='pieces'||c.fid==='per'||c.xtype==='number')?' inputmode="decimal"':'';
+  return '<input type="'+t+'" name="'+nm+'" value="'+esc(v)+'" style="'+st+'"'+im+' data-g="1"'
+       + (c.fid==='name'?' list="mList" autocomplete="off"':'')+'>';
+}
+
+function buildGrid(nrow){
+  var cs = gridCols();
+  var h = '<tr>' + cs.map(function(c){ return '<th style="position:sticky;top:0;background:#f7f9fc;'
+    + 'border:1px solid #e6e9ee;padding:6px;font-size:12px;white-space:nowrap">'+esc(c.label)+'</th>'; }).join('') + '</tr>';
+  var b = '';
+  for(var i=0;i<nrow;i++){
+    b += '<tr>' + cs.map(function(c){ return '<td style="padding:0;border:1px solid #e6e9ee">'+gridCell(c,i)+'</td>'; }).join('') + '</tr>';
+  }
+  document.getElementById('gridTbl').innerHTML = h + b;
+  bindGrid();
+}
+
+/* 粘贴：解析 TSV，从当前格开始往右下填 —— 这是表格模式最实用的地方 */
+function bindGrid(){
+  var tb = document.getElementById('gridTbl');
+  if(!tb || tb.dataset.bound) return;
+  tb.dataset.bound = '1';
+  tb.addEventListener('paste', function(e){
+    var el = e.target;
+    if(!el || !el.name) return;
+    var txt = (e.clipboardData||window.clipboardData).getData('text');
+    if(!txt || txt.indexOf('\t')<0 && txt.indexOf('\n')<0) return;   // 单个值就让浏览器自己粘
+    e.preventDefault();
+    var rows = txt.replace(/\r/g,'').split('\n');
+    while(rows.length && rows[rows.length-1]==='') rows.pop();
+    /* 从 Excel 连表头一起复制是很常见的操作，首行是表头就跳过，别把"物料名称"当数据录进去 */
+    if(rows.length>1 && /物料名称|品名|日期|数量|供应商|进\b|出\b/.test(rows[0])) rows.shift();
+    var tr = el.closest('tr'), ti = tr ? tr.rowIndex : 0;
+    var td = el.closest('td'), ci = td ? td.cellIndex : 0;
+    var trs = tb.rows;
+    for(var r=0;r<rows.length;r++){
+      var y = ti + r;
+      if(y >= trs.length) { gridAdd(rows.length - r + 2); trs = tb.rows; }
+      var cells = rows[r].split('\t');
+      for(var c=0;c<cells.length;c++){
+        var x = ci + c;
+        if(x >= trs[y].cells.length) break;
+        var f = trs[y].cells[x].firstElementChild;
+        if(f && f.name){ f.value = cells[c].trim(); }
+      }
+    }
+    /* 粘完顺手把行数补够，避免下次还得点加行 */
+    if(ti + rows.length + 2 > trs.length) gridAdd(3);
+  });
+  /* Enter 下一行同列，跟 Excel 习惯一致 */
+  tb.addEventListener('keydown', function(e){
+    if(e.key!=='Enter') return;
+    var el=e.target; if(!el||!el.name) return;
+    e.preventDefault();
+    var tr=el.closest('tr'), td=el.closest('td');
+    if(!tr||!td) return;
+    var nx = tb.rows[tr.rowIndex+1];
+    if(!nx){ gridAdd(5); nx = tb.rows[tr.rowIndex+1]; }
+    if(nx && nx.cells[td.cellIndex]){
+      var f=nx.cells[td.cellIndex].firstElementChild; if(f) f.focus();
+    }
+  });
+}
+
+function gridAdd(k){
+  var tb=document.getElementById('gridTbl');
+  var cs=gridCols(); var n0=tb.rows.length-1;      // 减掉表头
+  var b='';
+  for(var i=n0;i<n0+k;i++){
+    b += '<tr>' + cs.map(function(c){ return '<td style="padding:0;border:1px solid #e6e9ee">'+gridCell(c,i)+'</td>'; }).join('') + '</tr>';
+  }
+  tb.insertAdjacentHTML('beforeend', b);
+  tb.dataset.bound=''; bindGrid();
+}
+
+/* 切换：非活动模式的输入框全部禁用，避免提交时两套数据打架 */
+function setMode(m){
+  MODE=m; try{ localStorage.setItem('wh_mode',m); }catch(e){}
+  var g=(m==='grid');
+  document.getElementById('gridBox').style.display = g?'':'none';
+  var cards=document.getElementById('cards');
+  if(cards) cards.style.display = g?'none':'';
+  document.getElementById('mGrid').className = 'btn s'+(g?'':' o');
+  document.getElementById('mCard').className = 'btn s'+(g?' o':'');
+  var n=g?document.querySelectorAll('[name^="nrow"]'):null;
+  if(g && !document.getElementById('gridTbl').rows.length) buildGrid({{ n|int }});
+  /* grid 模式下用隐藏 nrow 告诉后端有多少行 */
+  /* 复用页面里已有的 hidden nrow，别再插一个同名的 —— 两个 nrow 会让后端收到列表 */
+  var hn=document.getElementById('nrow');
+  if(hn) hn.value = g ? (document.getElementById('gridTbl').rows.length-1) : {{ n|int }};
+  syncDisabled();
+}
+
+function syncDisabled(){
+  var g=(MODE==='grid');
+  var box=document.getElementById('gridBox');
+  var cards=document.getElementById('cards');
+  if(box) box.querySelectorAll('[data-g]').forEach(function(e){ e.disabled=!g; });
+  if(cards) cards.querySelectorAll('input,select,textarea').forEach(function(e){ e.disabled=g; });
+}
+
 var rowIdx = {{ n|int }};
 var curCard = null;
 
@@ -152,6 +308,14 @@ function cardHtml(i){
     h += fieldHtml(c.fid, i, c.label);
   });
   h += '</div>';
+  // 自定义列（使用者自己加的，只属于这个模板）
+  if(XCOLS.length){
+    h += '<div class="fields" style="margin-top:8px">';
+    XCOLS.forEach(function(c){
+      h += xfieldHtml(c, i);
+    });
+    h += '</div>';
+  }
   // 日期 + 数量 / 件数 / 每件（或进/出）+ 备注
   h += (FIXED ? '<input type="hidden" name="kind_'+i+'" value="'+KIND+'">' : '');
   h += '<div class="qtyrow">'
@@ -172,6 +336,59 @@ function cardHtml(i){
 }
 
 // 长 × 宽 = 平米；平米 ÷ 宽 = 卷料（取整，余料自动写进备注）
+// 自定义列：文本/数字/日期/单选/公式
+function xfieldHtml(c, i){
+  var v = c.xtype;
+  var inp;
+  if(v==='select'){
+    var opts=(c.xopt||'').split(',').map(function(o){
+      return '<option value="'+o.trim()+'">'+o.trim()+'</option>';}).join('');
+    inp='<select name="x_'+i+'_'+c.fid+'">'+opts+'</select>';
+  } else if(v==='calc'){
+    inp='<input name="x_'+i+'_'+c.fid+'" id="xc_'+i+'_'+c.fid+'" readonly '
+       +'style="background:#f2f4f7" placeholder="自动算" data-form="'+escq(c.xform)+'">';
+  } else if(v==='date'){
+    inp='<input type="date" name="x_'+i+'_'+c.fid+'">';
+  } else if(v==='number'){
+    inp='<input name="x_'+i+'_'+c.fid+'" inputmode="decimal" class="xsrc" data-i="'+i+'" oninput="calcX('+i+')">';
+  } else {
+    inp='<input name="x_'+i+'_'+c.fid+'">';
+  }
+  return '<div class="f"><label>'+c.label+(v==='calc'?'（自动）':'')+'</label>'+inp+'</div>';
+}
+function escq(s){ return String(s||'').replace(/"/g,'&quot;'); }
+// 公式列：数字列或数量/件数变化时重算
+function calcX(i){
+  XCOLS.forEach(function(c){
+    if(c.xtype!=='calc') return;
+    var el=document.getElementById('xc_'+i+'_'+c.fid); if(!el) return;
+    el.value = evalForm(c.xform, i);
+  });
+}
+function evalForm(form, i){
+  if(!form) return '';
+  var env={};
+  function g(n){ var e=document.querySelector('[name='+n+'_'+i+']'); return e?e.value:''; }
+  env.qty=g('qty'); env.pieces=g('pieces'); env.per=g('per');
+  env.spec=g('spec'); env.width=g('width'); env.sqm=g('sqm'); env.rolls=g('rolls');
+  env.price=g('price'); env.opening=g('opening'); env.safety=g('safety');
+  env.unit=g('unit'); env.code=g('code'); env.supplier=g('supplier');
+  XCOLS.forEach(function(c){
+    var e=document.querySelector('[name=x_'+i+'_'+c.fid+']');
+    if(e && c.xtype!=='calc'){
+      env[c.fid]=e.value;      // 用机器名写公式：qty*x_1789...
+      env[c.label]=e.value;    // 用列名写公式：qty*单价（更好记）
+    }
+  });
+  try{
+    var names=Object.keys(env), vals=names.map(function(k){
+      var x=parseFloat(env[k]); return isFinite(x)?x:0; });
+    var f=new Function(names.join(','),'return ('+form+');');
+    var r=f.apply(null,vals);
+    if(!isFinite(r)) return '';
+    return Math.round(r*1e6)/1e6;
+  }catch(e){ return ''; }
+}
 function numOf(v){ var x=parseFloat(String(v==null?'':v).trim()); return isFinite(x)&&x>0?x:null; }
 function calcArea(i){
   var L=numOf((document.querySelector('[name=spec_'+i+']')||{}).value);
@@ -259,7 +476,8 @@ function addCard(copy){
 
 function fmt(n){ return String(Math.round(n*100)/100); }
 function numv(i,cls){ var e=document.querySelector('.'+cls+'[data-i="'+i+'"]'); return parseFloat(e&&e.value)||0; }
-function calc(i){ var q=numv(i,'qty'),p=numv(i,'pc'); var e=document.querySelector('.pe[data-i="'+i+'"]');
+function calc(i){
+  try{calcX(i);}catch(e){} var q=numv(i,'qty'),p=numv(i,'pc'); var e=document.querySelector('.pe[data-i="'+i+'"]');
   if(e&&q&&p) e.value=fmt(q/p); }
 function calc2(i){ var p=numv(i,'pc'),pe=numv(i,'pe'),q=numv(i,'qty');
   if(p&&pe){ document.querySelector('.qty[data-i="'+i+'"]').value=fmt(p*pe); }
@@ -358,5 +576,8 @@ function chk(){
       +'\n这些行不会被保存。继续保存其余 '+n+' 笔吗？')) return false;
   return confirm('将保存 '+n+' 笔单据，确定？');
 }
+document.addEventListener('DOMContentLoaded', function(){
+  if(MODE==='grid'){ setMode('grid'); } else { document.getElementById('mCard').click&&0; setMode('card'); }
+});
 </script>
 {% endblock %}

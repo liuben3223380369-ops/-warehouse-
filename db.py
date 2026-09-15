@@ -219,6 +219,9 @@ CREATE TABLE IF NOT EXISTS tpl_cols (
   pos     INTEGER NOT NULL DEFAULT 0,
   enabled INTEGER NOT NULL DEFAULT 1,
   aliases TEXT    DEFAULT '',
+  xtype   TEXT    DEFAULT 'text',   /* text 文本 | number 数字 | date 日期 | select 单选 | calc 公式 */
+  xopt    TEXT    DEFAULT '',       /* select 的选项，逗号分隔 */
+  xform   TEXT    DEFAULT '',       /* calc 的公式，如 qty*price */
   PRIMARY KEY(tpl_id, fid)
 );
 """
@@ -381,6 +384,17 @@ def migrate():
         run("ALTER TABLE pos ADD COLUMN tpl_id INTEGER")
     if 'sig' not in _cols('tpl'):
         run("ALTER TABLE tpl ADD COLUMN sig TEXT DEFAULT ''")
+    if 'xtype' not in _cols('tpl_cols'):
+        run("ALTER TABLE tpl_cols ADD COLUMN xtype TEXT DEFAULT 'text'")
+    if 'xopt' not in _cols('tpl_cols'):
+        run("ALTER TABLE tpl_cols ADD COLUMN xopt TEXT DEFAULT ''")
+    if 'xform' not in _cols('tpl_cols'):
+        run("ALTER TABLE tpl_cols ADD COLUMN xform TEXT DEFAULT ''")
+    # 自定义列的值存在 extra(JSON)，不动表结构
+    if 'extra' not in _cols('materials'):
+        run("ALTER TABLE materials ADD COLUMN extra TEXT DEFAULT ''")
+    if 'extra' not in _cols('txns'):
+        run("ALTER TABLE txns ADD COLUMN extra TEXT DEFAULT ''")
     # 视图改成聚合 JOIN 后，老库里的旧视图不会自动更新，这里重建
     old = q("SELECT sql FROM sqlite_master WHERE type='view' AND name='v_stock'")
     if old and ('COALESCE(a.i' not in (old[0]['sql'] or '')
@@ -667,6 +681,124 @@ def tpl_from_headers(headers, name=None, keep=0):
     set_tpl_sig(tid, head_sig(headers))
     return tid
 
+# ---------- 自定义列 / 字段类型 / 公式 ----------
+import ast as _ast
+# 公式里能用的：引用别的列（写 fid 或列名的拼音/英文标识）、四则运算、几个常用函数
+# 例：qty*price   (qty*price)*1.13   round(qty*price,2)
+_FORM_FUNCS = {
+    'round': round, 'abs': abs, 'min': min, 'max': max,
+    'int': int, 'float': float, 'len': len, 'sum': sum,
+}
+_ALLOWED = (_ast.Expression, _ast.BinOp, _ast.UnaryOp, _ast.Num, _ast.Constant,
+            _ast.Name, _ast.Load, _ast.Add, _ast.Sub, _ast.Mult, _ast.Div,
+            _ast.Pow, _ast.Mod, _ast.USub, _ast.UAdd, _ast.Call, _ast.keyword,
+            _ast.Tuple, _ast.List)
+
+def calc_formula(expr, values):
+    """算公式。只放行四则运算和几个函数，**不用 eval**，防注入。
+    expr  : 公式字符串，如 'qty*price'
+    values: {fid: 数值/文本}
+    算不出来返回 None（不抛异常）。"""
+    if not (expr or '').strip():
+        return None
+    try:
+        tree = _ast.parse(expr.strip(), mode='eval')
+    except (SyntaxError, ValueError):
+        return None
+    for n in _ast.walk(tree):
+        if not isinstance(n, _ALLOWED):
+            return None                      # 出现属性访问、下标、赋值等一律拒绝
+        if isinstance(n, _ast.Call):
+            f = n.func
+            if not (isinstance(f, _ast.Name) and f.id in _FORM_FUNCS):
+                return None
+    env = {}
+    for k, v in (values or {}).items():
+        try:
+            env[str(k)] = float(v) if v not in (None, '') else 0.0
+        except (TypeError, ValueError):
+            env[str(k)] = 0.0
+    env.update(_FORM_FUNCS)
+    try:
+        out = eval(compile(tree, '<formula>', 'eval'),
+                   {'__builtins__': {}}, env)
+    except ZeroDivisionError:
+        return None
+    except Exception:
+        return None
+    try:
+        f = float(out)
+    except (TypeError, ValueError):
+        return None
+    if f != f or f in (float('inf'), float('-inf')):
+        return None
+    return round(f, 6)
+
+def get_extra(row, key, default=''):
+    """从 extra(JSON) 里取自定义列的值"""
+    import json as _json
+    raw = None
+    try:
+        raw = row['extra'] if 'extra' in row.keys() else None
+    except (IndexError, TypeError, KeyError):
+        raw = None
+    if not raw:
+        return default
+    try:
+        d = _json.loads(raw)
+    except Exception:
+        return default
+    return d.get(key, default)
+
+def set_extra(tbl, rid, key, val):
+    """写自定义列的值到 extra(JSON)"""
+    import json as _json
+    row = q("SELECT extra FROM %s WHERE id=?" % tbl, rid)
+    d = {}
+    if row:
+        try:
+            d = _json.loads(row[0]['extra'] or '{}') or {}
+        except Exception:
+            d = {}
+    d[str(key)] = val
+    run("UPDATE %s SET extra=? WHERE id=?" % tbl, _json.dumps(d, ensure_ascii=False), rid)
+
+def tpl_custom_cols(tpl_id, enabled_only=True):
+    """该模板的自定义列（fid 以 x_ 开头）"""
+    sql = "SELECT * FROM tpl_cols WHERE tpl_id=? AND fid LIKE 'x_%'"
+    if enabled_only:
+        sql += " AND enabled=1"
+    return q(sql + " ORDER BY pos, fid", tpl_id)
+
+def add_custom_col(tpl_id, label, xtype='text', xopt='', xform=''):
+    """新增自定义列。fid 用 x_<时间戳> 保证唯一"""
+    import time as _t
+    fid = 'x_%d' % int(_t.time() * 1000)
+    mx = q("SELECT COALESCE(MAX(pos),0) p FROM tpl_cols WHERE tpl_id=?", tpl_id)[0]['p']
+    run("INSERT INTO tpl_cols(tpl_id,fid,label,pos,enabled,aliases,xtype,xopt,xform)"
+        " VALUES(?,?,?,?,?,?,?,?,?)",
+        tpl_id, fid, (label or '').strip() or '新列', mx + 1, 1,
+        (label or '').strip(), xtype or 'text', xopt or '', xform or '')
+    return fid
+
+def del_custom_col(tpl_id, fid):
+    """删自定义列（连带清掉已存的值）"""
+    if not str(fid or '').startswith('x_'):
+        return False
+    run("DELETE FROM tpl_cols WHERE tpl_id=? AND fid=?", tpl_id, fid)
+    import json as _json
+    for tbl in ('materials', 'txns'):
+        for r in q("SELECT id, extra FROM %s WHERE extra IS NOT NULL AND extra<>''" % tbl):
+            try:
+                d = _json.loads(r['extra'] or '{}') or {}
+            except Exception:
+                continue
+            if fid in d:
+                d.pop(fid, None)
+                run("UPDATE %s SET extra=? WHERE id=?" % tbl,
+                    _json.dumps(d, ensure_ascii=False), r['id'])
+    return True
+
 # ---------- 库存模板 ----------
 def tpls():
     """全部模板（按排序）"""
@@ -729,9 +861,12 @@ def tpl_cols(tid, only_enabled=True):
 
 def save_tpl_cols(tid, rows):
     with tx() as c:
-        c.executemany("UPDATE tpl_cols SET label=?,pos=?,enabled=?,aliases=?"
+        c.executemany("UPDATE tpl_cols SET label=?,pos=?,enabled=?,aliases=?,"
+                      " xtype=?,xopt=?,xform=?"
                       " WHERE tpl_id=? AND fid=?",
-                      [(r['label'], r['pos'], r['enabled'], r['aliases'], tid, r['fid'])
+                      [(r['label'], r['pos'], r['enabled'], r['aliases'],
+                        r.get('xtype') or 'text', r.get('xopt') or '',
+                        r.get('xform') or '', tid, r['fid'])
                        for r in rows])
     return True
 
@@ -882,12 +1017,27 @@ def stats():
         path=DB_PATH,
     )
 
-def aliases_map():
-    """{系统字段: [别名...]}：自定义别名 + 自定义表头名，供 Excel 导入识别表头"""
+def aliases_map(tpl_id=None):
+    """{系统字段: [别名...]}：自定义别名 + 自定义表头名，供 Excel 导入识别表头。
+
+    模板制之后列配置存在 tpl_cols，colmap 是老表（v3.13 起不再更新）。
+    这里必须优先读模板，否则使用者在模板里自己起的表头名，导入时认不出来。"""
+    rows = []
+    if tpl_id:
+        rows = q("SELECT fid, label, aliases FROM tpl_cols WHERE tpl_id=?", tpl_id)
+    if not rows:
+        rows = [r for r in q("SELECT fid, label, aliases FROM tpl_cols")]
+    if not rows:
+        rows = q("SELECT fid, label, aliases FROM colmap")
     out = {}
-    for r in q("SELECT fid, label, aliases FROM colmap"):
+    for r in rows:
         al = [x.strip() for x in (r['aliases'] or '').split(',') if x.strip()]
         if r['label'] and r['label'] not in al:
             al.append(r['label'])
-        out[r['fid']] = al or [r['fid']]
+        # 同名不同列都收进来，别互相覆盖
+        old = out.get(r['fid']) or []
+        for x in al:
+            if x not in old:
+                old.append(x)
+        out[r['fid']] = old or [r['fid']]
     return out

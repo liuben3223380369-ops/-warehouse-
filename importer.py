@@ -340,7 +340,14 @@ def map_txn_headers(header, aliases=None, mat_aliases=None):
         for f in ['name', 'code'] + TXN_MAT_COLS:
             if f in out.values():
                 continue
-            if n in [_norm(x) for x in (names.get(f) or mat.get(f) or [])]:
+            # names（流水内置别名）和 mat（用户自定义别名）要合起来看。
+            # 原来写成 names.get(f) or mat.get(f)：name/code 在 names 里本来就有，
+            # 于是用户自己起的表头名永远轮不到，改名后导入就认不出来了。
+            pool = list(names.get(f) or [])
+            for x in (mat.get(f) or []):
+                if x not in pool:
+                    pool.append(x)
+            if n in [_norm(x) for x in pool]:
                 out[i] = f; break
     return out
 
@@ -671,7 +678,7 @@ def sniff_grid(grid, n=6, w=14):
             for r in grid[:n]]
 
 def parse_txn_file(path=None, stream=None, filename='', aliases=None, mat_aliases=None,
-                   default_kind=None, defmonth=None):
+                   default_kind=None, defmonth=None, xcols=None):
     """解析流水表。先按"一行一笔"解析；失败则按原表宽表解析。
     返回 (单据列表, 识别到的字段集合, 表头行号, 诊断信息)"""
     grid = _read_grid(path=path, stream=stream, filename=filename)
@@ -707,6 +714,19 @@ def parse_txn_file(path=None, stream=None, filename='', aliases=None, mat_aliase
             'heads': [str(v or '') for v in (raw[0] if raw else [])][:14],
         }
 
+    # 自定义列（客户订单号之类）：表头里能按列名对上的，一并读进来
+    if xcols:
+        for i, h in enumerate(raw[hi]):
+            if i in hmap:
+                continue
+            n = _norm(h)
+            if not n:
+                continue
+            for x in xcols:
+                if n == _norm(x['label']):
+                    hmap[i] = x['fid']
+                    break
+
     out = []
     for r in raw[hi + 1:]:
         def val(f):
@@ -728,6 +748,10 @@ def parse_txn_file(path=None, stream=None, filename='', aliases=None, mat_aliase
             base[f] = '' if v is None else str(v).strip()
             if f in ('opening', 'safety'):
                 base[f] = _num(v, hi=QTY_MAX)
+        # 自定义列的值：hmap 里已按列名对上，这里原样带出去
+        for k, f in hmap.items():
+            if str(f).startswith('x_') and k < len(r):
+                base[f] = '' if r[k] is None else str(r[k]).strip()
         # 数量：优先 进/出 分列，其次 数量 + 进出方向
         # 都加 QTY_MAX 上限：表里多输几个零不该把库存冲到天文数字
         ins = _num(val('in_qty'), hi=QTY_MAX)

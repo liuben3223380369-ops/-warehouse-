@@ -19,7 +19,7 @@ _safe_stdio()
 
 from flask import Flask, render_template, request, redirect, url_for
 from datetime import datetime, date
-import calendar, io, csv, os, time, sys
+import calendar, io, csv, os, time, sys, json
 from flask import Response
 from urllib.parse import quote
 import db, importer, purchase
@@ -204,6 +204,13 @@ def cleanup_tmp(max_age=3600):
         pass
 
 # ---------- 输入校验 ----------
+# 数量上限：表里多输几个零不该把库存冲到天文数字（v3.4 在导入侧已加，
+# 但手动录入和采购到货当时漏了 —— 同一类防护要覆盖全部入口）
+try:
+    from importer import QTY_MAX
+except Exception:
+    QTY_MAX = 1e9
+
 def num(v, default=0.0, lo=None, hi=None):
     """安全转数字：非法/NaN/Inf 一律返回默认值"""
     import math
@@ -484,7 +491,7 @@ def txn():
         try:
           with db.tx() as _cx:
             for i in range(nrow):
-                qty = num(request.form.get(f'qty_{i}'))
+                qty = num(request.form.get(f'qty_{i}'), hi=QTY_MAX)
                 vals = {f: (request.form.get(f'{f}_{i}') or '').strip() for f in
                         ('name', 'code', 'supplier', 'category', 'spec', 'width', 'unit', 'status')}
                 vals['opening'] = num(request.form.get(f'opening_{i}'))
@@ -525,6 +532,40 @@ def txn():
                        (d, mid, kind, qty, pieces, per, note,
                         datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                         sqm, rolls, tid))
+                _tid_new = _cx.execute("SELECT last_insert_rowid()").fetchone()[0]
+                # 自定义列：文本/数字/日期/单选 直接存；
+                # 公式列**不信前端**，后端按公式重算一遍，防手改表单提交假数
+                _xv = {}
+                for _xc in db.tpl_custom_cols(tid):
+                    _k = _xc['fid']
+                    _raw = (request.form.get(f'x_{i}_{_k}') or '').strip()
+                    if (_xc['xtype'] or 'text') == 'calc':
+                        _env = {'qty': qty, 'pieces': pieces or 0, 'per': per or 0,
+                                'spec': num(request.form.get(f'spec_{i}')),
+                                'width': num(request.form.get(f'width_{i}')),
+                                'sqm': sqm or 0, 'rolls': rolls or 0,
+                                'opening': num(request.form.get(f'opening_{i}')),
+                                'safety': num(request.form.get(f'safety_{i}'))}
+                        for _xc2 in db.tpl_custom_cols(tid):
+                            if (_xc2['xtype'] or 'text') == 'calc':
+                                continue
+                            _r2 = (request.form.get(f'x_{i}_{_xc2["fid"]}') or '').strip()
+                            try:
+                                _v2 = float(_r2) if _r2 else 0.0
+                            except ValueError:
+                                _v2 = 0.0
+                            _env[_xc2['fid']] = _v2
+                            # 公式里也可以直接写列名（如 qty*单价），更好记
+                            if _xc2['label']:
+                                _env[_xc2['label']] = _v2
+                        _got = db.calc_formula(_xc['xform'], _env)
+                        _xv[_k] = '' if _got is None else _got
+                    else:
+                        _xv[_k] = _raw
+                if _xv:
+                    import json as _json
+                    _cx.execute("UPDATE txns SET extra=? WHERE id=?",
+                                (_json.dumps(_xv, ensure_ascii=False), _tid_new))
                 saved += 1
         except Exception:
             # 不能静默吞掉：窗口模式没有控制台，不落盘就永远查不到原因
@@ -549,7 +590,40 @@ def txn():
                            TPLS=db.tpls(),
                            # sqlite3.Row 不能直接 tojson，前端只需要 fid/label 两列
                            col_defs=[{'fid': c['fid'], 'label': c['label']} for c in cols],
+                           xcols=[{'fid': x['fid'], 'label': x['label'],
+                                   'xtype': x['xtype'] or 'text',
+                                   'xopt': x['xopt'] or '', 'xform': x['xform'] or ''}
+                                  for x in db.tpl_custom_cols(tid)],
                            js_mats=js_mats_with_price(mats))
+
+def _all_custom_cols():
+    """所有模板的自定义列（按列名去重），供流水页 / 导出显示"""
+    out = []
+    for t in db.tpls():
+        for x in db.tpl_custom_cols(t['id']):
+            if x['label'] not in [y['label'] for y in out]:
+                out.append(x)
+    return out
+
+
+def _extra_map(rows):
+    """{单据id: {自定义列fid: 值}} —— 流水页显示自定义列用"""
+    import json as _json
+    m = {}
+    for r in rows or []:
+        raw = None
+        try:
+            raw = r['extra'] if 'extra' in r.keys() else None
+        except (IndexError, TypeError, KeyError):
+            raw = None
+        if not raw:
+            continue
+        try:
+            m[r['id']] = _json.loads(raw) or {}
+        except ValueError:
+            _log_err('流水页解析自定义列失败 txn id=%s' % r['id'])
+    return m
+
 
 @app.route('/out/list')
 def out_list():
@@ -574,7 +648,8 @@ def _kind_list(kind):
     tot = db.q("SELECT COALESCE(SUM(qty),0) s, COUNT(*) c FROM txns WHERE kind=?" +
                (" AND tdate LIKE ?" if m else ""), *([kind, m + '%'] if m else [kind]))[0]
     return render_template('txns.html', rows=db.q(sql, *args), d=d, m=m, kind=kind,
-                           total=tot['s'], count=tot['c'], url_kind='out_list' if kind == '出' else 'in_list')
+                           total=tot['s'], count=tot['c'], url_kind='out_list' if kind == '出' else 'in_list',
+                           XC=_all_custom_cols(), XVAL=_extra_map(db.q(sql, *args)))
 
 # ---------- 流水（出入库单据）Excel / WPS 导入 ----------
 @app.route('/txn/import', methods=['GET', 'POST'])
@@ -616,7 +691,8 @@ def txn_import():
             else:
                 rows, _, _, _ = importer.parse_txn_file(
                     path=p, default_kind=fixed or (request.form.get('defkind') or None),
-                    defmonth=(request.form.get('defdate') or '')[:7])
+                    defmonth=(request.form.get('defdate') or '')[:7],
+                    mat_aliases=db.aliases_map(tid), xcols=db.tpl_custom_cols(tid))
             dflt_date = (request.form.get('defdate') or '').strip() or today()
             allow_over = request.form.get('allow_over') == '1'
             fields = set((request.form.get('fields') or '').split(','))
@@ -686,6 +762,19 @@ def txn_import():
                          d.get('date') or dflt_date, mid, kind, qty, pc, per,
                          (num(d.get('price')) or None), d.get('note', ''),
                          datetime.now().strftime('%Y-%m-%d %H:%M:%S'), tid)
+                  # Excel 里列名能对上自定义列的，一并存进 extra
+                  _new_id = scalar("SELECT last_insert_rowid()")
+                  _xv = {}
+                  for _xc in db.tpl_custom_cols(tid):
+                      if (_xc['xtype'] or 'text') == 'calc':
+                          continue      # 公式列后端算，不认表格里的值
+                      _v = d.get(_xc['fid']) or d.get(_xc['label']) or ''
+                      if _v not in ('', None):
+                          _xv[_xc['fid']] = _v
+                  if _xv:
+                      import json as _json
+                      db.run("UPDATE txns SET extra=? WHERE id=?",
+                             _json.dumps(_xv, ensure_ascii=False), _new_id)
                   saved += 1
                   if kind == '进': n_in += 1
                   else: n_out += 1
@@ -783,7 +872,8 @@ def txn_import():
         try:
             rows, fields, hi, diag = importer.parse_txn_file(
                 path=tmp, default_kind=fixed or (request.form.get('defkind') or None),
-                defmonth=(request.form.get('defdate') or '')[:7])
+                defmonth=(request.form.get('defdate') or '')[:7],
+                mat_aliases=db.aliases_map(tid), xcols=db.tpl_custom_cols(tid))
         except Exception as e:
             return render_template('txn_import.html', fixed=fixed, TPLS=db.tpls(), tid=tid, ep=ep, err='解析失败：%s' % e)
         # 列名指纹：拿原始表头算，列名一样就自动归到同一个模板
@@ -864,6 +954,38 @@ def material_history(mid):
     return render_template('history.html', row=row, rows=rows, m=m, months=months,
                            amt_in=amt_in, amt_out=amt_out,
                            total_amount=amt_in - amt_out)
+
+@app.route('/tpl/<int:tid>/col/add', methods=['POST'])
+def tpl_col_add(tid):
+    """加一个系统里没有的自定义列（只属于这个模板）"""
+    if not take_nonce(request.form.get('_n')):
+        return redirect(url_for('tpl_cols_set', tid=tid, msg=''))
+    if not db.tpl(tid):
+        return redirect(url_for('tpls'))
+    label = (request.form.get('label') or '').strip()
+    if not label:
+        return redirect(url_for('tpl_cols_set', tid=tid, msg='列名不能为空'))
+    xtype = (request.form.get('xtype') or 'text').strip()
+    xform = (request.form.get('xform') or '').strip()
+    # 公式可以先建后补：在改表头页随时填，没公式时该列显示为空，不报错
+    for r in db.tpl_cols(tid, False):
+        if r['label'] == label:
+            return redirect(url_for('tpl_cols_set', tid=tid,
+                                    msg='已经有叫「%s」的列了' % label))
+    db.add_custom_col(tid, label, xtype,
+                      (request.form.get('xopt') or '').strip(), xform)
+    tip = {'text': '文本', 'number': '数字', 'date': '日期',
+           'select': '单选', 'calc': '公式'}.get(xtype, xtype)
+    msg = '已添加「%s」（%s列）' % (label, tip)
+    if xtype == 'calc' and not xform:
+        msg += '，记得在下面给它填公式（如 qty*price）'
+    return redirect(url_for('tpl_cols_set', tid=tid, msg=msg))
+
+@app.route('/tpl/<int:tid>/col/del/<fid>')
+def tpl_col_del(tid, fid):
+    if db.del_custom_col(tid, fid):
+        return redirect(url_for('tpl_cols_set', tid=tid, msg='自定义列已删除'))
+    return redirect(url_for('tpl_cols_set', tid=tid, msg='只能删除自定义列'))
 
 @app.route('/tpl/from_head', methods=['POST'])
 def tpl_from_head():
@@ -949,11 +1071,26 @@ def tpl_cols_set(tid):
                              pos=int(request.form.get(f'pos_{fid}') or 0),
                              enabled=1 if request.form.get(f'en_{fid}') else 0,
                              aliases=','.join(parts)))
+        # 字段类型 / 选项 / 公式
+        for r in rows:
+            fid = r['fid']
+            r['xtype'] = (request.form.get(f'xt_{fid}') or 'text').strip()
+            r['xopt'] = (request.form.get(f'xo_{fid}') or '').strip()
+            r['xform'] = (request.form.get(f'xf_{fid}') or '').strip()
         db.save_tpl_cols(tid, rows)
         return redirect(url_for('tpl_cols_set', tid=tid, msg='表头映射已保存'))
+    # 旧模板残留检测：只开 供应商/类型/状态/物料名称 之外的列，说明还是老配置
+    _keep = {'supplier', 'category', 'status', 'name'}
+    _extra = [r['label'] for r in db.tpl_cols(tid)
+              if r['enabled'] and r['fid'] not in _keep]
+    # 列名还是旧的（规格（米）/宽幅/单位（卷））也算残留
+    _old = {'规格（米）', '宽幅', '单位（卷）', '料号'}
+    for r in db.tpl_cols(tid):
+        if r['enabled'] and r['label'] in _old and r['label'] not in _extra:
+            _extra.append(r['label'])
     return render_template('columns.html', cols=db.tpl_cols(tid, False),
                            msg=request.args.get('msg', ''), CALC=db.CALC_COLS,
-                           tpl=t, TID=tid,
+                           tpl=t, TID=tid, EXTRA=_extra,
                            SAMPLE=['物料名称', '料号', '类型', '长', '宽', '供应商', '单位'])
 
 # ---------- 列（表头）映射设置 ----------
@@ -1059,6 +1196,7 @@ def txns():
     kw = clean_kw(request.args.get('kw'))
     sort = request.args.get('sort') or ''
     dir_ = request.args.get('dir') or ''
+    # t.* 已含 txns.extra（自定义列的值）
     sql = ("SELECT t.*, m.name, m.unit, m.code, m.category, %s AS amount FROM txns t"
            " JOIN materials m ON m.id=t.material_id" % AMT)
     w, args = [], []
@@ -1093,7 +1231,8 @@ def txns():
                            capped=(real_total > len(rows)),
                            url_kind='txns',
                            cur_sort=sort, cur_dir=dir_, qs={'d': d, 'kind': kind, 'kw': kw},
-                           msg=request.args.get('msg', ''))
+                           msg=request.args.get('msg', ''),
+                           XC=_all_custom_cols(), XVAL=_extra_map(rows))
 
 # ---------- 物料档案 ----------
 def _period_stats(m=None, d=None):
@@ -1676,12 +1815,30 @@ def export_xlsx():
     else:
         rows = _txn_rows(kw, d, request.args.get('kind') or '', sort, dir_)
         ws.title = '流水'
-        ws.append(['日期', '物料名称', '料号', '类型', '进/出', '数量', '件数', '每件',
-                   '单位', '单价', '金额', '备注'])
+        # 自定义列（客户订单号/单价/金额等）也一并导出
+        _xtid = int(request.args.get('tpl') or 0) or 0
+        _xcs = []
+        for _t in (db.tpls() if not _xtid else [db.tpl(_xtid)]):
+            if not _t:
+                continue
+            for _xc in db.tpl_custom_cols(_t['id']):
+                if _xc['label'] not in [x['label'] for x in _xcs]:
+                    _xcs.append(_xc)
+        _head = ['日期', '物料名称', '料号', '类型', '进/出', '数量', '件数', '每件',
+                 '单位', '单价', '金额', '备注'] + [x['label'] for x in _xcs]
+        ws.append(_head)
         for r in rows:
+            _ex = {}
+            if r['extra']:
+                try:
+                    _ex = json.loads(r['extra']) or {}
+                except ValueError:
+                    # 不能静默吞掉：之前就是静默 except 把 NameError 藏了三天
+                    _log_err('导出解析自定义列失败 txn extra=%r' % (r['extra'],)[:200])
             ws.append([r['tdate'], r['name'], r['code'], r['category'], r['kind'],
                        r['qty'], r['pieces'], r['per_piece'], r['unit'],
-                       r['price'], (r['amount'] if r['price'] else None), r['note']])
+                       r['price'], (r['amount'] if r['price'] else None), r['note']]
+                      + [csv_safe(_ex.get(x['fid'], '')) for x in _xcs])
         fn = ('出入库流水' + (d or m))
     for c in ws[1]:
         c.font = head_font; c.fill = fill; c.alignment = Alignment(horizontal='center')

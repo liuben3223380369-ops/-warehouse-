@@ -35,6 +35,7 @@
   {{ th('单价', 'price', 'n') }}
   {{ th('金额', 'amount', 'n') }}
   {{ th('备注', 'note') }}
+  {% for x in XC %}<th>{{x.label}}</th>{% endfor %}
   <th></th>
 </tr>
 {% for r in rows %}
@@ -49,6 +50,7 @@
  <td class="n">{% if r.price %}{{'%.2f'|format(r.price)}}{% endif %}</td>
  <td class="n">{% if r.price %}<b>{{'%.2f'|format(r.amount or 0)}}</b>{% endif %}</td>
  <td>{{r.note}}</td>
+ {% for x in XC %}<td>{{ (XVAL.get(r.id) or {}).get(x.fid,'') }}</td>{% endfor %}
  <td><a href="{{url_for('txn_del',tid=r.id)}}" onclick="return confirm('删除这条单据？')">✕</a></td>
 </tr>{% endfor %}</table></div>
 {% if real_total is defined and real_total > count %}
