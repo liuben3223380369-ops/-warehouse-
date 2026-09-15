@@ -3,6 +3,64 @@
 {% block h1 %}{{m[:4]}}年{{m[5:7]}}月 进出报表{% endblock %}
 {% block sub %}复刻原表布局：物料 × 每日进/出{% endblock %}
 {% block body %}
+{% if summary and summary|length %}
+<div class="card">
+  <h2>🧮 所有表总汇分析 <span class="pill">{{ summary|length }} 张表</span></h2>
+  {% if top %}
+  <div style="margin:6px 0;color:#3b4a5a;font-size:13px">
+    进出最活跃的是「<b>{{ top.name }}</b>」，本月进出合计 {{ '{:g}'.format(top.act) }}，
+    占全部 {{ '{:.1f}'.format(top.share if top.share else 0) }}%{% if top.tend %}；月末结存 {{ '{:g}'.format(top.tend) }}{% endif %}
+  </div>
+  {% endif %}
+  <table style="margin-top:6px">
+    <tr><th>表</th><th>物料</th><th>进</th><th>出</th><th>进出合计</th><th>占比</th><th>月末结存</th></tr>
+    {% for g in summary %}
+    <tr>
+      <td>{{ g.name }}</td>
+      <td>{{ g.n }} 种</td>
+      <td>{{ '{:g}'.format(g.tin) }}</td>
+      <td>{{ '{:g}'.format(g.tout) }}</td>
+      <td>{{ '{:g}'.format(g.act) }}</td>
+      <td>{{ '{:.1f}'.format(g.share) }}%</td>
+      <td>{{ '{:g}'.format(g.tend) }}</td>
+    </tr>
+    {% endfor %}
+    <tr style="font-weight:600;background:#f5f7fa">
+      <td>总汇</td><td>{{ summary|sum(attribute='n') }} 种</td>
+      <td>{{ '{:g}'.format(tot_in) }}</td>
+      <td>{{ '{:g}'.format(tot_out) }}</td>
+      <td>{{ '{:g}'.format(total_all) }}</td>
+      <td>100%</td><td>—</td>
+    </tr>
+  </table>
+</div>
+{% endif %}
+
+{% if groups and groups|length > 0 %}
+<div class="card">
+  <b>各模板分别统计</b>
+  <table style="margin-top:6px">
+    <tr><th>模板</th><th>物料</th><th>本月进</th><th>本月出</th><th>月末结存</th></tr>
+    {% for g in groups %}
+    <tr>
+      <td>{{ g.name }}</td>
+      <td>{{ g.n }} 种</td>
+      <td>{{ '{:g}'.format(g.tin) }}</td>
+      <td>{{ '{:g}'.format(g.tout) }}</td>
+      <td>{{ '{:g}'.format(g.tend) }}</td>
+    </tr>
+    {% endfor %}
+    <tr style="font-weight:600;background:#f5f7fa">
+      <td>合计</td><td>{{ groups|sum(attribute='n') }} 种</td>
+      <td>{{ '{:g}'.format(tot_in) }}</td><td>{{ '{:g}'.format(tot_out) }}</td><td>—</td>
+    </tr>
+  </table>
+  <div style="margin-top:4px;color:#5a6b7c;font-size:12px">
+    下面是所有模板的物料混在一起的原版表；上面按模板拆开看。
+  </div>
+</div>
+{% endif %}
+
 <form class="card" method="get">
   <label>选择月份</label>
   <input type="month" name="m" value="{{m}}">

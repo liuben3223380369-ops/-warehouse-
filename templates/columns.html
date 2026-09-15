@@ -1,8 +1,23 @@
 {% extends 'base.html' %}
-{% block title %}表头映射设置{% endblock %}
+{% block title %}表头映射设置
+
+{% endblock %}
 {% block h1 %}表头映射设置{% endblock %}
 {% block sub %}改表头名称 / 显示哪些列 / 导入时的别名{% endblock %}
 {% block body %}
+{% if CALC %}
+<div class="card" style="background:#eef4ff;border-left:3px solid #1f6feb">
+  <b>自动换算列</b><div style="margin-top:6px;color:#3b4a5a;font-size:13px;line-height:1.7">
+  启用「长」和「宽」后：<br>
+  · <b>平米</b> = 长 × 宽<br>
+  · <b>卷料</b> = 平米 ÷ 宽，取整数；除不尽的余料会自动写进备注（如「余料 1.5 平米」）<br>
+  这两列在录入页是只读的，由系统算出，不用手填。
+  </div>
+</div>
+{% endif %}
+
+
+
 
 {% if msg %}<div class="card" style="background:#e8f6ee;border-left:3px solid #12a150">{{msg}}</div>{% endif %}
 

@@ -13,9 +13,26 @@
 {% endif %}
 {% if msg %}<div class="card" style="background:#e8f6ee;border-left:3px solid #12a150">{{msg}}</div>{% endif %}
 
+{% if TPLS %}
+<div class="card" style="background:#eef4ff;border-left:3px solid #1f6feb">
+  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+    <b style="font-size:14px">库存模板</b>
+    <span style="flex:1"></span>
+    {% for t in TPLS %}
+      <a class="btn s {{ '' if t.id==tid else 'o' }}" href="{{ url_for(ep, tpl=t.id) }}">{{ t.name }}</a>
+    {% endfor %}
+    <a class="btn s o" href="{{ url_for('tpls') }}">⚙ 管理</a>
+  </div>
+  <div style="margin-top:4px;color:#3b4a5a;font-size:12px">
+    录进去的物料和单据会存到「{% for t in TPLS %}{% if t.id==tid %}{{ t.name }}{% endif %}{% endfor %}」，列也是这个模板自己的
+  </div>
+</div>
+{% endif %}
+
 <form method="post" id="f">
 <input type="hidden" name="_n" value="{{new_nonce()}}">
 <input type="hidden" name="nrow" id="nrow" value="{{n}}">
+<input type="hidden" name="tpl" value="{{tid}}">
 <div id="cards"></div>
 
 <div class="grid2" style="margin-top:12px">
@@ -95,8 +112,8 @@ function esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g,function(c){
 
 function fieldHtml(f, i, label){
   if(f==='name') return '';
-  var ph = {'code':'料号','supplier':'供应商','category':'类型','spec':'规格',
-            'width':'宽幅','unit':'单位','status':'状态','opening':'0','safety':'0'}[f] || '';
+  var ph = {'code':'料号','supplier':'供应商','category':'类型','spec':'长',
+            'width':'宽','unit':'单位','status':'状态','opening':'0','safety':'0'}[f] || '';
   if(f==='unit'){
     return '<div class="f"><label>'+label+'</label><input name="unit_'+i+'" list="ul" placeholder="平米" value="平米"></div>';
   }
@@ -107,7 +124,13 @@ function fieldHtml(f, i, label){
   if(f==='opening'||f==='safety'){
     return '<div class="f"><label>'+label+'</label><input name="'+f+'_'+i+'" inputmode="decimal" placeholder="0"></div>';
   }
-  return '<div class="f"><label>'+label+'</label><input name="'+f+'_'+i+'" placeholder="'+ph+'"></div>';
+  if(f==='sqm'||f==='rolls'){
+    return '<div class="f"><label>'+label+' <span style="color:#1f6feb;font-weight:400">自动算</span></label>'
+      +'<input name="'+f+'_'+i+'" id="'+f+'_'+i+'" inputmode="decimal" placeholder="自动计算" readonly'
+      +' style="background:#f2f4f7"></div>';
+  }
+  var extra = (f==='spec'||f==='width') ? ' class="dim" data-i="'+i+'" oninput="calcArea('+i+')"' : '';
+  return '<div class="f"><label>'+label+'</label><input name="'+f+'_'+i+'"'+extra+' placeholder="'+ph+'"></div>';
 }
 
 function cardHtml(i){
@@ -146,6 +169,28 @@ function cardHtml(i){
   h += '</div>';
   h += '</div>';
   return h;
+}
+
+// 长 × 宽 = 平米；平米 ÷ 宽 = 卷料（取整，余料自动写进备注）
+function numOf(v){ var x=parseFloat(String(v==null?'':v).trim()); return isFinite(x)&&x>0?x:null; }
+function calcArea(i){
+  var L=numOf((document.querySelector('[name=spec_'+i+']')||{}).value);
+  var W=numOf((document.querySelector('[name=width_'+i+']')||{}).value);
+  var sq=(document.getElementById('sqm_'+i));
+  var ro=(document.getElementById('rolls_'+i));
+  var nt=(document.querySelector('[name=note_'+i+']'));
+  if(nt) nt.value = String(nt.value||'').replace(/\s*余料\s*[\d.]+\s*平米/g,'').trim();
+  if(L==null||W==null){ if(sq)sq.value=''; if(ro)ro.value=''; return; }
+  var s=Math.round(L*W*1e6)/1e6;
+  if(sq) sq.value=s;
+  if(ro){
+    var r=Math.floor(s/W + 1e-9);
+    ro.value=r;
+    var rest=Math.round((s-r*W)*1e6)/1e6;
+    if(rest>1e-6 && nt){
+      nt.value = (nt.value?nt.value+' ':'') + '余料 '+rest+' 平米';
+    }
+  }
 }
 
 function delCard(i){

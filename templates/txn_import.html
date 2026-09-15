@@ -3,6 +3,42 @@
 {% block h1 %}{% if fixed=='出' %}📤 出库导入{% elif fixed=='进' %}📥 入库导入{% else %}📝 出入库导入{% endif %}{% endblock %}
 {% block sub %}Excel / WPS 表格直接导入单据{% endblock %}
 {% block body %}
+{% if sig %}
+<div class="card" style="background:#eef4ff;border-left:3px solid #1f6feb">
+  <b style="font-size:14px">这张表的列名</b>
+  <div style="margin-top:4px;color:#3b4a5a;font-size:12px;line-height:1.7">
+    {{ hdr[:14]|join(' / ') }}{% if hdr|length>14 %} …共 {{ hdr|length }} 列{% endif %}
+  </div>
+  {% if sig_hit %}
+    <div style="margin-top:6px;color:#12a150;font-size:13px">
+      ✅ 列名和已有模板一致，已自动选中「{% for t in TPLS %}{% if t.id==tid %}{{ t.name }}{% endif %}{% endfor %}」，直接导入即可
+    </div>
+  {% else %}
+    <div style="margin-top:6px;color:#b26a00;font-size:13px">
+      ⚠️ 没见过这种列名。可以用它建个新模板，以后同样列名的表会自动归过来
+    </div>
+    <form method="post" action="{{ url_for('tpl_from_head') }}" style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">
+      <input type="hidden" name="_n" value="{{ new_nonce() }}">
+      <input type="hidden" name="hdr" value="{{ hdr|join('\t') }}">
+      <input name="name" placeholder="给这类表起个名字，如：卷料日报表" style="flex:1;min-width:160px" required>
+      <button type="submit" class="s">＋ 按表头建模板</button>
+    </form>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if TPLS %}
+<div class="card" style="padding:8px 10px">
+  <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+    <b style="font-size:14px">存到模板</b>
+    {% for t in TPLS %}
+      <a class="btn s {{ '' if t.id==tid else 'o' }}" href="{{ url_for(ep, tpl=t.id) }}">{{ t.name }}</a>
+    {% endfor %}
+  </div>
+  <div style="margin-top:4px;color:#5a6b7c;font-size:12px">导入的物料和单据会归到选中的模板</div>
+</div>
+{% endif %}
+
 
 <div class="card">
   <h2>① 表格怎么填</h2>

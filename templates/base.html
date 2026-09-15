@@ -126,6 +126,7 @@ title="切换字号 小/标准/大">A</button></div></header>
 <a href="{{url_for('index')}}" class="{{'on' if ep=='index'}}"><i>📊</i>首页</a>
 <a href="{{url_for('in')}}" class="{{'on' if ep in ('in','in_list')}}"><i>📥</i>入库</a>
 <a href="{{url_for('out')}}" class="{{'on' if ep in ('out','out_list')}}"><i>📤</i>出库</a>
+<a href="{{url_for('tpls')}}" class="{{'on' if ep=='tpls'}}"><i>🗂</i>模板</a>
 <a href="{{url_for('purchase_home')}}" class="{{'on' if ep in ('purchase_home','po_new','po_detail','suppliers')}}"><i>🛒</i>采购</a>
 <a href="{{url_for('txns')}}" class="{{'on' if ep=='txns'}}"><i>📝</i>流水</a>
 <a href="{{url_for('materials')}}" class="{{'on' if ep.startswith('material')}}"><i>🗂</i>物料</a>

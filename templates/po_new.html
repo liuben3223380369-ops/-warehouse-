@@ -18,6 +18,13 @@
     <div><label>要求交期</label><input type="date" name="ddate"></div>
   </div>
 
+  {% if TPLS %}
+  <div class="rowflex">
+    <div style="flex:1"><label>存到库存模板</label><select name="tpl">
+      {% for t in TPLS %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}
+    </select></div>
+  </div>
+  {% endif %}
   <div class="rowflex">
     <div><label>税率 %</label><input name="tax_rate" inputmode="decimal" value="13"
       oninput="calcAll()"></div>

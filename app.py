@@ -401,9 +401,13 @@ def _fingerprint(vals):
     if wd: parts.append('宽' + wd)
     return '|'.join(parts)
 
-def _resolve_material(vals):
+def _resolve_material(vals, sqm=None, rolls=None, tpl_id=None):
     """按 料号 -> 名称+规格指纹 匹配物料；匹配到则用行内 A-G 值同步档案，否则新建。
     返回 (material_id, is_new)"""
+    # 没指定模板（比如从 Excel 导入）时归入默认模板，
+    # 否则这些物料会变成"无模板"，库存页和月报都统计不到
+    if tpl_id is None:
+        tpl_id = db.default_tpl_id()
     name = (vals.get('name') or '').strip()
     code = (vals.get('code') or '').strip()
     hit = None
@@ -428,18 +432,21 @@ def _resolve_material(vals):
         for f in ('name', 'code', 'supplier', 'category', 'spec', 'width', 'unit', 'status'):
             if f in vals and (vals[f] or '').strip():
                 sets.append("%s=?" % f); vs.append((vals[f] or '').strip() or None)
+        for f, v in (('sqm', sqm), ('rolls', rolls)):
+            if v is not None:
+                sets.append("%s=?" % f); vs.append(v)
         if sets:
             vs.append(mid)
             db.run("UPDATE materials SET " + ",".join(sets) + " WHERE id=?", *vs)
         return mid, False
     if not name:
         return None, False
-    mid = db.run("INSERT INTO materials(supplier,category,spec,width,name,code,unit,opening,safety,status)"
-                 " VALUES(?,?,?,?,?,?,?,?,?,?)",
+    mid = db.run("INSERT INTO materials(supplier,category,spec,width,name,code,unit,opening,safety,status,sqm,rolls,tpl_id)"
+                 " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                  vals.get('supplier', ''), vals.get('category', ''), vals.get('spec', ''),
                  vals.get('width', ''), name, code, (vals.get('unit') or '').strip() or '平米',
                  float(vals.get('opening') or 0), float(vals.get('safety') or 0),
-                 (vals.get('status') or '').strip() or '常用')
+                 (vals.get('status') or '').strip() or '常用', sqm, rolls, tpl_id)
     return mid, True
 
 @app.route('/txn', methods=['GET', 'POST'], endpoint='txn')
@@ -449,7 +456,11 @@ def txn():
     """表格录单。/in 默认入库、/out 默认出库（且锁定为出库）、/txn 通用"""
     ep = request.endpoint
     fixed = '出' if ep == 'out' else ('进' if ep == 'in' else None)
-    cols = db.cols()
+    # 模板：入库/出库/录单都按选中的模板加载列；没指定就用第一个模板
+    tid = int(request.values.get('tpl') or 0) or db.default_tpl_id()
+    if not db.tpl(tid):
+        tid = db.default_tpl_id()
+    cols = db.tpl_cols(tid)
     fids = [c['fid'] for c in cols]
     only_stock = fixed == '出' and request.args.get('allm') != '1'
     mats = [dict(r) for r in db.q(
@@ -482,13 +493,26 @@ def txn():
                                             request.form.get(f'per_{i}'))
                 if qty <= 0 or (not vals['name'] and not vals['code']):
                     continue
-                mid, is_new = _resolve_material(vals)
+                # 长 × 宽 = 平米；平米 ÷ 宽 = 卷料（取整，余料自动写备注）
+                # 使用者没启用这两列时算不出来，保持空，不瞎填 0
+                sqm = rolls = rest = None; note_rest = ''
+                if 'sqm' in fids or 'rolls' in fids:
+                    sqm, rolls, rest = db.calc_area(vals)
+                    if rest:
+                        note_rest = db.rest_note(rest)
+                mid, is_new = _resolve_material(vals, sqm=sqm, rolls=rolls, tpl_id=tid)
                 if not mid:
                     continue
                 newmat += is_new
                 d = safe_date(request.form.get(f'tdate_{i}'), dflt)
                 kind = fixed or (request.form.get(f'kind_{i}') or '进')
                 note = (request.form.get(f'note_{i}') or '').strip()
+                if sqm is not None and 'sqm' in fids:
+                    vals['sqm'] = sqm
+                if rolls is not None and 'rolls' in fids:
+                    vals['rolls'] = rolls
+                if rest and note_rest and note_rest not in note:
+                    note = (note + ' ' if note else '') + note_rest
                 if kind == '出':                      # 出库不允许超出现有库存
                     stock = scalar("SELECT stock FROM v_stock WHERE id=?", mid, default=0)
                     if qty > stock + 1e-9:
@@ -497,9 +521,10 @@ def txn():
                         continue
                 # 单价不在录单页填 —— 入库成本来自采购单，采购到货时写入
                 _cx.execute("INSERT INTO txns(tdate,material_id,kind,qty,pieces,per_piece,"
-                       "note,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                       "note,created_at,sqm,rolls,tpl_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                        (d, mid, kind, qty, pieces, per, note,
-                        datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        sqm, rolls, tid))
                 saved += 1
         except Exception:
             # 不能静默吞掉：窗口模式没有控制台，不落盘就永远查不到原因
@@ -513,14 +538,15 @@ def txn():
         if blocked:
             tip += '；%d 行因超出库存未保存：%s' % (blocked, '、'.join(names[:3]))
         if request.form.get('stay'):
-            return redirect(url_for(back, msg=tip, n=request.form.get('nrow')))
-        return redirect(url_for('txns', msg=tip, kind=fixed or ''))
+            return redirect(url_for(back, msg=tip, n=request.form.get('nrow'), tpl=tid))
+        return redirect(url_for('txns', msg=tip, kind=fixed or '', tpl=tid))
 
     n = min(int(request.args.get('n') or 5), MAX_ROWS)
     return render_template('txn.html', cols=cols, fids=fids, mats=mats, msg=msg,
                            fixed=fixed, ep=ep, only_stock=only_stock,
                            allm=request.args.get('allm') == '1',
-                           tdate=today(), rows=range(n), n=n,
+                           tdate=today(), rows=range(n), n=n, tid=tid,
+                           TPLS=db.tpls(),
                            # sqlite3.Row 不能直接 tojson，前端只需要 fid/label 两列
                            col_defs=[{'fid': c['fid'], 'label': c['label']} for c in cols],
                            js_mats=js_mats_with_price(mats))
@@ -558,6 +584,10 @@ def txn_import():
     ep = request.endpoint
     fixed = '出' if ep == 'out_import' else ('进' if ep == 'in_import' else None)
     back = 'out' if fixed == '出' else ('in' if fixed == '进' else 'txn')
+    # 导入也能选模板：导进来的物料/单据归到选中的模板
+    tid = int(request.values.get('tpl') or 0) or db.default_tpl_id()
+    if not db.tpl(tid):
+        tid = db.default_tpl_id()
 
     if request.method == 'POST':
         mode = request.form.get('mode', 'merge')
@@ -567,7 +597,7 @@ def txn_import():
                     msg='这批单据已经导入过了，请不要重复提交'))
             p = os.path.join(TMP, os.path.basename(request.form.get('f', '')))
             if not os.path.exists(p):
-                return render_template('txn_import.html', fixed=fixed,
+                return render_template('txn_import.html', fixed=fixed, TPLS=db.tpls(), tid=tid, ep=ep,
                                        err='预览已过期，请重新选择文件')
             if request.form.get('manual') == '1':
                 colmap = {}
@@ -621,7 +651,7 @@ def txn_import():
                           ('name', 'code', 'supplier', 'category', 'spec', 'width', 'unit', 'status')}
                   vals['opening'] = d.get('opening', 0)
                   vals['safety'] = d.get('safety', 0)
-                  mid, is_new = _resolve_material(vals)
+                  mid, is_new = _resolve_material(vals, tpl_id=tid)
                   if not mid:
                       continue
                   newmat += is_new
@@ -652,17 +682,17 @@ def txn_import():
                   if qty <= 0:
                       continue
                   db.run("INSERT INTO txns(tdate,material_id,kind,qty,pieces,per_piece,price,"
-                         "note,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                         "note,created_at,tpl_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
                          d.get('date') or dflt_date, mid, kind, qty, pc, per,
                          (num(d.get('price')) or None), d.get('note', ''),
-                         datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                         datetime.now().strftime('%Y-%m-%d %H:%M:%S'), tid)
                   saved += 1
                   if kind == '进': n_in += 1
                   else: n_out += 1
             except Exception as e:
                 try: os.remove(p)
                 except OSError: pass
-                return render_template('txn_import.html', fixed=fixed,
+                return render_template('txn_import.html', fixed=fixed, TPLS=db.tpls(), tid=tid, ep=ep,
                     err='导入失败，已全部回滚（数据未改动）：%s' % e)
             try: os.remove(p)
             except OSError: pass
@@ -697,7 +727,7 @@ def txn_import():
         if request.form.get('manual') == '1':
             p = os.path.join(TMP, os.path.basename(request.form.get('f', '')))
             if not os.path.exists(p):
-                return render_template('txn_import.html', fixed=fixed,
+                return render_template('txn_import.html', fixed=fixed, TPLS=db.tpls(), tid=tid, ep=ep,
                                        err='预览已过期，请重新选择文件')
             colmap = {}
             for k in request.form.keys():
@@ -710,19 +740,19 @@ def txn_import():
             except ValueError:
                 start = 1
             if 'name' not in colmap.values() and 'code' not in colmap.values():
-                return render_template('txn_import.html', fixed=fixed,
+                return render_template('txn_import.html', fixed=fixed, TPLS=db.tpls(), tid=tid, ep=ep,
                                        err='至少要指定一列是「物料名称」或「料号」')
             try:
                 rows = importer.parse_txn_by_map(
                     path=p, colmap=colmap, start=start, default_kind=fixed,
                     defdate=request.form.get('defdate') or today())
             except Exception as e:
-                return render_template('txn_import.html', fixed=fixed, err='解析失败：%s' % e)
+                return render_template('txn_import.html', fixed=fixed, TPLS=db.tpls(), tid=tid, ep=ep, err='解析失败：%s' % e)
             if not rows:
-                return render_template('txn_import.html', fixed=fixed,
+                return render_template('txn_import.html', fixed=fixed, TPLS=db.tpls(), tid=tid, ep=ep,
                                        err='按你指定的列没读到数据，检查一下起始行是不是选错了')
             fields = sorted(set(colmap.values()))
-            return render_template('txn_import.html', fixed=fixed, preview=rows[:60],
+            return render_template('txn_import.html', fixed=fixed, TPLS=db.tpls(), tid=tid, ep=ep, preview=rows[:60],
                                    total=len(rows), fields=fields,
                                    fields_str=','.join(fields),
                                    f=os.path.basename(p),
@@ -733,29 +763,39 @@ def txn_import():
 
         f = request.files.get('file')
         if not f or not f.filename:
-            return render_template('txn_import.html', fixed=fixed, err='请选择文件')
+            return render_template('txn_import.html', fixed=fixed, TPLS=db.tpls(), tid=tid, ep=ep, err='请选择文件')
         fn = safe_name(f.filename, 'x.xlsx').lower()
         if not fn.endswith(('.xlsx', '.xlsm', '.xls', '.et', '.csv')):
-            return render_template('txn_import.html', fixed=fixed,
+            return render_template('txn_import.html', fixed=fixed, TPLS=db.tpls(), tid=tid, ep=ep,
                                    err='只支持 .xlsx / .xlsm / .xls / .et / .csv')
         # 先看大小再落盘：超大文件直接拒，别把磁盘写满
         f.seek(0, os.SEEK_END); size = f.tell(); f.seek(0)
         if size > MAX_UPLOAD:
-            return render_template('txn_import.html', fixed=fixed,
+            return render_template('txn_import.html', fixed=fixed, TPLS=db.tpls(), tid=tid, ep=ep,
                                    err='文件太大（%.1f MB），上限 %d MB。'
                                        '请拆分后再导入。' % (size / 1048576.0, MAX_UPLOAD // 1048576))
         tmp = os.path.join(TMP, '%d_%s' % (int(time.time() * 1000), fn))
         try:
             f.save(tmp)
         except (ValueError, OSError):
-            return render_template('txn_import.html', fixed=fixed,
+            return render_template('txn_import.html', fixed=fixed, TPLS=db.tpls(), tid=tid, ep=ep,
                                    err='文件名不合法，请改成普通中文/英数字再试')
         try:
             rows, fields, hi, diag = importer.parse_txn_file(
                 path=tmp, default_kind=fixed or (request.form.get('defkind') or None),
                 defmonth=(request.form.get('defdate') or '')[:7])
         except Exception as e:
-            return render_template('txn_import.html', fixed=fixed, err='解析失败：%s' % e)
+            return render_template('txn_import.html', fixed=fixed, TPLS=db.tpls(), tid=tid, ep=ep, err='解析失败：%s' % e)
+        # 列名指纹：拿原始表头算，列名一样就自动归到同一个模板
+        try:
+            _grid = importer._read_grid(path=tmp)
+            _hdr = _grid[0] if _grid else []
+        except Exception:
+            _hdr = []
+        _sig = db.head_sig(_hdr)
+        _hit = db.tpl_by_sig(_sig)
+        if _hit and (request.values.get('tpl') or 0) in ('', '0', None, 0):
+            tid = _hit['id']          # 认出是同一张表，自动选中
         if not rows:
             why = (diag or {}).get('why')
             if why == 'no-header':
@@ -768,12 +808,12 @@ def txn_import():
                 err = '没读到有效单据。'
             grid = (diag or {}).get('grid') or []
             ncol = max([len(r) for r in grid] or [0])
-            return render_template('txn_import.html', fixed=fixed, err=err, diag=diag,
+            return render_template('txn_import.html', fixed=fixed, TPLS=db.tpls(), tid=tid, ep=ep, err=err, diag=diag,
                                    grid=grid, ncol=range(ncol),
                                    f=os.path.basename(tmp),
                                    defkind=request.form.get('defkind') or '',
                                    defdate=request.form.get('defdate') or today())
-        return render_template('txn_import.html', fixed=fixed, preview=rows[:60],
+        return render_template('txn_import.html', fixed=fixed, TPLS=db.tpls(), tid=tid, ep=ep, preview=rows[:60],
                                total=len(rows), fields=sorted(fields),
                                fields_str=','.join(sorted(fields)),
                                f=os.path.basename(tmp),
@@ -781,8 +821,9 @@ def txn_import():
                                skipped_sum=(diag or {}).get('skipped_sum') or 0,
                                defkind=request.form.get('defkind') or '',
                                defdate=request.form.get('defdate') or today(),
-                               wide=(hi == -2))
-    return render_template('txn_import.html', fixed=fixed, defdate=today())
+                               wide=(hi == -2), sig=_sig, hdr=_hdr,
+                               sig_hit=(_hit['id'] if _hit else 0))
+    return render_template('txn_import.html', fixed=fixed, TPLS=db.tpls(), tid=tid, ep=ep, defdate=today())
 
 @app.route('/txn/import/tpl')
 def txn_import_tpl():
@@ -824,6 +865,97 @@ def material_history(mid):
                            amt_in=amt_in, amt_out=amt_out,
                            total_amount=amt_in - amt_out)
 
+@app.route('/tpl/from_head', methods=['POST'])
+def tpl_from_head():
+    """用刚上传那张表的表头一键建模板（列名完全相同的表以后自动归到这里）"""
+    if not take_nonce(request.form.get('_n')):
+        return redirect(url_for('tpls', msg='这个模板已经建过了，请不要重复提交'))
+    name = (request.form.get('name') or '').strip()
+    if not name:
+        return redirect(url_for('tpls', msg='模板名字不能为空'))
+    for t in db.tpls():
+        if t['name'] == name:
+            return redirect(url_for('tpls', msg='已经有叫「%s」的模板了' % name))
+    raw = (request.form.get('hdr') or '')
+    heads = [x for x in raw.split('\t') if x.strip()]
+    if not heads:
+        return redirect(url_for('tpls', msg='没拿到表头，请重新上传文件'))
+    tid = db.tpl_from_headers(heads, name=name, keep=1)
+    return redirect(url_for('tpl_cols_set', tid=tid,
+                    msg='已按表头建好「%s」，共 %d 列；以后列名一样的表会自动归到这里'
+                        % (name, len(heads))))
+
+# ---------- 库存模板（一套列配置 = 一个模板） ----------
+@app.route('/tpls')
+def tpls():
+    """模板列表：每个模板显示自己的列、物料数、单据数"""
+    rows = []
+    for t in db.tpls():
+        nm, nt = db.tpl_stat(t['id'])
+        rows.append(dict(id=t['id'], name=t['name'], note=t['note'],
+                         mats=nm, txns=nt,
+                         cols=[c['label'] for c in db.tpl_cols(t['id'])]))
+    return render_template('tpls.html', rows=rows, msg=request.args.get('msg', ''))
+
+@app.route('/tpl/add', methods=['POST'])
+def tpl_add():
+    if not take_nonce(request.form.get('_n')):
+        return redirect(url_for('tpls', msg='这个模板已经建过了，请不要重复提交'))
+    name = (request.form.get('name') or '').strip()
+    if not name:
+        return redirect(url_for('tpls', msg='模板名字不能为空'))
+    for t in db.tpls():                     # 不许重名，否则选的时候分不清
+        if t['name'] == name:
+            return redirect(url_for('tpls', msg='已经有叫「%s」的模板了' % name))
+    copy_from = int(request.form.get('copy_from') or 0) or None
+    tid = db.add_tpl(name, (request.form.get('note') or '').strip(), copy_from=copy_from)
+    return redirect(url_for('tpls', msg='已新建模板「%s」，去「改表头」配置它的列' % name))
+
+@app.route('/tpl/rename/<int:tid>', methods=['POST'])
+def tpl_rename(tid):
+    if not take_nonce(request.form.get('_n')):
+        return redirect(url_for('tpls', msg='已经改过了，请不要重复提交'))
+    name = (request.form.get('name') or '').strip()
+    if not name:
+        return redirect(url_for('tpls', msg='模板名字不能为空'))
+    db.rename_tpl(tid, name, (request.form.get('note') or '').strip())
+    return redirect(url_for('tpls', msg='已改名为「%s」' % name))
+
+@app.route('/tpl/del/<int:tid>')
+def tpl_del(tid):
+    ok, msg = db.del_tpl(tid)
+    return redirect(url_for('tpls', msg=msg))
+
+@app.route('/tpl/cols/<int:tid>', methods=['GET', 'POST'])
+def tpl_cols_set(tid):
+    """某个模板的列配置（改表头）"""
+    t = db.tpl(tid)
+    if not t:
+        return redirect(url_for('tpls', msg='模板不存在'))
+    if request.method == 'POST':
+        if request.form.get('reset'):
+            db.reset_tpl_cols(tid)
+            return redirect(url_for('tpl_cols_set', tid=tid, msg='已恢复默认表头'))
+        rows = []
+        for r in db.q("SELECT fid,aliases FROM tpl_cols WHERE tpl_id=?", tid):
+            fid = r['fid']
+            label = (request.form.get(f'label_{fid}') or '').strip() or fid
+            aliases = (request.form.get(f'al_{fid}') or '').strip()
+            # 改名后必须把新名字并进别名，否则导入认不出使用者自己起的名字
+            parts = [x.strip() for x in aliases.split(',') if x.strip()]
+            if label and label not in parts:
+                parts.insert(0, label)
+            rows.append(dict(fid=fid, label=label,
+                             pos=int(request.form.get(f'pos_{fid}') or 0),
+                             enabled=1 if request.form.get(f'en_{fid}') else 0,
+                             aliases=','.join(parts)))
+        db.save_tpl_cols(tid, rows)
+        return redirect(url_for('tpl_cols_set', tid=tid, msg='表头映射已保存'))
+    return render_template('columns.html', cols=db.tpl_cols(tid, False),
+                           msg=request.args.get('msg', ''), CALC=db.CALC_COLS,
+                           tpl=t, TID=tid,
+                           SAMPLE=['物料名称', '料号', '类型', '长', '宽', '供应商', '单位'])
+
 # ---------- 列（表头）映射设置 ----------
 @app.route('/columns', methods=['GET', 'POST'])
 def columns():
@@ -832,17 +964,25 @@ def columns():
             db.reset_cols()
             return redirect(url_for('columns', msg='已恢复默认表头'))
         rows = []
-        for r in db.q("SELECT fid FROM colmap"):
+        for r in db.q("SELECT fid,aliases FROM colmap"):
             fid = r['fid']
-            rows.append(dict(fid=fid,
-                             label=(request.form.get(f'label_{fid}') or '').strip() or fid,
+            label = (request.form.get(f'label_{fid}') or '').strip() or fid
+            aliases = (request.form.get(f'al_{fid}') or '').strip()
+            # 改名后必须把新名字并进别名：否则导入时按旧别名找列，
+            # 使用者自己起的名字（比如把"规格"改成"长度"）认不出来，数据落错字段。
+            parts = [x.strip() for x in aliases.split(',') if x.strip()]
+            if label and label not in parts:
+                parts.insert(0, label)
+            rows.append(dict(fid=fid, label=label,
                              pos=int(request.form.get(f'pos_{fid}') or 0),
                              enabled=1 if request.form.get(f'en_{fid}') else 0,
-                             aliases=(request.form.get(f'al_{fid}') or '').strip()))
+                             aliases=','.join(parts)))
         db.save_cols(rows)
         return redirect(url_for('columns', msg='表头映射已保存'))
-    return render_template('columns.html', cols=db.cols(False), msg=request.args.get('msg', ''),
-                           SAMPLE=['物料名称', '料号', '类型', '规格', '宽幅', '供应商', '单位', '期初结存', '安全库存', '状态'])
+    cols = db.cols(False)
+    return render_template('columns.html', cols=cols, msg=request.args.get('msg', ''),
+                           CALC=db.CALC_COLS,
+                           SAMPLE=['物料名称', '料号', '类型', '长', '宽', '供应商', '单位', '期初结存', '安全库存', '状态'])
 
 @app.route('/txn/del/<int:tid>')
 def txn_del(tid):
@@ -1275,7 +1415,11 @@ def stock():
     kw = clean_kw(request.args.get('kw'))
     sort = request.args.get('sort') or ''
     dir_ = request.args.get('dir') or ''
+    tid = int(request.args.get('tpl') or 0)      # 0 = 全部模板
     w, args = [], []
+    if tid:
+        w.append("COALESCE(tpl_id,0)=?")
+        args.append(tid)
     if f == 'alert':
         w.append("stock<=safety")
     elif f == 'zero':
@@ -1295,7 +1439,8 @@ def stock():
         sql += ", name"
     rows = db.q(sql, *args)
     return render_template('stock.html', rows=rows, f=f, kw=kw, cur_sort=sort, cur_dir=dir_,
-                           qs={'f': f, 'kw': kw})
+                           qs={'f': f, 'kw': kw, 'tpl': tid or ''},
+                           TPLS=db.tpls(), tid=tid)
 
 # ---------- 月报表（复刻原模板布局） ----------
 def _report_insights(m, top=5):
@@ -1458,8 +1603,40 @@ def report():
     except Exception:
         _log_err('月报洞察统计失败')
         ins = None
+    # 按模板分组：每个模板单独统计，所有模板都保留（不合并、不丢弃）
+    groups = []
+    tid_of = {}
+    for r in db.q("SELECT id, COALESCE(tpl_id,0) t FROM materials"):
+        tid_of[r['id']] = r['t']
+    names = {t['id']: t['name'] for t in db.tpls()}
+    names[0] = '未归类'
+    bucket = {}
+    for mt in mats:
+        t = tid_of.get(mt['id'], 0)
+        bucket.setdefault(t, []).append(mt)
+    # 遍历全部模板（不是只遍历有物料的）：空模板也要显示，
+    # 否则使用者会以为某个模板丢了
+    for t in [x['id'] for x in db.tpls()] + ([0] if 0 in bucket else []):
+        g = bucket.get(t, [])
+        gin = sum(x['min'] for x in g)
+        gout = sum(x['mout'] for x in g)
+        groups.append(dict(tid=t, name=names.get(t, '模板%d' % t), mats=g,
+                           n=len(g), tin=gin, tout=gout,
+                           tend=sum(x['ending'] for x in g)))
+    # 总汇分析：所有表（模板）放一起看——哪家占比最大、进出最活跃
+    total_all = tot_in + tot_out
+    summary = []
+    for g in groups:
+        share = (g['tin'] + g['tout']) / total_all * 100 if total_all else 0
+        summary.append(dict(name=g['name'], n=g['n'], tin=g['tin'], tout=g['tout'],
+                            tend=g['tend'], share=round(share, 1),
+                            act=round(g['tin'] + g['tout'], 2)))
+    summary.sort(key=lambda x: -x['act'])
+    top = summary[0] if summary else None
     return render_template('report.html', m=m, days=days, mats=mats,
-                           tot_in=tot_in, tot_out=tot_out, ins=ins)
+                           tot_in=tot_in, tot_out=tot_out, ins=ins,
+                           groups=groups, TPLS=db.tpls(),
+                           summary=summary, top=top, total_all=round(total_all, 2))
 
 
 @app.route('/export.xlsx')
@@ -1862,9 +2039,9 @@ def po_new():
         supplier = (request.form.get('supplier') or '').strip()
         odate = safe_date(request.form.get('odate'))
         if not supplier:
-            return render_template('po_new.html', err='供应商必填',
-                                   mats=_mat_choices(), today=today(),
-                                   sups=_sup_names(), units=db.unit_choices())
+            return render_template('po_new.html', err='供应商必填', 
+                                   mats=_mat_choices(), today=today(), 
+                                   sups=_sup_names(), units=db.unit_choices(), TPLS=db.tpls())
         ddate = (request.form.get('ddate') or '').strip()
         if ddate and not is_date(ddate):
             ddate = ''
@@ -1886,11 +2063,16 @@ def po_new():
         try:
             with db.tx() as c:
                 pono = purchase.next_pono(odate)
+                # 模板：到货的物料和入库单存到选中的库存模板
+                _tid = int(request.form.get('tpl') or 0) or db.default_tpl_id()
+                if not db.tpl(_tid):
+                    _tid = db.default_tpl_id()
                 po_id = c.execute("INSERT INTO pos(pono,supplier,odate,ddate,status,"
-                                  "tax_rate,price_tax,note,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                                  "tax_rate,price_tax,note,created_at,tpl_id)"
+                                  " VALUES(?,?,?,?,?,?,?,?,?,?)",
                                   (pono, supplier, odate, ddate,
                                    request.form.get('status') or '已下单',
-                                   tax, price_tax, note, now)).lastrowid
+                                   tax, price_tax, note, now, _tid)).lastrowid
                 n = 0
                 for i in range(len(names)):
                     nm = (names[i] or '').strip()
@@ -1915,12 +2097,12 @@ def po_new():
                     n += 1
         except Exception:
             _log_err('采购单保存失败')
-            return render_template('po_new.html', err='保存失败，请重试（详情见 warehouse.log）',
-                                   mats=_mat_choices(), today=today(), sups=_sup_names())
+            return render_template('po_new.html', err='保存失败，请重试（详情见 warehouse.log）', 
+                                   mats=_mat_choices(), today=today(), sups=_sup_names(), TPLS=db.tpls())
         if n == 0:
             db.run("DELETE FROM pos WHERE id=?", (po_id,))
-            return render_template('po_new.html', err='至少要填一行物料（名称和数量）',
-                                   mats=_mat_choices(), today=today(), sups=_sup_names())
+            return render_template('po_new.html', err='至少要填一行物料（名称和数量）', 
+                                   mats=_mat_choices(), today=today(), sups=_sup_names(), TPLS=db.tpls())
         purchase.touch_supplier(supplier)
         # 建单时若手工选了"已完成"却还没到货，状态必须拉回事实：
         # 否则看板/汇总会显示"已完成"，实际一件没到，账实不符。
@@ -1935,7 +2117,7 @@ def po_new():
         return redirect(url_for('po_detail', po_id=po_id,
                                 msg='采购单 %s 已创建，%d 条明细' % (pono, n)))
     return render_template('po_new.html', mats=_mat_choices(), today=today(),
-                           sups=_sup_names(), units=db.unit_choices(), tax_default=13)
+                           sups=_sup_names(), units=db.unit_choices(), tax_default=13, TPLS=db.tpls())
 
 
 def _mat_choices():

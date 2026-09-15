@@ -132,6 +132,7 @@ CREATE TABLE IF NOT EXISTS pos (
   status     TEXT NOT NULL DEFAULT '草稿', /* 草稿/已下单/部分到货/已完成/已取消 */
   tax_rate   REAL NOT NULL DEFAULT 0,     /* 税率 % */
   price_tax  INTEGER NOT NULL DEFAULT 1,  /* 单价是否含税：1=含税 0=不含税 */
+  tpl_id     INTEGER,                     /* 到货存到哪个库存模板 */
   note       TEXT DEFAULT '',
   created_at TEXT NOT NULL
 );
@@ -199,6 +200,26 @@ CREATE TABLE IF NOT EXISTS colmap (
   pos     INTEGER NOT NULL DEFAULT 0,
   enabled INTEGER NOT NULL DEFAULT 1,
   aliases TEXT    DEFAULT ''
+);
+
+/* ============ 库存模板（v3.13）：一套列配置 = 一个模板 ============ */
+CREATE TABLE IF NOT EXISTS tpl (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  name    TEXT    NOT NULL,
+  note    TEXT    DEFAULT '',
+  pos     INTEGER NOT NULL DEFAULT 0,
+  created TEXT    DEFAULT '',
+  sig     TEXT    DEFAULT ''   /* 列名指纹：表头列名规范化后排序拼接，用于自动归类 */
+);
+-- 每个模板自己的列配置（colmap 是老表，仅为兼容保留）
+CREATE TABLE IF NOT EXISTS tpl_cols (
+  tpl_id  INTEGER NOT NULL,
+  fid     TEXT    NOT NULL,
+  label   TEXT    NOT NULL,
+  pos     INTEGER NOT NULL DEFAULT 0,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  aliases TEXT    DEFAULT '',
+  PRIMARY KEY(tpl_id, fid)
 );
 """
 
@@ -347,6 +368,19 @@ def migrate():
     for col, ddl in (('pieces', 'REAL'), ('per_piece', 'REAL'), ('price', 'REAL')):
         if col not in _cols('txns'):
             run("ALTER TABLE txns ADD COLUMN %s %s" % (col, ddl))
+    # 长宽→平米→卷料：老库要补这两个数值列（materials 存档、txns 记每笔）
+    for tb in ('materials', 'txns'):
+        for col in NUM_EXTRA_COLS:
+            if col not in _cols(tb):
+                run("ALTER TABLE %s ADD COLUMN %s REAL" % (tb, col))
+    # v3.13 模板制：老库没有 tpl_id，要补列并给一个默认模板
+    for tb in ('materials', 'txns'):
+        if 'tpl_id' not in _cols(tb):
+            run("ALTER TABLE %s ADD COLUMN tpl_id INTEGER" % tb)
+    if 'tpl_id' not in _cols('pos'):
+        run("ALTER TABLE pos ADD COLUMN tpl_id INTEGER")
+    if 'sig' not in _cols('tpl'):
+        run("ALTER TABLE tpl ADD COLUMN sig TEXT DEFAULT ''")
     # 视图改成聚合 JOIN 后，老库里的旧视图不会自动更新，这里重建
     old = q("SELECT sql FROM sqlite_master WHERE type='view' AND name='v_stock'")
     if old and ('COALESCE(a.i' not in (old[0]['sql'] or '')
@@ -358,6 +392,40 @@ def migrate():
     for idx, ddl in (('idx_txns_kind', "CREATE INDEX IF NOT EXISTS idx_txns_kind ON txns(kind)"),
                      ('idx_mat_active', "CREATE INDEX IF NOT EXISTS idx_mat_active ON materials(active)")):
         run(ddl)
+    _migrate_tpl()
+
+
+def _migrate_tpl():
+    """老库 → 模板制：
+    1) 没有模板就建一个「通用库存」，把老 colmap 配置原样搬进去（名字一字不改）
+    2) materials / txns 里 tpl_id 为空的老数据，全部归入这个默认模板
+    """
+    if not q("SELECT COUNT(*) c FROM tpl")[0]['c']:
+        tid = run("INSERT INTO tpl(name,note,pos,created) VALUES(?,?,?,?)",
+                  '通用库存', '老数据自动归入', 1,
+                  datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    else:
+        tid = q("SELECT id FROM tpl ORDER BY pos, id LIMIT 1")[0]['id']
+    # 老 colmap → 默认模板的列配置（只搬一次）
+    if not q("SELECT COUNT(*) c FROM tpl_cols WHERE tpl_id=?", tid)[0]['c']:
+        old = q("SELECT fid,label,pos,enabled,aliases FROM colmap ORDER BY pos")
+        if old:
+            for r in old:
+                run("INSERT OR IGNORE INTO tpl_cols(tpl_id,fid,label,pos,enabled,aliases)"
+                    " VALUES(?,?,?,?,?,?)", tid, r['fid'], r['label'], r['pos'],
+                    r['enabled'], r['aliases'])
+            # 老表里没有的新列（长/宽/平米/卷料）补齐，默认关闭
+            for fid, label, pos, en, al in DEFAULT_COLS:
+                if not q("SELECT 1 FROM tpl_cols WHERE tpl_id=? AND fid=?", tid, fid):
+                    run("INSERT INTO tpl_cols(tpl_id,fid,label,pos,enabled,aliases)"
+                        " VALUES(?,?,?,?,?,?)", tid, fid, label, pos, en, al)
+        else:
+            reset_tpl_cols(tid)
+    # 老数据归入默认模板
+    run("UPDATE materials SET tpl_id=? WHERE tpl_id IS NULL", tid)
+    run("UPDATE txns SET tpl_id=? WHERE tpl_id IS NULL", tid)
+    run("UPDATE pos SET tpl_id=? WHERE tpl_id IS NULL", tid)
+    return tid
 
 def init():
     fresh = not os.path.exists(DB_PATH)
@@ -490,17 +558,194 @@ def batch_set_active(ids, active):
 # ---------- 列（表头）映射配置 ----------
 # fid=系统字段, label=入库界面显示的表头, pos=列顺序, enabled=是否显示, aliases=导入时识别的表头别名
 DEFAULT_COLS = [
-    ('supplier', '供应商', 1, 1, '供应商,厂商,供货商'),
-    ('category', '类型', 2, 1, '类型,类别,分类,大类'),
-    ('spec', '规格（米）', 3, 1, '规格,规格（米）,规格(米),厚度'),
-    ('width', '宽幅', 4, 1, '宽幅,宽度,幅宽'),
-    ('name', '物料名称', 5, 1, '物料名称,名称,品名,品名规格,物料,材料名称'),
-    ('code', '料号', 6, 1, '料号,物料编号,物料编码,编号,编码,型号,规格型号'),
-    ('unit', '单位（卷）', 7, 1, '单位,单位（卷）,单位(卷),计量单位'),
-    ('status', '状态', 8, 1, '状态,使用状态'),
-    ('opening', '期初结存', 9, 1, '期初结存,期初,上月结存,上期结存,库存,当前库存'),
-    ('safety', '安全库存', 10, 1, '安全库存,预警值,库存预警,最低库存'),
+    # 默认只保留 供应商 / 类型 / 状态（外加录单必需的物料名称），
+    # 其余全部默认关闭 —— 使用者在「改表头」里按需启用，不再绑定原 Excel 的 A-G 七列。
+    ('supplier', '供应商', 1, 1, '供应商,厂商,供货商,供方'),
+    ('category', '类型', 2, 1, '类型,类别,分类,大类,品种'),
+    ('status',   '状态', 3, 1, '状态,使用状态'),
+    ('name',     '物料名称', 4, 1, '物料名称,名称,品名,品名规格,物料,材料名称'),
+    # ↓ 使用者按需启用：长/宽 是输入项，平米/卷料 是自动算出来的
+    ('spec',  '长',   5, 0, '长,长度,长(米),长（米）,规格,规格（米）,规格(米),厚度,米数'),
+    ('width', '宽',   6, 0, '宽,宽幅,宽度,幅宽,宽(米),宽（米）'),
+    ('sqm',   '平米', 7, 0, '平米,平方米,面积,平方,m2,m²'),
+    ('rolls', '卷料', 8, 0, '卷料,卷,卷数,米数'),
+    ('code',  '料号', 9, 0, '料号,物料编号,物料编码,编号,编码,型号,规格型号'),
+    ('unit',  '单位', 10, 0, '单位,计量单位,单位（卷）,单位(卷)'),
+    ('opening', '期初结存', 11, 0, '期初结存,期初,上月结存,上期结存,库存,当前库存'),
+    ('safety',  '安全库存', 12, 0, '安全库存,预警值,库存预警,最低库存'),
 ]
+
+# 计算列：值由别的列算出来，不手填。
+# sqm   = 长 × 宽
+# rolls = 平米 ÷ 宽   （向下取整；除不尽的余料自动写进备注）
+CALC_COLS = {'sqm': ('spec', 'width'), 'rolls': ('sqm', 'width')}
+
+# 需要存进数据库的数值列（老库升级时要补）
+NUM_EXTRA_COLS = ('sqm', 'rolls')
+
+def calc_area(vals):
+    """长 × 宽 = 平米；平米 ÷ 宽 = 卷料（取整，余料写进备注）。
+
+    只在启用且填了长、宽时才算；算不出来就保持原值，绝不瞎填 0。
+    返回 (sqm, rolls, rest)，任一算不出就是 None。
+    """
+    def f(v):
+        try:
+            x = float(str(v or '').strip())
+        except (TypeError, ValueError):
+            return None
+        return x if x > 0 else None
+    L = f(vals.get('spec'))      # 长
+    W = f(vals.get('width'))     # 宽
+    sqm = rolls = rest = None
+    if L is not None and W is not None:
+        sqm = round(L * W, 6)
+        # 卷料 = 平米 ÷ 宽，向下取整；除不尽的部分是余料
+        raw = sqm / W
+        rolls = int(raw + 1e-9)          # 1e-9 抵消浮点误差，避免 3.0 算成 2
+        rest = round(sqm - rolls * W, 6)
+        if rest < 1e-6:
+            rest = None
+    return sqm, rolls, rest
+
+
+def rest_note(rest, unit='平米'):
+    """余料备注文案"""
+    if not rest:
+        return ''
+    return '余料 %g %s' % (round(rest, 4), unit)
+
+# ---------- 列名指纹：列名完全相同的表自动归为一类 ----------
+import re as _re
+def head_sig(headers):
+    """把表头列名变成一个指纹：去空格/括号/全角，排序后拼接。
+    两张表只要列名一样（顺序、写法不同也算），指纹就相同。"""
+    out = []
+    for h in (headers or []):
+        t = str(h or '').strip()
+        t = _re.sub(r'[（(].*?[)）]', '', t)          # 去掉括号及其内容
+        t = _re.sub(r'[\s\u3000]+', '', t)           # 去空格/全角空格
+        t = t.replace('：', ':').replace('，', ',')
+        if t:
+            out.append(t)
+    return '|'.join(sorted(set(out)))
+
+def tpl_by_sig(sig):
+    """按列名指纹找模板；找不到返回 None"""
+    if not sig:
+        return None
+    r = q("SELECT * FROM tpl WHERE sig=? ORDER BY pos, id LIMIT 1", sig)
+    return r[0] if r else None
+
+def set_tpl_sig(tid, sig):
+    run("UPDATE tpl SET sig=? WHERE id=?", sig or '', tid)
+
+def tpl_from_headers(headers, name=None, keep=0):
+    """用一张表的表头直接建模板：每个列名成为该模板的一个启用列。
+    keep=1 时同时保留系统默认列（长/宽/平米/卷料等），便于勾选启用。"""
+    seen, cols = set(), []
+    for i, h in enumerate(headers or []):
+        t = str(h or '').strip()
+        if not t or t in seen:
+            continue
+        seen.add(t)
+        cols.append((t, i))
+    tid = add_tpl(name or '新表', '由表头自动生成', copy_from=None)
+    run("DELETE FROM tpl_cols WHERE tpl_id=?", tid)
+    pos = 0
+    for label, _ in cols:
+        run("INSERT INTO tpl_cols(tpl_id,fid,label,pos,enabled,aliases)"
+            " VALUES(?,?,?,?,?,?)", tid, 'x%d' % pos, label, pos, 1, label)
+        pos += 1
+    if keep:
+        for fid, label, _p, _en, al in DEFAULT_COLS:
+            if label in seen:
+                continue
+            run("INSERT INTO tpl_cols(tpl_id,fid,label,pos,enabled,aliases)"
+                " VALUES(?,?,?,?,?,?)", tid, fid, label, pos, 0, al)
+            pos += 1
+    set_tpl_sig(tid, head_sig(headers))
+    return tid
+
+# ---------- 库存模板 ----------
+def tpls():
+    """全部模板（按排序）"""
+    return q("SELECT * FROM tpl ORDER BY pos, id")
+
+def tpl(tid):
+    r = q("SELECT * FROM tpl WHERE id=?", tid)
+    return r[0] if r else None
+
+def default_tpl_id():
+    """第一个模板；没有就建一个（老库升级时用）"""
+    r = q("SELECT id FROM tpl ORDER BY pos, id LIMIT 1")
+    return r[0]['id'] if r else None
+
+def add_tpl(name, note='', copy_from=None):
+    """新建模板。copy_from 给定时复制该模板的列配置"""
+    name = (name or '').strip() or '未命名模板'
+    mx = q("SELECT COALESCE(MAX(pos),0) p FROM tpl")[0]['p']
+    tid = run("INSERT INTO tpl(name,note,pos,created) VALUES(?,?,?,?)",
+              name, note, mx + 1,
+              datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    if copy_from:
+        for r in q("SELECT fid,label,pos,enabled,aliases FROM tpl_cols WHERE tpl_id=?", copy_from):
+            run("INSERT INTO tpl_cols(tpl_id,fid,label,pos,enabled,aliases)"
+                " VALUES(?,?,?,?,?,?)", tid, r['fid'], r['label'], r['pos'],
+                r['enabled'], r['aliases'])
+    else:
+        for fid, label, pos, en, al in DEFAULT_COLS:
+            run("INSERT INTO tpl_cols(tpl_id,fid,label,pos,enabled,aliases)"
+                " VALUES(?,?,?,?,?,?)", tid, fid, label, pos, en, al)
+    return tid
+
+def rename_tpl(tid, name, note=None):
+    name = (name or '').strip()
+    if not name:
+        return False
+    if note is None:
+        run("UPDATE tpl SET name=? WHERE id=?", name, tid)
+    else:
+        run("UPDATE tpl SET name=?,note=? WHERE id=?", name, note, tid)
+    return True
+
+def del_tpl(tid):
+    """删模板。有物料/单据的拒绝删（避免数据变成孤儿）"""
+    nm = q("SELECT COUNT(*) c FROM materials WHERE COALESCE(tpl_id,0)=?", tid)[0]['c']
+    nt = q("SELECT COUNT(*) c FROM txns WHERE COALESCE(tpl_id,0)=?", tid)[0]['c']
+    if nm or nt:
+        return False, '这个模板下还有 %d 种物料、%d 条单据，不能删。可以先改用别的模板。' % (nm, nt)
+    if q("SELECT COUNT(*) c FROM tpl")[0]['c'] <= 1:
+        return False, '至少要留一个模板'
+    run("DELETE FROM tpl_cols WHERE tpl_id=?", tid)
+    run("DELETE FROM tpl WHERE id=?", tid)
+    return True, '已删除'
+
+def tpl_cols(tid, only_enabled=True):
+    sql = "SELECT * FROM tpl_cols WHERE tpl_id=?"
+    if only_enabled:
+        sql += " AND enabled=1"
+    return q(sql + " ORDER BY pos", tid)
+
+def save_tpl_cols(tid, rows):
+    with tx() as c:
+        c.executemany("UPDATE tpl_cols SET label=?,pos=?,enabled=?,aliases=?"
+                      " WHERE tpl_id=? AND fid=?",
+                      [(r['label'], r['pos'], r['enabled'], r['aliases'], tid, r['fid'])
+                       for r in rows])
+    return True
+
+def reset_tpl_cols(tid):
+    run("DELETE FROM tpl_cols WHERE tpl_id=?", tid)
+    for fid, label, pos, en, al in DEFAULT_COLS:
+        run("INSERT INTO tpl_cols(tpl_id,fid,label,pos,enabled,aliases)"
+            " VALUES(?,?,?,?,?,?)", tid, fid, label, pos, en, al)
+
+def tpl_stat(tid):
+    """模板下的物料数、单据数"""
+    nm = q("SELECT COUNT(*) c FROM materials WHERE COALESCE(tpl_id,0)=?", tid)[0]['c']
+    nt = q("SELECT COUNT(*) c FROM txns WHERE COALESCE(tpl_id,0)=?", tid)[0]['c']
+    return nm, nt
 
 def init_cols():
     # 注意：conn() 是按线程复用的共享连接，这里绝对不能 close()，

@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}库存模板{% endblock %}
+{% block body %}
+<div class="hd2">库存模板</div>
+<div class="sub2">一套列配置就是一个模板。不同表格用不同模板，入库时选一个存进去。</div>
+
+{% if msg %}<div class="msg">{{ msg }}</div>{% endif %}
+
+<div class="card">
+  <b>新建模板</b>
+  <form method="post" action="{{ url_for('tpl_add') }}" style="margin-top:8px">
+    <input type="hidden" name="_n" value="{{ new_nonce() }}">
+    <div class="row2">
+      <input name="name" placeholder="模板名字，如：卷料仓 / 板材仓" required>
+      <input name="note" placeholder="备注（可不填）">
+    </div>
+    <div class="row2" style="margin-top:6px">
+      <select name="copy_from">
+        <option value="">用默认列（供应商/类型/状态）</option>
+        {% for r in rows %}<option value="{{ r.id }}">复制「{{ r.name }}」的列</option>{% endfor %}
+      </select>
+      <button type="submit">＋ 新建</button>
+    </div>
+  </form>
+</div>
+
+{% for r in rows %}
+<div class="card">
+  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+    <b style="font-size:15px">{{ r.name }}</b>
+    {% if r.note %}<span class="tag">{{ r.note }}</span>{% endif %}
+    <span class="tag">物料 {{ r.mats }} 种</span>
+    <span class="tag">单据 {{ r.txns }} 条</span>
+    <span style="flex:1"></span>
+    <a class="btn s" href="{{ url_for('tpl_cols_set', tid=r.id) }}">⚙ 改表头</a>
+  </div>
+  <div style="margin-top:6px;color:#5a6b7c;font-size:13px">
+    列：{{ r.cols|join(' / ') or '（未启用任何列）' }}
+  </div>
+  <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+    <a class="btn s" href="{{ url_for('in', tpl=r.id) }}">📥 入库到这</a>
+    <a class="btn s" href="{{ url_for('out', tpl=r.id) }}">📤 从这里出</a>
+    <a class="btn s" href="{{ url_for('stock', tpl=r.id) }}">📦 看库存</a>
+    <form method="post" action="{{ url_for('tpl_rename', tid=r.id) }}" style="display:flex;gap:4px;margin:0">
+      <input type="hidden" name="_n" value="{{ new_nonce() }}">
+      <input name="name" value="{{ r.name }}" style="width:120px" aria-label="改名">
+      <button type="submit" class="s">改名</button>
+    </form>
+    <a class="btn s del" href="{{ url_for('tpl_del', tid=r.id) }}"
+       onclick="return confirm('删除模板「{{ r.name }}」？里面有数据就删不掉，会提示你。')">删除</a>
+  </div>
+</div>
+{% endfor %}
+
+<div class="card" style="background:#f7f9fb">
+  <b>怎么用</b>
+  <div style="margin-top:6px;color:#3b4a5a;font-size:13px;line-height:1.8">
+  1. 新建一个模板，比如「卷料仓」<br>
+  2. 点「⚙ 改表头」给它配自己的列（长/宽/平米/卷料…）<br>
+  3. 入库时顶部选这个模板，录进去的物料和单据就归它<br>
+  4. 库存页可按模板筛选；<b>月报会把所有模板分开统计</b>
+  </div>
+</div>
+{% endblock %}

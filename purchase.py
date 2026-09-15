@@ -283,8 +283,11 @@ def receive(item_id, rdate, qty, price=None, note=''):
         hit = db.q("SELECT id FROM materials WHERE name=?", it['name'])
         mid = hit[0]['id'] if hit else None
     if not mid:
-        mid = db.run("INSERT INTO materials(name,spec,unit,opening,safety,status)"
-                     " VALUES(?,?,?,?,?,?)", it['name'], it['spec'], it['unit'], 0, 0, '常用')
+        # 归入采购单指定的模板；没指定就归默认模板，
+        # 否则这些物料会变成"无模板"，库存页按模板筛选看不到、月报多出一个"未归类"
+        mid = db.run("INSERT INTO materials(name,spec,unit,opening,safety,status,tpl_id)"
+                     " VALUES(?,?,?,?,?,?,?)", it['name'], it['spec'], it['unit'], 0, 0,
+                     '常用', po['tpl_id'] or db.default_tpl_id())
     db.run("UPDATE po_items SET material_id=? WHERE id=?", mid, item_id)
 
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -294,9 +297,10 @@ def receive(item_id, rdate, qty, price=None, note=''):
     try:
         with db.tx() as c:
             txn_id = c.execute(
-                "INSERT INTO txns(tdate,material_id,kind,qty,price,note,created_at)"
-                " VALUES(?,?,?,?,?,?,?)",
-                (rdate, mid, '进', stock_qty, stock_price, memo, now)).lastrowid
+                "INSERT INTO txns(tdate,material_id,kind,qty,price,note,created_at,tpl_id)"
+                " VALUES(?,?,?,?,?,?,?,?)",
+                (rdate, mid, '进', stock_qty, stock_price, memo, now,
+                 po['tpl_id'] or db.default_tpl_id())).lastrowid
             c.execute("INSERT INTO po_receipts(item_id,txn_id,rdate,qty,price,note,created_at)"
                       " VALUES(?,?,?,?,?,?,?)",
                       (item_id, txn_id, rdate, qty, unit_price, note, now))
