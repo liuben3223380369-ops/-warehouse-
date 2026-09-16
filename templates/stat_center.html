@@ -1,0 +1,80 @@
+{% extends 'base.html' %}
+{% block title %}统计中心{% endblock %}
+{% block h1 %}统计中心{% endblock %}
+{% block sub %}{{label}} · 口径：期末 = 期初 + 入库 − 出库，金额按最近单价{% endblock %}
+{% block body %}
+
+<div class="grid2">
+  {% for t, v, c in cards %}
+  <div class="stat"><span>{{t}}</span><b class="{{c}}">{{v}}</b></div>
+  {% endfor %}
+</div>
+
+<form class="card" method="get">
+  <input type="hidden" name="tab" value="{{tab}}">
+  <label>统计期间（选月份，或填起止日期；两栏都填则以日期为准）</label>
+  <div class="grid2">
+    <select name="m">
+      <option value="">全部时间</option>
+      {% for mm in months %}<option {{'selected' if m==mm}}>{{mm}}</option>{% endfor %}
+    </select>
+    <div style="font-size:var(--fs-label);color:#7a869a;align-self:center">
+      未选月份 = 从建库到现在
+    </div>
+  </div>
+  <div class="grid2" style="margin-top:6px">
+    <input type="date" name="d1" value="{{d1}}">
+    <input type="date" name="d2" value="{{d2}}">
+  </div>
+  <button type="submit" style="margin-top:8px">切换期间</button>
+</form>
+
+<div class="card" style="padding:8px 10px">
+  <div style="display:flex;gap:6px;flex-wrap:wrap">
+    {% for k, name in TABS %}
+      <a class="btn s {{ '' if tab==k else 'o' }}"
+         href="{{url_for('stat_center',tab=k,m=m,d1=d1,d2=d2)}}">{{name}}</a>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="card" style="padding:0;overflow:hidden">
+{% if body %}<div class="scroll"><table>
+<tr>{% for h in head %}<th>{{h}}</th>{% endfor %}</tr>
+{% for r in body %}
+<tr>{% for v in r %}
+  {% if v is number %}
+    <td class="n">{{'%g'|format(v) if v is not none else ''}}</td>
+  {% else %}
+    <td>{{v}}</td>
+  {% endif %}
+{% endfor %}</tr>
+{% endfor %}
+<tr style="font-weight:600;background:#f7f9fc">
+  {% for v in total %}
+    {% if v is number %}<td class="n">{{'%g'|format(v)}}</td>
+    {% else %}<td>{{v}}</td>{% endif %}
+  {% endfor %}
+</tr>
+</table></div>
+{% else %}<div class="empty">这个期间没有数据</div>{% endif %}
+</div>
+
+<div class="rowflex">
+  <a class="btn g s" href="{{url_for('stat_export',tab=tab,m=m,d1=d1,d2=d2)}}">⬇ 导出 Excel</a>
+  <a class="btn o s" href="{{url_for('stat_export',tab=tab,m=m,d1=d1,d2=d2,fmt='csv')}}">导出 CSV</a>
+</div>
+
+<div class="card" style="background:#f7f9fc;margin-top:12px">
+  <div style="font-size:var(--fs-label);color:#5b6675;line-height:1.8">
+    <b>口径说明</b><br>
+    期初 = 档案期初 + 期间开始前的进 − 期间开始前的出（所以每个月看到的期初是上个月底的数）<br>
+    周转率 = 本期出库 ÷ 平均库存，平均库存 = (期初 + 期末) ÷ 2<br>
+    周转天数 = 期间天数 ÷ 周转率；平均库存为 0 时不算<br>
+    库龄 = 今天 − 最后一次出入库日期；呆滞 = 库龄 ≥ 90 天且还有库存<br>
+    ABC 按期末金额降序累计：≤70% 为 A，≤90% 为 B，其余 C<br>
+    金额按每种物料<b>最近一次填过的单价</b>计算；从没填过单价的按 0 计，不估算<br>
+    盘点差异取自盘点模块，只有「已调整」的单子才真正改过库存
+  </div>
+</div>
+{% endblock %}

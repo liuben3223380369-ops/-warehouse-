@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="page">
+  <div class="hd">
+    <a class="bk" href="{{url_for('purchase_home')}}">‹ 采购</a>
+    <h1>采购模板</h1>
+    <span class="sp"></span>
+  </div>
+
+  {% if msg %}<div class="ok">{{msg}}</div>{% endif %}
+  {% if err %}<div class="err">{{err}}</div>{% endif %}
+
+  <div class="card">
+    <div style="font-size:13px;color:#5b6b82;line-height:1.7">
+      采购模板决定<b>建单时明细要填哪些列</b>。不同供应商的单子字段差别很大
+      （有的要客户订单号、有的要交货方式），建几套模板，开单时选一套即可。
+      <br>它和「库存模板」<b>完全分开</b>：改库存的列不会动到采购单。
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">新建模板</h2>
+    <form method="post" action="{{url_for('po_tpl_add')}}">
+      <input type="hidden" name="_n" value="{{new_nonce()}}">
+      <label>模板名 *</label>
+      <input name="name" placeholder="如：卷料采购单 / 板材采购单" required>
+      <label>说明（选填）</label>
+      <input name="note" placeholder="这套模板用在哪">
+      <label>从现有模板复制列（选填）</label>
+      <select name="copy_from">
+        <option value="0">— 用默认列（物料/规格/单位/数量/单价/换算率/备注）</option>
+        {% for r in rows %}<option value="{{r.id}}">复制「{{r.name}}」的列</option>{% endfor %}
+      </select>
+      <button type="submit" class="btn s g">＋ 新建模板</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">按表头建模板</h2>
+    <div style="font-size:12px;color:#7a869a;margin-bottom:8px">
+      手上有一张供应商的采购表？把它的表头（第一行列名，逗号或换行分隔）粘进来，
+      一键生成同名模板，以后同样格式的单子能自动对上。
+    </div>
+    <form method="post" action="{{url_for('po_tpl_from_head')}}">
+      <input type="hidden" name="_n" value="{{new_nonce()}}">
+      <label>模板名</label>
+      <input name="name" placeholder="新采购表">
+      <label>表头 *</label>
+      <textarea name="heads" rows="3"
+        placeholder="物品名称,规格型号,单位,数量,含税单价,交期,客户订单号"></textarea>
+      <button type="submit" class="btn s">按表头生成</button>
+    </form>
+  </div>
+
+  <h2>已有模板 <span class="pill">{{rows|length}} 套</span></h2>
+  {% for r in rows %}
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <b style="font-size:15px">{{r.name}}</b>
+      <span class="pill">{{r.items}} 条明细 · {{r.pos_}} 张单</span>
+    </div>
+    {% if r.note %}<div style="font-size:12px;color:#7a869a;margin-top:4px">{{r.note}}</div>{% endif %}
+    <div style="margin:8px 0;font-size:12px;color:#5b6b82">
+      列：{% for c in r.cols %}<span class="pill">{{c}}</span> {% endfor %}
+      {% if not r.cols %}<span style="color:#98a2b3">（还没有启用任何列）</span>{% endif %}
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <a class="btn s g" style="width:auto;padding:6px 12px"
+         href="{{url_for('po_tpl_use', tid=r.id)}}">用它开单 →</a>
+      <a class="btn s" style="width:auto;padding:6px 12px"
+         href="{{url_for('po_tpl_cols_set', tid=r.id)}}">⚙ 配列</a>
+      <a href="#rn{{r.id}}" style="font-size:12px">改名</a>
+      {% if rows|length > 1 %}
+      <a href="{{url_for('po_tpl_del', tid=r.id)}}" style="font-size:12px;color:#c1272d"
+         onclick="return confirm('删除模板「{{r.name}}」？它的列配置会一起删掉（已建的采购单不受影响）。')">删除</a>
+      {% endif %}
+    </div>
+
+    <div id="rn{{r.id}}" style="display:none;margin-top:8px;padding-top:8px;border-top:1px solid #eef2f7">
+      <form method="post" action="{{url_for('po_tpl_rename', tid=r.id)}}">
+        <input type="hidden" name="_n" value="{{new_nonce()}}">
+        <label>改名为</label>
+        <input name="name" value="{{r.name}}">
+        <label>说明</label>
+        <input name="note" value="{{r.note or ''}}" placeholder="选填">
+        <button type="submit" class="btn s g">保存</button>
+      </form>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}

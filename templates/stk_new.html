@@ -1,0 +1,53 @@
+{% extends 'base.html' %}
+{% block title %}新建盘点单{% endblock %}
+{% block h1 %}新建盘点单{% endblock %}
+{% block sub %}选好范围，系统按当前账面数生成一张空白盘点表{% endblock %}
+{% block body %}
+
+<form class="card" method="post">
+  <label>盘点日期（基准日）</label>
+  <input type="date" name="sdate" value="{{today}}" required>
+
+  <label>盘点范围（按模板筛，可不选 = 全部物料）</label>
+  <select name="tpl_id">
+    <option value="0">全部物料</option>
+    {% for t in tpls %}<option value="{{t.id}}">{{t.name}}</option>{% endfor %}
+  </select>
+
+  <label>范围说明（写给自己看的，如 A区 / 卷料类 / 全盘）</label>
+  <input type="text" name="scope" placeholder="选填，如 A 区货架">
+
+  <label>再按关键字缩小范围（选填）</label>
+  <input type="text" name="kw" placeholder="物料名 / 料号 / 供应商 / 类型">
+
+  <label class="ck"><input type="checkbox" name="with_zero" value="1"> 包含零库存物料</label>
+
+  <div class="grid2" style="margin-top:6px">
+    <div>
+      <label>盘点人</label>
+      <input type="text" name="counter" list="counters" placeholder="选填">
+      <datalist id="counters">{% for c in counters %}<option value="{{c}}">{% endfor %}</datalist>
+    </div>
+    <div>
+      <label>监盘人（复核）</label>
+      <input type="text" name="checker" list="checkers" placeholder="选填">
+      <datalist id="checkers">{% for c in checkers %}<option value="{{c}}">{% endfor %}</datalist>
+    </div>
+  </div>
+
+  <label>备注</label>
+  <input type="text" name="note" placeholder="选填">
+
+  <button type="submit" style="margin-top:14px">生成盘点表</button>
+</form>
+
+<div class="card" style="background:#f7f9fc">
+  <div style="font-size:var(--fs-table);color:#5b6675;line-height:1.7">
+    <b>生成后会发生什么</b><br>
+    1. 按<b>当前账面库存</b>为每种物料生成一行，账面数固定下来（之后出入库不会改这张表）<br>
+    2. 实盘数留空，可打印出来现场盲盘<br>
+    3. 填完实盘数自动算差异<br>
+    4. 点「调整入账」才生成盘盈/盘亏单据，改库存
+  </div>
+</div>
+{% endblock %}

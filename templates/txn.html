@@ -44,6 +44,11 @@
 <input type="hidden" name="_n" value="{{new_nonce()}}">
 <input type="hidden" name="nrow" id="nrow" value="{{n}}">
 <input type="hidden" name="tpl" value="{{tid}}">
+{% if batches %}
+<datalist id="batchlist">
+{% for b in batches %}<option value="{{b.b}}">{{b.n}}</option>{% endfor %}
+</datalist>
+{% endif %}
 <div id="cards"></div>
 
 <div id="gridBox" class="card" style="display:none;padding:0;overflow-x:auto">
@@ -138,9 +143,11 @@ function gridCols(){
     if(!a.some(function(c){return c.fid===x.fid;}))
       a.push({fid:x.fid,label:lbl(x),xtype:x.xtype||'text',xopt:x.xopt||''});
   });
-  /* 录单必需的几列放最后，跟卡片一致 */
-  [['tdate','日期'],['qty','数量'],['note','备注']]
-    .forEach(function(p){ a.push({fid:p[0],label:p[1],xtype:p[0]==='tdate'?'date':(p[0]==='note'?'text':'num')}); });
+  /* 录单必需的几列放最后，跟卡片一致。
+     v3.39：补上「批次」—— 一次到货几十行必然用表格模式粘贴，
+     原先只有卡片能填批次，等于批量录入时采购单根本对不上。 */
+  [['tdate','日期','date'],['qty','数量','num'],['batch','批次','text'],['note','备注','text']]
+    .forEach(function(p){ a.push({fid:p[0],label:p[1],xtype:p[2]}); });
   return a;
 }
 
@@ -284,9 +291,14 @@ function fieldHtml(f, i, label){
     return '<div class="f"><label>'+label+'</label><input name="'+f+'_'+i+'" inputmode="decimal" placeholder=""></div>';
   }
   if(f==='sqm'||f==='rolls'){
-    return '<div class="f"><label>'+label+' <span style="color:#1f6feb;font-weight:400">自动算</span></label>'
-      +'<input name="'+f+'_'+i+'" id="'+f+'_'+i+'" inputmode="decimal" placeholder="自动计算" readonly'
-      +' style="background:#f2f4f7"></div>';
+    // v3.28：平米/卷料都能填 —— 填一个，另一个按长宽自动算出来。
+    // 先填平米 → 卷料 = 平米 ÷ (长×宽) 取整数，零头写「余料 X 平米」
+    // 先填卷料 → 平米 = 卷料 × (长×宽)
+    var oth = (f==='sqm') ? '卷料' : '平米';
+    return '<div class="f"><label>'+label+' <span style="color:#1f6feb;font-weight:400"'
+      +' id="hint_'+f+'_'+i+'">(填了自动算'+oth+')</span></label>'
+      +'<input name="'+f+'_'+i+'" id="'+f+'_'+i+'" inputmode="decimal" placeholder="填一个，自动算'+oth+'"'
+      +' data-i="'+i+'" oninput="calcArea('+i+',\''+f+'\')"></div>';
   }
   var extra = (f==='spec'||f==='width') ? ' class="dim" data-i="'+i+'" oninput="calcArea('+i+')"' : '';
   return '<div class="f"><label>'+label+'</label><input name="'+f+'_'+i+'"'+extra+' placeholder="'+ph+'"></div>';
@@ -332,6 +344,18 @@ function cardHtml(i){
   }
   h += '</div>';
   h += '<div class="qtyrow">'
+     + '<div class="f"><label>批次</label>'
+     + '<input name="batch_'+i+'" list="batchlist" placeholder="选填，对上采购批次">'
+     + '</div>'
+     /* v3.39：填了批次号的入库默认是供应商到货，会计入采购单；
+        但退料、调拨、盘盈这类也是「进」，却不是供应商发的货，
+        照记会把到货数越滚越高，采购单提前结单。这里给个明确的开关。
+        出库页不显示——领料出库只做批次追溯，本来就不进采购账。 */
+     + (KIND==='出' ? '<div class="f"></div>' :
+        '<div class="f"><label>计入采购</label>'
+       + '<select name="to_po_'+i+'" title="退料、调拨、盘盈入库请选「否」，避免虚增供应商到货">'
+       + '<option value="1">是（到货）</option>'
+       + '<option value="0">否（退料等）</option></select></div>')
      + '<div class="f" style="flex:1"><label>备注</label>'
      + '<input name="note_'+i+'" placeholder="'+(KIND==='出'?'客户/领用人':'单号/客户')+'"></div>';
   h += '</div>';
@@ -395,17 +419,18 @@ function evalForm(form, i){
   }catch(e){ return ''; }
 }
 function numOf(v){ var x=parseFloat(String(v==null?'':v).trim()); return isFinite(x)&&x>0?x:null; }
-/* v3.27：平米 = 长 × 宽（一卷多少平米）。
-   卷料记「卷数」，两种填法都支持：
-     数量按平米 → 卷数 = 数量 ÷ 一卷平米（余料 = 零头平米）
-     数量按卷   → 卷数 = 数量取整（余料 = 小数部分 × 一卷平米）
-   为什么两种：实际收货有时按面积进（500 平米），有时按卷点（100 卷）。
+/* v3.28：平米（总面积）与卷料（卷数）双向推算 —— 先填哪个就算另一个。
+     先填平米 → 卷料 = 平米 ÷ (长×宽)，取整数，零头写「余料 X 平米」
+     先填卷料 → 平米 = 卷料 × (长×宽)
+   都没填、只填了数量时，按「数量按 平米/卷」的口径推（v3.27 的双口径，
+   兼容以前只填数量的表）。
    算不出来就清空留白，不填 0。 */
 function qtyUnit(i){
   var el=document.querySelector('[name=qty_unit_'+i+']');
   return el ? String(el.value||'平米') : '平米';
 }
-function calcArea(i){
+var LAST_AREA={};          // 记住这一行最后改的是平米还是卷料，避免互相覆盖
+function calcArea(i, who){
   var L=numOf((document.querySelector('[name=spec_'+i+']')||{}).value);
   var W=numOf((document.querySelector('[name=width_'+i+']')||{}).value);
   var Q=numOf((document.querySelector('[name=qty_'+i+']')||{}).value);
@@ -413,23 +438,46 @@ function calcArea(i){
   var ro=(document.getElementById('rolls_'+i));
   var nt=(document.querySelector('[name=note_'+i+']'));
   if(nt) nt.value = String(nt.value||'').replace(/\s*余料\s*[\d.]+\s*\S*/g,'').trim();
-  if(L==null||W==null){ if(sq)sq.value=''; if(ro)ro.value=''; return; }
+  if(who==='sqm'||who==='rolls') LAST_AREA[i]=who;
+  if(L==null||W==null){ if(sq&&!numOf(sq.value))sq.value=''; if(ro&&!numOf(ro.value))ro.value=''; return; }
   var per=Math.round(L*W*1e6)/1e6;          // 一卷多少平米
-  if(sq) sq.value=per;
-  if(ro){
-    if(per<=0 || Q==null){ ro.value=''; return; }
-    var r, rest;
+  if(per<=0) return;
+  var S=numOf(sq?sq.value:null), R=numOf(ro?ro.value:null);
+  var w = who || LAST_AREA[i];
+  var r, rest=null, sqm=null;
+  if(w==='sqm' && S!=null){
+    r=Math.floor(S/per + 1e-9);             // 卷料取整数
+    rest=Math.round((S-r*per)*1e6)/1e6;
+    if(ro) ro.value=r;
+    sqm=S;
+  }else if(w==='rolls' && R!=null){
+    sqm=Math.round(R*per*1e6)/1e6;
+    if(sq) sq.value=sqm;
+    var fr=Math.round((R-Math.floor(R+1e-9))*1e6)/1e6;
+    rest = fr>1e-6 ? Math.round(fr*per*1e6)/1e6 : null;
+  }else if(S!=null){
+    r=Math.floor(S/per + 1e-9);
+    rest=Math.round((S-r*per)*1e6)/1e6;
+    if(ro) ro.value=r;
+  }else if(R!=null){
+    sqm=Math.round(R*per*1e6)/1e6;
+    if(sq) sq.value=sqm;
+  }else if(Q!=null){
+    // 只有数量：按数量口径推
     if(qtyUnit(i)==='卷'){
-      r=Math.floor(Q + 1e-9);               // 数量本身就是卷数
+      r=Math.floor(Q + 1e-9);
       rest=Math.round((Q-r)*per*1e6)/1e6;
+      if(ro) ro.value=r;
+      if(sq) sq.value=Math.round(Q*per*1e6)/1e6;
     }else{
-      r=Math.floor(Q/per + 1e-9);           // 数量是总面积
+      r=Math.floor(Q/per + 1e-9);
       rest=Math.round((Q-r*per)*1e6)/1e6;
+      if(ro) ro.value=r;
+      if(sq) sq.value=Math.round(Q*1e6)/1e6;
     }
-    ro.value=r;
-    if(rest>1e-6 && nt){
-      nt.value = (nt.value?nt.value+' ':'') + '余料 '+rest+' 平米';
-    }
+  }
+  if(rest>1e-6 && nt){
+    nt.value = (nt.value?nt.value+' ':'') + '余料 '+rest+' 平米';
   }
 }
 

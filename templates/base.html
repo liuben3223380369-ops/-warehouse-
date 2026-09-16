@@ -65,7 +65,7 @@ td.n,th.n{text-align:right}
 .low{color:#e5484d;font-weight:600}
 .pill{display:inline-block;padding:1px 7px;border-radius:20px;font-size:var(--fs-label);background:#eef2f7;color:#5b6675}
 .pill.i{background:#e6f6ed;color:#12a150}.pill.o{background:#fdeced;color:#e5484d}
-nav{position:fixed;bottom:0;left:0;right:0;display:grid;grid-template-columns:repeat(6,1fr);
+nav{position:fixed;bottom:0;left:0;right:0;display:grid;grid-template-columns:repeat(4,1fr);
 background:#fff;border-top:1px solid #e3e7ec;padding-bottom:env(safe-area-inset-bottom)}
 nav a{padding:8px 0 7px;text-align:center;font-size:var(--fs-nav);color:#7a869a;text-decoration:none}
 nav a.on{color:#1f6feb}nav a i{display:block;font-size:var(--fs-navico);font-style:normal;line-height:1.2}
@@ -130,6 +130,9 @@ title="切换字号 小/标准/大">A</button></div></header>
 <a href="{{url_for('purchase_home')}}" class="{{'on' if ep in ('purchase_home','po_new','po_detail','suppliers')}}"><i>🛒</i>采购</a>
 <a href="{{url_for('txns')}}" class="{{'on' if ep=='txns'}}"><i>📝</i>流水</a>
 <a href="{{url_for('materials')}}" class="{{'on' if ep.startswith('material')}}"><i>🗂</i>物料</a>
+<a href="{{url_for('sheet_index')}}" class="{{'on' if ep.startswith('sheet')}}"><i>📗</i>制表</a>
+<a href="{{url_for('stk_list')}}" class="{{'on' if ep.startswith('stk')}}"><i>🔍</i>盘点</a>
+<a href="{{url_for('stat_center')}}" class="{{'on' if ep.startswith('stat_c')}}"><i>📈</i>统计</a>
 </nav>
 <script>
 (function(){

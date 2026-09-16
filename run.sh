@@ -11,7 +11,7 @@ python3 -c "import flask" 2>/dev/null || { echo "正在安装依赖..."; pip ins
 # 启动前自动备份一份（保留最近 10 份），出问题可回滚
 python3 -c "
 import sys; sys.path.insert(0,'.')
-import db; db.init()
+from wh.core import db; db.init()
 p = db.backup()
 print('已自动备份:', p.split('/')[-1])
 " 2>/dev/null
@@ -25,4 +25,4 @@ echo " 数据库文件:    $WAREHOUSE_DB"
 echo " 停止服务:      Ctrl+C"
 echo "---------------------------------------------"
 
-exec python3 app.py "$PORT"
+exec python3 run.py "$PORT"

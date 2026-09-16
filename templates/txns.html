@@ -22,6 +22,12 @@
 <input type="hidden" name="d" value="{{d}}"><input type="hidden" name="m" value="{{m}}">
 <input type="hidden" name="kind" value="{{kind or ''}}"><input type="hidden" name="kw" value="{{kw}}">
 <input type="hidden" name="real_total" value="{{real_total if real_total is defined else count}}">
+{% if mapped_n %}
+<div class="card" style="background:#eef4ff;border-left:3px solid #1f6feb;font-size:12px;color:#33415c;padding:8px 10px">
+  本页 <b>{{mapped_n}}</b> 条单据的单价按<b>采购到货实价</b>（不含税）折算 —— 这才是实际付出去的钱。
+  没采购记录的物料仍用单据自填价，标 <span class="pill">手填</span>。
+</div>
+{% endif %}
 <div class="card">
 {% if rows %}<div class="scroll"><table>
 <tr>
@@ -43,7 +49,7 @@
  <td>{{r.name}}{% if r.code %}<br><span class="pill">{{r.code}}</span>{% endif %}</td>
  <td class="n"><span class="pill {{'i' if r.kind=='进' else 'o'}}">{{r.kind}}</span></td>
  <td class="n"><b class="{{'in' if r.kind=='进' else 'out'}}">{{'%g'|format(r.qty)}}</b> {{r.unit}}</td>
- <td class="n">{% if r.price %}{{'%.2f'|format(r.price)}}{% endif %}</td>
+ <td class="n">{% if r.price %}{{'%.2f'|format(r.price)}}<br>{% if r.price_src=='po' %}<span class="pill" style="background:#eef4ff;color:#1f6feb" title="按采购到货实价（不含税）折算">采购价</span>{% else %}<span class="pill" title="单据自己填的价，没有匹配的采购记录">手填</span>{% endif %}{% endif %}</td>
  <td class="n">{% if r.price %}<b>{{'%.2f'|format(r.amount or 0)}}</b>{% endif %}</td>
  <td>{{r.note}}</td>
  {% for x in XC %}<td>{{ (XVAL.get(r.id) or {}).get(x.fid,'') }}</td>{% endfor %}

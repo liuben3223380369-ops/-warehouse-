@@ -73,13 +73,28 @@
 {# ---------- 明细 ---------- #}
 <div class="card">
   <h2>采购明细 <span class="pill">{{items|length}} 行</span></h2>
+  {% if ptpl %}
+  <div style="font-size:12px;color:#7a869a;margin-bottom:8px">
+    模板：<b>{{ptpl.name}}</b>
+    <a href="{{url_for('po_tpl_cols_set', tid=ptpl.id)}}" style="font-size:12px">⚙ 配列</a>
+  </div>
+  {% endif %}
   {% if items %}
   <div class="scroll"><table>
   <tr><th>物料</th><th class="n">订购</th><th class="n">已到</th><th class="n">未交</th>
       <th class="n">单价</th><th class="n">金额</th><th>单位</th></tr>
   {% for it in items %}
   <tr>
-    <td>{{it.name}}{% if it.spec %}<br><span class="pill">{{it.spec}}</span>{% endif %}</td>
+    <td>{{it.name}}{% if it.spec %}<br><span class="pill">{{it.spec}}</span>{% endif %}
+      {% if it.batch %}<div style="font-size:12px;margin-top:2px"
+        title="入库时填这个批次号，这批货就自动计入本单的已到数">📦 批次
+        <b>{{it.batch}}</b></div>{% endif %}
+      {% for lb, vv in it.xcols %}
+        <div style="font-size:11px;color:#7a869a">{{lb}}：{{vv}}</div>
+      {% endfor %}
+      {% if it.note %}<div style="font-size:11px;color:#7a869a">{{it.note}}</div>{% endif %}
+      {% if it.sig %}<div style="font-size:11px;color:#98a2b3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"
+        title="明细指纹：供应商+名称+规格+单位 归一化，流水页靠它把采购实价映射到出入库单据">🔑 {{it.sig}}</div>{% endif %}</td>
     <td class="n">{{'%g'|format(it.qty)}}{{it.unit}}</td>
     <td class="n in">{{'%g'|format(it.recv_qty)}}</td>
     <td class="n {{'out' if it.remain>0 else 'in'}}">{{'%g'|format(it.remain)}}</td>
@@ -90,7 +105,9 @@
         <div style="font-size:11px;color:#7a869a;white-space:nowrap">
           1{{it.unit}}={{'%g'|format(it.conv)}}{{it.stock_unit}}</div>
       {% endif %}
-      <a href="#u{{it.id}}" style="font-size:11px">改</a></td>
+      <a href="#u{{it.id}}" style="font-size:11px">改</a>
+      <a href="{{url_for('po_item_del', iid=it.id)}}" style="font-size:11px;color:#c1272d"
+         onclick="return confirm('删除明细「{{it.name}}」？它下面的到货记录会一并删除（不影响库存）。')">删</a></td>
   </tr>{% endfor %}</table></div>
   {% else %}<div class="empty">还没有明细</div>{% endif %}
 
@@ -149,40 +166,52 @@
       <div><label>库存单位</label><input name="stock_unit" list="ulist"
         placeholder="不同才填"></div>
     </div>
+    <div class="rowflex">
+      <div><label>批次号</label><input name="batch" placeholder="留空自动生成"></div>
+      <div><label>备注</label><input name="note" placeholder="选填"></div>
+    </div>
+    {% if ptpl %}<input type="hidden" name="ptpl" value="{{ptpl.id}}">
+    {% for xc in xcols %}{% set xt = xc.xtype or 'text' %}
+    <label>{{xc.label}}{% if xc.unit %}（{{xc.unit}}）{% endif %}</label>
+      {% if xt == 'select' %}
+      <select name="xc_{{xc.fid}}"><option value="">—</option>
+        {% for o in (xc.xopt or '').split(',') %}{% if o.strip() %}
+        <option value="{{o.strip()}}">{{o.strip()}}</option>{% endif %}{% endfor %}
+      </select>
+      {% elif xt == 'date' %}<input type="date" name="xc_{{xc.fid}}">
+      {% elif xt == 'calc' %}<input name="xc_{{xc.fid}}" readonly
+        style="background:#f4f6fa" placeholder="自动算：{{xc.xform}}">
+      {% else %}<input name="xc_{{xc.fid}}"
+        {% if xt=='number' %}inputmode="decimal"{% endif %}>{% endif %}
+    {% endfor %}{% endif %}
     <button type="submit" class="btn s g">加入明细</button>
   </form>
 </div>
 
 {# ---------- 到货入库 ---------- #}
 <div class="card">
-  <h2>到货登记 <span class="pill">{{recs|length}} 次</span></h2>
+  <h2>到货流水 <span class="pill">{{recs|length}} 次</span></h2>
   <div style="font-size:12px;color:#7a869a;margin-bottom:8px">
-    登记到货会<b>自动生成入库单</b>，库存同步增加；取消到货会一并撤销入库单。
+    到货<b>按入库页实际录入的数据算</b>：入库时填了上面的批次号，
+    这批货就自动计入本单的已到数、推进结单。
+    库存记库存的、采购记采购的，两边只靠批次号联系，删掉入库单也不会反过来改采购账。
+  </div>
+  <div style="font-size:12px;color:#5b6b82;background:#f4f8ff;padding:8px 10px;border-radius:8px;margin-bottom:10px">
+    <b>怎么用：</b>入库页 → 填物料和数量 → <b>批次</b>框里填（或下拉选）上面的批次号 → 保存。
+    保存后一分为二：<b>一份进库存</b>，<b>一份进本单的到货流水</b>用于结单。
   </div>
 
   {% set pend = items|selectattr('remain','>',0)|list %}
   {% if pend %}
-  <form method="post" action="{{url_for('po_receive',po_id=po.id)}}">
-<input type="hidden" name="_n" value="{{PON}}">
-    <label>收货的物料</label>
-    <select name="item_id">
-      {% for it in pend %}<option value="{{it.id}}">{{it.name}} · 未交
-        {{'%g'|format(it.remain)}}{{it.unit}}</option>{% endfor %}
-    </select>
-    <div class="rowflex">
-      <div><label>到货日期</label><input type="date" name="rdate" value="{{today}}"></div>
-      <div><label>数量 *</label><input name="qty" inputmode="decimal" placeholder=""></div>
-    </div>
-    <div class="rowflex">
-      <div><label>实际单价</label><input name="price" inputmode="decimal"
-        placeholder="留空用订购价"></div>
-      <div><label>备注</label><input name="note" placeholder="单号/车牌"></div>
-    </div>
-    <button type="submit" class="btn s g">登记到货并入库</button>
-    <div style="font-size:12px;color:#7a869a;margin-top:6px">
-      填的是<b>采购单位</b>的数量；系统按换算率折成库存单位入库，单价同步折算。
-    </div>
-  </form>
+  <div class="scroll"><table>
+  <tr><th>待收物料</th><th class="n">未交</th><th>批次号（入库时填它）</th></tr>
+  {% for it in pend %}
+  <tr><td>{{it.name}}</td>
+    <td class="n out">{{'%g'|format(it.remain)}}{{it.unit}}</td>
+    <td><b>{{it.batch or '（无）'}}</b></td></tr>
+  {% endfor %}</table></div>
+  <a class="btn s g" style="display:inline-block;margin-top:8px"
+     href="{{url_for('in')}}">去入库页录入 →</a>
   {% else %}<div class="empty">全部明细都已交齐</div>{% endif %}
 
   {% if recs %}
@@ -196,7 +225,7 @@
     <td class="n">{{'%.2f'|format(r.price)}}</td>
     <td class="n">{{'%.2f'|format(r.qty * r.price)}}</td>
     <td><a href="{{url_for('po_receive_del',rid=r.id)}}" class="pill o"
-      onclick="return confirm('取消这次到货？对应的入库单会一并删除，库存扣回。')">撤销</a></td>
+      onclick="return confirm('取消这次到货？只撤销采购侧的记录，不影响库存。')">撤销</a></td>
   </tr>{% endfor %}</table></div>
   {% endif %}
 </div>
@@ -208,7 +237,14 @@
 <input type="hidden" name="_n" value="{{PON}}">
     <div class="rowflex">
       <div><label>日期</label><input type="date" name="pdate" value="{{today}}"></div>
-      <div><label>金额 *</label><input name="amount" inputmode="decimal" placeholder="0.00"></div>
+      {# 默认按「应付」带出：到货金额 − 已付。多数时候就是付这一笔，
+         省得每次去上面看数字再手打；付定金/部分款时直接改掉即可。 #}
+      {% set pay_def = '%.2f'|format(owed) if (owed or 0) > 0.005 else '' %}
+      <div><label>金额 *{% if pay_def %} <span class="pill">应付 {{pay_def}}</span>{% endif %}</label>
+        <input name="amount" id="payAmt" inputmode="decimal" placeholder="0.00" value="{{pay_def}}">
+        {% if pay_def %}<a href="javascript:;" class="pill"
+          onclick="document.getElementById('payAmt').value='{{pay_def}}';return false;">↺ 按应付填入</a>{% endif %}
+      </div>
     </div>
     <div class="rowflex">
       <div><label>方式</label><select name="method">
@@ -233,7 +269,7 @@
 <div class="rowflex">
   <a class="btn s o" href="{{url_for('purchase_home')}}" style="margin-top:0">返回采购台</a>
   <a class="btn s o" href="{{url_for('po_del',po_id=po.id)}}" style="margin-top:0"
-    onclick="return confirm('删除整张采购单？已到货的入库单会一并撤销，库存扣回。')">删除本单</a>
+    onclick="return confirm('删除整张采购单？到货记录一并删除，不影响库存。')">删除本单</a>
 </div>
 
 <script>

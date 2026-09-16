@@ -18,9 +18,20 @@
     <div><label>要求交期</label><input type="date" name="ddate"></div>
   </div>
 
+  {% if POTPLS %}
+  <label>采购模板（决定明细填哪些列）</label>
+  <select name="ptpl" onchange="location.href='{{url_for('po_new')}}?ptpl='+this.value">
+    {% for t in POTPLS %}<option value="{{t.id}}" {{'selected' if t.id==ptpl}}>{{t.name}}</option>{% endfor %}
+  </select>
+  <div style="font-size:12px;color:#7a869a;margin-top:-2px">
+    换模板会重开这一页（已填的明细不保留）。要改模板的列去
+    <a href="{{url_for('po_tpls')}}">采购模板</a> → ⚙ 配列。
+  </div>
+  {% else %}<input type="hidden" name="ptpl" value="0">{% endif %}
+
   {% if TPLS %}
   <div class="rowflex">
-    <div style="flex:1"><label>存到库存模板</label><select name="tpl">
+    <div style="flex:1"><label>统计归类（只影响月报分组，不入库）</label><select name="tpl">
       {% for t in TPLS %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}
     </select></div>
   </div>
@@ -56,6 +67,62 @@
 <div class="card">
   <h2>采购明细 <span class="pill" id="cnt">0 行</span></h2>
   <div id="rows"></div>
+
+{# 一行的样式模板：按采购模板启用的列渲染，JS 加行时复制它 #}
+<div id="tplrow" style="display:none">
+  {% for pair in PCOLS|batch(2) %}<div class="rowflex">
+  {% for c in pair %}
+    <div{% if c.fid in ('name',) %} style="flex:2"{% endif %}>
+      <label>{{c.label}}{% if c.unit %}（{{c.unit}}）{% endif %}{% if c.fid in ('name','qty') %} *{% endif %}</label>
+      {% if c.fid == 'name' %}
+        <input name="item_name" list="ml0" autocomplete="off" placeholder="输入即联想" class="nm" data-i="0">
+        <input type="hidden" name="item_mid" class="mid" data-i="0">
+        <div class="sg" id="sg0" style="display:none"></div>
+      {% elif c.fid == 'qty' %}
+        <input name="item_qty" inputmode="decimal" placeholder="" class="q" data-i="0" oninput="calcAll()">
+      {% elif c.fid == 'price' %}
+        <input name="item_price" inputmode="decimal" placeholder="0.00" class="p" data-i="0" oninput="calcAll()">
+      {% elif c.fid == 'unit' %}
+        <input name="item_unit" class="u" data-i="0" list="ulist" placeholder="个" oninput="showUnit(0)">
+      {% elif c.fid == 'conv' %}
+        <input name="item_conv" inputmode="decimal" value="1" class="cv" data-i="0" oninput="showUnit(0)">
+      {% elif c.fid == 'stock_unit' %}
+        <input name="item_stock_unit" class="su" data-i="0" list="ulist" placeholder="留空=同上">
+      {% elif c.fid == 'spec' %}
+        <input name="item_spec" class="sp" data-i="0">
+      {% elif c.fid == 'batch' %}
+        <input name="item_batch" data-i="0" placeholder="留空自动生成">
+      {% elif c.fid == 'note' %}
+        <input name="item_note" data-i="0" placeholder="选填">
+      {% elif c.fid.startswith('x_') %}
+        {% set xt = c.xtype or 'text' %}
+        {% if xt == 'select' %}
+        <select name="xc_{{c.fid}}" data-i="0">
+          <option value="">—</option>
+          {% for o in (c.xopt or '').split(',') %}{% if o.strip() %}
+          <option value="{{o.strip()}}">{{o.strip()}}</option>{% endif %}{% endfor %}
+        </select>
+        {% elif xt == 'date' %}
+        <input type="date" name="xc_{{c.fid}}" data-i="0">
+        {% elif xt == 'number' %}
+        <input name="xc_{{c.fid}}" inputmode="decimal" data-i="0" placeholder="">
+        {% elif xt == 'calc' %}
+        <input name="xc_{{c.fid}}" data-i="0" placeholder="自动算：{{c.xform}}" readonly
+               style="background:#f4f6fa">
+        {% else %}
+        <input name="xc_{{c.fid}}" data-i="0" placeholder="">
+        {% endif %}
+      {% else %}
+        <input name="item_{{c.fid}}" data-i="0">
+      {% endif %}
+    </div>
+  {% endfor %}
+  </div>{% endfor %}
+  <div class="uhint" data-i="0" style="font-size:12px;color:#7a869a"></div>
+  <datalist id="ml0">{% for m in mats %}<option value="{{m.name}}">{% endfor %}</datalist>
+  <div style="text-align:right"><button type="button" class="btn s o" style="width:auto;padding:6px 12px"
+    onclick="delRow(this)">删掉这行</button></div>
+</div>
   <button type="button" class="btn s o" onclick="addRow()">＋ 加一行</button>
   <button type="button" class="btn s" onclick="addRow(true)">＋ 复制上一行</button>
 
@@ -89,25 +156,12 @@ function addRow(copy){
   return false;
 }
 function rowHtml(i, src){
-  if(src){
-    var h=src.innerHTML;
-    return h.replace(/_(\d+)/g, '_'+i).replace(/id="r(\d+)"/g, 'id="r'+i+'"');
-  }
-  return '<div class="rowflex"><div><label>物料名称 *</label>'
-   + '<input name="item_name" list="ml'+i+'" autocomplete="off" placeholder="输入即联想" class="nm" data-i="'+i+'">'
-   + '<input type="hidden" name="item_mid" class="mid" data-i="'+i+'">'
-   + '<div class="sg" id="sg'+i+'" style="display:none"></div></div>'
-   + '<div><label>数量 *</label><input name="item_qty" inputmode="decimal" placeholder="" class="q" data-i="'+i+'" oninput="calcAll()"></div></div>'
-   + '<div class="rowflex"><div><label>单价</label><input name="item_price" inputmode="decimal" placeholder="0.00" class="p" data-i="'+i+'" oninput="calcAll()"></div>'
-   + '<div><label>单位（可直接改）</label><input name="item_unit" class="u" data-i="'+i+'" list="ulist" placeholder="个" oninput="showUnit('+i+')"></div></div>'
-   + '<div class="rowflex"><div><label>1 采购单位 =</label><input name="item_conv" inputmode="decimal" value="1" class="cv" data-i="'+i+'" oninput="showUnit('+i+')"></div>'
-   + '<div><label>库存单位（不同才填）</label><input name="item_stock_unit" class="su" data-i="'+i+'" list="ulist" placeholder="留空=同上"></div></div>'
-   + '<div class="uhint" data-i="'+i+'" style="font-size:12px;color:#7a869a"></div>'
-   + '<datalist id="ml'+i+'">{% for m in mats %}<option value="{{m.name}}">{% endfor %}</datalist>'
-   + '<input type="hidden" name="item_spec" class="sp" data-i="'+i+'">'
-   + '<div style="text-align:right"><button type="button" class="btn s o" style="width:auto;padding:6px 12px" '
-   + 'onclick="delRow(this)">删掉这行</button></div>'
-   + '<div style="font-size:12px;color:#7a869a;text-align:right" class="ln" data-i="'+i+'"></div>';
+  // 索引替换只动 data-i 和 id（sg0/ml0），绝不动 name —— 自定义列的字段名
+  // 是 xc_x_1699999999 这种，含下划线+数字，用 /_(\d+)/ 替换会把字段名改坏。
+  var fix=function(h){ return h.replace(/data-i="\d+"/g,'data-i="'+i+'"')
+                              .replace(/id="([A-Za-z]+)\d+"/g,'id="$1'+i+'"'); };
+  var t=document.getElementById('tplrow');
+  return fix(src ? src.innerHTML : (t ? t.innerHTML : ''));
 }
 function delRow(b){ b.closest('.card').remove();
   document.getElementById('cnt').textContent = document.querySelectorAll('#rows .card').length + ' 行';

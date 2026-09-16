@@ -26,6 +26,22 @@
   </div>
 </div>
 
+{% if legacy and legacy.c %}
+<div class="card" style="border-left:3px solid #f5a524">
+  <h2>旧版采购入库单 <span class="pill">{{legacy.c}} 条</span></h2>
+  <div style="font-size:13px;line-height:1.7;color:#4a5568">
+    这些是 v3.29 之前「登记到货自动生成入库单」留下来的，合计 <b>{{'%g'|format(legacy.q)}}</b>。
+    现在<b>采购与库存已经相互独立</b>，到货不再自动生成入库单——
+    货要真正进仓库，请到入库页另录一笔。
+    留着它们，库存里就还含着这批采购的货；清掉则库存相应减少。
+  </div>
+  <div class="rowflex" style="margin-top:10px">
+    <a class="btn s o" href="{{url_for('sys_purge_po_txns')}}"
+       onclick="return confirm('确认清理？将删除 {{legacy.c}} 条旧版采购入库单，库存相应减少，已到货记录保留不动。')">🧹 清理这 {{legacy.c}} 条</a>
+  </div>
+</div>
+{% endif %}
+
 <div class="card">
   <h2>库概况</h2>
   <div class="grid2" style="font-size:13px;line-height:2">

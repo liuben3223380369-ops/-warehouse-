@@ -1,0 +1,132 @@
+{% extends 'base.html' %}
+{% block title %}{{row.sno}} - 盘点表{% endblock %}
+{% block h1 %}{{row.sno}}{% endblock %}
+{% block sub %}{{row.sdate}}{% if row.scope %} · {{row.scope}}{% endif %} · {{summary.n}} 种物料{% endblock %}
+{% block body %}
+{% set NON = new_nonce() %}
+
+{% if request.args.saved %}<div class="card" style="background:#e8f6ee;border-left:3px solid #12a150">已保存 {{request.args.saved}} 行</div>{% endif %}
+{% if request.args.made %}<div class="card" style="background:#e8f6ee;border-left:3px solid #12a150">已按差异生成 {{request.args.made}} 笔调整单据，库存已更新</div>{% endif %}
+{% if request.args.undone %}<div class="card" style="background:#e8f6ee;border-left:3px solid #12a150">已撤销调整，本次生成的单据已删除，库存回到盘点前</div>{% endif %}
+{% if request.args.err=='dup' %}<div class="card" style="background:#fdeced;border-left:3px solid #e5484d">这一下点重复了，没有重复生成单据</div>{% endif %}
+{% if request.args.err=='nodiff' %}<div class="card" style="background:#fdeced;border-left:3px solid #e5484d">没有差异，不需要调整</div>{% endif %}
+{% if request.args.skip %}<div class="card" style="background:#fdeced;border-left:3px solid #e5484d">这几行盘亏数量超过可用库存，已跳过：{{request.args.skip}}</div>{% endif %}
+
+<div class="grid2">
+  <div class="stat"><span>账面总数</span><b>{{'%g'|format(summary.book)}}</b></div>
+  <div class="stat"><span>实盘总数</span><b>{{'%g'|format(summary.real)}}</b></div>
+  <div class="stat"><span>总差异</span><b class="{{'out' if summary.real<summary.book else 'in'}}">{{'%g'|format(summary.real-summary.book)}}</b></div>
+  <div class="stat"><span>差异金额</span><b class="{{'out' if summary.amt<0 else 'in'}}">{{'%+.2f'|format(summary.amt)}}</b></div>
+</div>
+<div class="grid3">
+  <div class="stat"><span>已盘 / 应盘</span><b>{{summary.done}}/{{summary.n}}</b></div>
+  <div class="stat"><span>盘盈 种 / 数量</span><b class="in">{{summary.over}} / {{'%g'|format(summary.over_qty)}}</b></div>
+  <div class="stat"><span>盘亏 种 / 数量</span><b class="out">{{summary.short}} / {{'%g'|format(summary.short_qty)}}</b></div>
+</div>
+
+<div class="card" style="padding:10px">
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+    <div><span class="pill">{{row.status}}</span>
+      {% if row.counter %}盘点 {{row.counter}}{% endif %}
+      {% if row.checker %}・监盘 {{row.checker}}{% endif %}</div>
+    <div style="font-size:var(--fs-label);color:#7a869a">总差异率 {{'%.2f'|format(summary.rate) if summary.rate is not none else '—'}}%</div>
+  </div>
+  {% if row.note %}<div style="margin-top:6px;color:#5b6675;font-size:var(--fs-table)">{{row.note}}</div>{% endif %}
+</div>
+
+<form method="post" action="{{url_for('stk_save',sid=row.id)}}">
+<div class="card" style="padding:0;overflow:hidden">
+{% if items %}<div class="scroll"><table>
+<tr>
+  <th>物料</th>
+  <th>账面</th>
+  <th>实盘</th>
+  <th>差异</th>
+  <th>差异率</th>
+  <th>原因 / 处理</th>
+</tr>
+{% for it in items %}
+<tr class="{{'low' if it.diff and it.diff<0 else ''}}">
+  <td>
+    {{it.name}}{% if it.spec %}<br><span class="pill">{{it.spec}}</span>{% endif %}
+    {% if it.unit %}<span class="pill">{{it.unit}}</span>{% endif %}
+    <input type="hidden" name="item_id" value="{{it.id}}">
+  </td>
+  <td class="n">{{'%g'|format(it.book_qty)}}</td>
+  <td class="n">
+    <input type="text" name="real_{{it.id}}" inputmode="decimal"
+           value="{{'' if it.real_qty is none else '%g'|format(it.real_qty)}}"
+           placeholder="未盘" style="width:76px;padding:6px;text-align:right;margin:0">
+  </td>
+  <td class="n {{'out' if it.diff and it.diff<0 else ('in' if it.diff else '')}}">
+    <b>{{'%g'|format(it.diff) if it.diff is not none else '—'}}</b></td>
+  <td class="n">{{'%.1f'|format(it.rate)~'%' if it.rate is not none else '—'}}</td>
+  <td>
+    <select name="reason_{{it.id}}" style="padding:5px;margin:0;font-size:var(--fs-label)">
+      {% for r in reasons %}<option {{'selected' if it.reason==r}}>{{r}}</option>{% endfor %}
+      {% if it.reason and it.reason not in reasons %}<option selected>{{it.reason}}</option>{% endif %}
+    </select>
+    <select name="handle_{{it.id}}" style="padding:5px;margin:2px 0 0;font-size:var(--fs-label)">
+      {% for h in handles %}<option {{'selected' if it.handle==h}}>{{h}}</option>{% endfor %}
+      {% if it.handle and it.handle not in handles %}<option selected>{{it.handle}}</option>{% endif %}
+    </select>
+    <input type="text" name="note_{{it.id}}" value="{{it.note or ''}}"
+           placeholder="备注" style="padding:5px;margin:2px 0 0;font-size:var(--fs-label)">
+  </td>
+</tr>
+{% endfor %}</table></div>
+{% else %}<div class="empty">这张盘点表没有明细</div>{% endif %}
+</div>
+
+{% if items and row.status not in ('已调整','已取消') %}
+<div style="margin:10px 0">
+  <label>单价（差异金额用，通常不用改；留空保持原值）</label>
+  <div class="scroll"><table>
+  <tr><th>物料</th><th>单价</th><th>物料</th><th>单价</th></tr>
+  {% for it in items %}{% if loop.index0 % 2 == 0 %}<tr>{% endif %}
+    <td style="font-size:var(--fs-label)">{{it.name}}</td>
+    <td><input type="text" name="price_{{it.id}}" inputmode="decimal"
+               value="{{'%g'|format(it.price or 0)}}" style="width:70px;padding:5px;margin:0;text-align:right"></td>
+  {% if loop.index0 % 2 == 1 or loop.last %}</tr>{% endif %}{% endfor %}
+  </table></div>
+</div>
+<button type="submit">💾 保存实盘数</button>
+{% endif %}
+</form>
+
+{% if items %}
+<div class="rowflex" style="margin-top:10px">
+  {% if row.status=='已调整' %}
+    <form method="post" action="{{url_for('stk_unadjust',sid=row.id)}}" style="flex:1;margin:0">
+      <button class="btn o s" type="submit">↩ 撤销调整</button>
+    </form>
+  {% else %}
+    <form method="post" action="{{url_for('stk_adjust',sid=row.id)}}" style="flex:1;margin:0"
+          onsubmit="return confirm('按差异生成盘盈/盘亏单据并更新库存，确定吗？')">
+      <input type="hidden" name="_nonce" value="{{NON}}">
+      <button class="btn s" type="submit">✓ 调整入账</button>
+    </form>
+  {% endif %}
+  <a class="btn g s" href="{{url_for('stk_export',sid=row.id)}}">⬇ 导出 Excel</a>
+  <a class="btn g s" href="{{url_for('stk_export',sid=row.id,fmt='csv')}}">CSV</a>
+  <a class="btn g s" href="{{url_for('stk_print',sid=row.id)}}">🖨 打印</a>
+</div>
+{% endif %}
+
+<div class="rowflex" style="margin-top:8px">
+  {% if row.status!='已调整' %}
+  <form method="post" action="{{url_for('stk_status',sid=row.id)}}" style="flex:1;margin:0">
+    <select name="status" style="margin:0">
+      <option>已盘点</option><option>草稿</option><option>已取消</option>
+    </select>
+    <button class="btn g s" type="submit" style="margin-top:6px">改状态</button>
+  </form>
+  {% endif %}
+  <form method="post" action="{{url_for('stk_del',sid=row.id)}}" style="flex:1;margin:0"
+        onsubmit="return confirm('删除这张盘点单？未调整的实盘数据会一起删掉。')">
+    <button class="btn r s" type="submit">🗑 删除盘点单</button>
+  </form>
+</div>
+
+<div style="margin-top:10px"><a class="btn g s" href="{{url_for('stk_list')}}">← 返回盘点列表</a></div>
+{% endblock %}

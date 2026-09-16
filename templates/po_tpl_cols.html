@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="page">
+  <div class="hd">
+    <a class="bk" href="{{url_for('po_tpls')}}">‹ 模板</a>
+    <h1>{{t.name}} · 配列</h1>
+    <span class="sp"></span>
+  </div>
+
+  {% if msg %}<div class="ok">{{msg}}</div>{% endif %}
+  {% if err %}<div class="err">{{err}}</div>{% endif %}
+
+  <div class="card">
+    <div style="font-size:13px;color:#5b6b82;line-height:1.7">
+      这里决定<b>建单时明细要填哪些列</b>：改名、排序、开关、配单位。
+      <br><b>单位</b>填了，表头就显示成「厚度（mm）」；留空就是不带单位。
+      <br><b>别名</b>是 Excel 导入时认这一列用的名字（改完名会自动加进别名）。
+    </div>
+  </div>
+
+  <form method="post" action="{{url_for('po_tpl_cols_set', tid=t.id)}}">
+    <input type="hidden" name="_n" value="{{new_nonce()}}">
+    <div class="card">
+      <h2 style="margin-top:0">列配置</h2>
+      <div class="scroll"><table>
+      <tr><th>显示</th><th>列名</th><th>单位</th><th class="n">序</th><th>类型</th></tr>
+      {% for c in cols %}
+      <tr>
+        <td><input type="checkbox" name="en_{{c.fid}}" {{'checked' if c.enabled}}></td>
+        <td><input name="label_{{c.fid}}" value="{{c.label}}" style="min-width:110px">
+          {% if c.fid.startswith('x_') %}
+            <div style="font-size:11px;color:#98a2b3">自定义列</div>
+          {% else %}
+            <div style="font-size:11px;color:#98a2b3">系统列：{{c.fid}}</div>
+          {% endif %}
+        </td>
+        <td><input name="un_{{c.fid}}" value="{{c.unit or ''}}" style="width:64px" placeholder="无"></td>
+        <td class="n"><input name="pos_{{c.fid}}" value="{{c.pos}}" inputmode="numeric" style="width:44px"></td>
+        <td>
+          {% if c.fid.startswith('x_') %}
+          <select name="xt_{{c.fid}}">
+            {% for v,n in [('text','文本'),('number','数字'),('date','日期'),('select','单选'),('calc','公式')] %}
+            <option value="{{v}}" {{'selected' if (c.xtype or 'text')==v}}>{{n}}</option>{% endfor %}
+          </select>
+          {% if (c.xtype or 'text')=='select' %}
+          <input name="xo_{{c.fid}}" value="{{c.xopt or ''}}" placeholder="选项，逗号分隔">
+          {% elif (c.xtype or 'text')=='calc' %}
+          <input name="xf_{{c.fid}}" value="{{c.xform or ''}}" placeholder="如 qty*price">
+          {% else %}
+          <input type="hidden" name="xo_{{c.fid}}" value="{{c.xopt or ''}}">
+          <input type="hidden" name="xf_{{c.fid}}" value="{{c.xform or ''}}">
+          {% endif %}
+          {% else %}
+          <span style="font-size:11px;color:#98a2b3">—</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      </table></div>
+      <button type="submit" class="btn s g">保存列配置</button>
+      <button type="submit" name="reset" value="1" class="btn s o"
+        onclick="return confirm('恢复默认列？自己加的自定义列会全部删掉。')">↺ 恢复默认</button>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">导入别名</h2>
+      <div style="font-size:12px;color:#7a869a;margin-bottom:8px">
+        Excel 导入时，用哪些名字认这一列。多个名字用逗号隔开。
+      </div>
+      {% for c in cols %}
+      <label>{{c.label}}</label>
+      <input name="al_{{c.fid}}" value="{{c.aliases or ''}}">
+      {% endfor %}
+      <button type="submit" class="btn s g">保存列配置</button>
+    </div>
+  </form>
+
+  <div class="card">
+    <h2 style="margin-top:0">加自定义列</h2>
+    <div style="font-size:12px;color:#7a869a;margin-bottom:8px">
+      系统列之外还要填什么，自己加：客户订单号、交货方式、颜色、克重…
+      <br><b>公式列</b>可写 <code>qty*price</code>、<code>qty*conv</code>，保存时自动算，手改无效。
+    </div>
+    <form method="post" action="{{url_for('po_tpl_col_add', tid=t.id)}}">
+      <input type="hidden" name="_n" value="{{new_nonce()}}">
+      <label>列名 *</label>
+      <input name="label" placeholder="如：客户订单号" required>
+      <label>类型</label>
+      <select name="xtype" onchange="var v=this.value;
+        document.getElementById('xo').style.display = v=='select'?'':'none';
+        document.getElementById('xf').style.display = v=='calc'?'':'none';">
+        <option value="text">文本</option>
+        <option value="number">数字</option>
+        <option value="date">日期</option>
+        <option value="select">单选</option>
+        <option value="calc">公式</option>
+      </select>
+      <div id="xo" style="display:none">
+        <label>选项（逗号分隔）</label>
+        <input name="xopt" placeholder="未付,已付,部分付">
+      </div>
+      <div id="xf" style="display:none">
+        <label>公式</label>
+        <input name="xform" placeholder="qty*price">
+        <div style="font-size:11px;color:#98a2b3">可用变量：qty 数量、price 单价、conv 换算率</div>
+      </div>
+      <button type="submit" class="btn s g">＋ 加列</button>
+    </form>
+  </div>
+
+  {% if cols %}
+  <div class="card">
+    <h2 style="margin-top:0">删自定义列</h2>
+    <div style="font-size:12px;color:#7a869a;margin-bottom:8px">
+      只能删自己加的列；系统列不想要就回到上面把「显示」勾掉。删列会连已存的值一起清掉。
+    </div>
+    {% for c in cols %}
+      {% if c.fid.startswith('x_') %}
+      <div style="display:flex;justify-content:space-between;align-items:center;
+                  padding:6px 0;border-bottom:1px solid #f4f6fa">
+        <span>{{c.label}}</span>
+        <a href="{{url_for('po_tpl_col_del', tid=t.id, fid=c.fid)}}"
+           style="font-size:12px;color:#c1272d"
+           onclick="return confirm('删除列「{{c.label}}」？已填的值会一并清掉。')">删除</a>
+      </div>
+      {% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <a class="btn s g" href="{{url_for('po_tpl_use', tid=t.id)}}">用这套模板开单 →</a>
+</div>
+{% endblock %}

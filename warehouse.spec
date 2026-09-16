@@ -21,6 +21,47 @@ datas = [
 
 # Flask/Jinja2 的模块是动态导入的，静态分析抓不全，这里手动挂上
 hiddenimports = [
+    # 本项目自己的包：拆成模块后是普通 Python 包，
+    # 但 PyInstaller 静态分析容易漏掉子模块，逐个挂上最稳
+    'wh',
+    'wh.dispatch',
+    'wh.desktop',
+    'wh.importer',
+    'wh.core',
+    'wh.core.db',
+    'wh.core.util',
+    'wh.core.errors',
+    'wh.core.router',
+    'wh.core.sysinfo',
+    'wh.ui',
+    'wh.ui.theme',
+    'wh.ui.widgets',
+    'wh.table',
+    'wh.table.model',
+    'wh.table.formula',
+    'wh.table.parse',
+    'wh.table.ops',
+    'wh.table.export',
+    'wh.table.render',
+    'wh.table.routes',
+    'wh.table.helpers',
+    # 电子表格引擎（类 Excel 制表台）—— 词法/语法/函数/样式/地址各自一个文件
+    'wh.table.sp_addr',
+    'wh.table.sp_lexer',
+    'wh.table.sp_parser',
+    'wh.table.sp_funcs',
+    'wh.table.sp_engine',
+    'wh.table.sp_io',
+    'wh.table.sp_style',
+    'wh.table.sp_routes',
+    'wh.table.sp_extra',
+    'wh.inv',
+    'wh.txn',
+    'wh.po',
+    'wh.po.logic',
+    'wh.po.routes',
+    'wh.stat',
+    'wh.count',
     'flask',
     'jinja2',
     'jinja2.ext',
@@ -64,7 +105,7 @@ hiddenimports = [
 ]
 
 a = Analysis(
-    ['app.py'],
+    ['run.py'],
     pathex=[HERE],
     binaries=[],
     datas=datas,

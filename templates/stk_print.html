@@ -1,0 +1,32 @@
+{% extends 'base.html' %}
+{% block title %}{{row.sno}} 打印{% endblock %}
+{% block h1 %}盘点表 {{row.sno}}{% endblock %}
+{% block sub %}盘点日期 {{row.sdate}} · 只印账面，实盘栏现场填（盲盘）{% endblock %}
+{% block body %}
+<div class="card" style="padding:8px 10px">
+  <div style="font-size:var(--fs-table);color:#5b6675">
+    范围：{{row.scope or '全部'}} ・ 盘点人：{{row.counter or '____'}} ・ 监盘人：{{row.checker or '____'}}
+  </div>
+</div>
+<div class="card" style="padding:0;overflow:hidden">
+<div class="scroll"><table>
+<tr><th>#</th><th>物料</th><th>规格</th><th>单位</th><th>账面</th><th>实盘</th><th>差异</th><th>备注</th></tr>
+{% for it in items %}
+<tr>
+  <td class="n">{{loop.index}}</td>
+  <td>{{it.name}}{% if it.code %}<br><span class="pill">{{it.code}}</span>{% endif %}</td>
+  <td>{{it.spec or ''}}</td>
+  <td>{{it.unit or ''}}</td>
+  <td class="n">{{'%g'|format(it.book_qty)}}</td>
+  <td class="n" style="height:34px"></td>
+  <td class="n"></td>
+  <td></td>
+</tr>
+{% endfor %}
+</table></div>
+</div>
+<div class="rowflex">
+  <a class="btn g s" href="{{url_for('stk_detail',sid=row.id)}}">← 回到盘点表</a>
+  <a class="btn o s" href="javascript:window.print()">🖨 打印本页</a>
+</div>
+{% endblock %}

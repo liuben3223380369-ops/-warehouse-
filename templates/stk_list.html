@@ -1,0 +1,54 @@
+{% extends 'base.html' %}
+{% block title %}盘点{% endblock %}
+{% block h1 %}库存盘点{% endblock %}
+{% block sub %}按账面数生成盘点表 → 现场盲盘填实盘数 → 调整入账{% endblock %}
+{% block body %}
+
+<div class="rowflex" style="margin-bottom:12px">
+  <a class="btn" href="{{url_for('stk_new')}}">＋ 新建盘点单</a>
+</div>
+
+<form class="card" method="get">
+  <label>搜索（单号 / 范围 / 盘点人）</label>
+  <input type="text" name="kw" value="{{kw}}" placeholder="如 PD2026 / A区 / 张三">
+  <label>状态</label>
+  <select name="st">
+    <option value="">全部</option>
+    {% for s in statuses %}<option {{'selected' if st==s}}>{{s}}</option>{% endfor %}
+  </select>
+  <button type="submit">筛选</button>
+</form>
+
+{% if rows %}
+{% for r in rows %}{% set s = info[r.id] %}
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
+    <div>
+      <a href="{{url_for('stk_detail',sid=r.id)}}" style="font-size:var(--fs-btn);font-weight:600;text-decoration:none">
+        {{r.sno}}</a>
+      <span class="pill">{{r.status}}</span>
+    </div>
+    <div style="color:#7a869a;font-size:var(--fs-label)">{{r.sdate}}</div>
+  </div>
+  <div style="margin-top:6px;color:#5b6675;font-size:var(--fs-table)">
+    {% if r.scope %}范围：{{r.scope}} ・ {% endif %}
+    {{s.n}} 种物料
+    {% if r.counter %}・盘点 {{r.counter}}{% endif %}
+    {% if r.checker %}・监盘 {{r.checker}}{% endif %}
+  </div>
+  <div class="grid3" style="margin-top:8px">
+    <div class="stat"><span>已盘</span><b>{{s.done}}/{{s.n}}</b></div>
+    <div class="stat"><span>盘盈 / 盘亏</span>
+      <b><span class="in">{{s.over}}</span> / <span class="out">{{s.short}}</span></b></div>
+    <div class="stat"><span>差异金额</span><b class="{{'out' if s.amt<0 else 'in'}}">{{'%+.2f'|format(s.amt)}}</b></div>
+  </div>
+</div>
+{% endfor %}
+{% else %}
+<div class="card"><div class="empty">还没有盘点单</div>
+  <div style="color:#7a869a;font-size:var(--fs-label);text-align:center;margin-top:6px">
+    点上面的「新建盘点单」，系统会按当前账面数生成一张空白盘点表，打印出来就能现场盘。
+  </div>
+</div>
+{% endif %}
+{% endblock %}
