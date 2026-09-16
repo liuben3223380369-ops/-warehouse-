@@ -28,7 +28,36 @@ jobs:
           java-version: '17'
 
       - name: 准备 Android SDK
-        uses: android-actions/setup-android@v3
+        run: |
+          set -e
+          # 官方 ubuntu 镜像自带 Android SDK。
+          # 之前用的 android-actions/setup-android 会联网整包更新，
+          # 经常在这一步超时或授权失败，改为直接用镜像自带的 SDK。
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          export ANDROID_HOME="$SDK"
+          export ANDROID_SDK_ROOT="$SDK"
+          echo "ANDROID_HOME=$SDK"             >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$SDK"         >> $GITHUB_ENV
+          echo "$SDK/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$SDK/platform-tools"           >> $GITHUB_PATH
+          mkdir -p "$HOME/.android"
+          touch "$HOME/.android/repositories.cfg"
+          echo "SDK 目录: $SDK"
+          ls "$SDK" || true
+          # 自动同意授权协议，并补齐编译需要的组件
+          for SM in "$(command -v sdkmanager || true)" \
+                    "$SDK/cmdline-tools/latest/bin/sdkmanager" \
+                    "$SDK/tools/bin/sdkmanager"; do
+            if [ -n "$SM" ] && [ -x "$SM" ]; then
+              echo "使用 sdkmanager: $SM"
+              yes 2>/dev/null | "$SM" --licenses > /dev/null 2>&1 || true
+              "$SM" --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" 2>&1 | tail -15 || true
+              break
+            fi
+          done
+          echo "--- 已装平台 ---"
+          ls "$SDK/platforms"    2>/dev/null || true
+          ls "$SDK/build-tools"  2>/dev/null || true
 
       - name: 准备 Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -40,6 +69,7 @@ jobs:
           java -version 2>&1 | head -3
           gradle --version | head -6
           echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
 
       - name: 把 Python 源码放进 Android 工程
         run: |
@@ -55,16 +85,41 @@ jobs:
           du -sh android/app/src/main/python
 
       - name: 构建 APK
-        run: gradle -p android assembleDebug --no-daemon
+        run: |
+          set -e
+          set -o pipefail          # 不然 gradle 失败会被 tail 吞掉，步骤显示成功
+          gradle -p android assembleDebug --no-daemon --stacktrace 2>&1 | tail -100
+          echo "=== 产物目录 ==="
+          ls -la android/app/build/outputs/apk/debug/ 2>/dev/null || true
+          ls -la android/app/build/outputs/ 2>/dev/null || true
 
       - name: 收集产物
         run: |
+          set -e
           mkdir -p out
           cp android/app/build/outputs/apk/debug/*.apk out/ 2>/dev/null || true
+          cp android/app/build/outputs/apk/*/*.apk out/ 2>/dev/null || true
           ls -la out
           test -n "$(ls -A out)" || (echo "没找到 APK" && exit 1)
+          # 统一文件名，方便 Release 里一眼认出
+          for f in out/*.apk; do
+            case "$f" in
+              out/仓库管理系统-android.apk) ;;
+              *) mv "$f" out/仓库管理系统-android.apk ;;
+            esac
+            break
+          done
+          ls -la out
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: 仓库管理系统-android
+          path: out/*.apk
+          if-no-files-found: error
 
       - name: 发布到 Release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           name: 仓库管理系统 ${{ github.ref_name }}
