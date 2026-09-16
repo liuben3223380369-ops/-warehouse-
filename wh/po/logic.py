@@ -605,12 +605,15 @@ def receive(item_id, rdate, qty, price=None, note='', batch=None):
 
 
 def sync_txn_to_po(batch, name='', mid=None, qty=0, price=None, date='', note='',
-                   txn_id=None):
+                   txn_id=None, qty_unit=''):
     """入库页按批次号录入时，同步生成一条采购流水（用于结单）。
 
     这是 v3.35 的核心：采购与库存**不直接牵连**——库存记自己的 txns，
     采购记自己的 po_receipts，两者只通过「批次号」这个桥联系。
     到货数按**入库实际录入**算，采购页不再手工登记到货。
+
+    qty_unit：这一笔数量填的是按「平米」还是按「卷」（v3.27 的双口径）。
+    必须带上它来折采购单位，见下面 _to_po_qty 的说明。
 
     返回 (ok, msg)。找不到批次时返回 (False, '')——没对上采购单是正常的
     （自产、调拨、没建采购单的货），不该报错打断入库。
@@ -650,12 +653,29 @@ def sync_txn_to_po(batch, name='', mid=None, qty=0, price=None, date='', note=''
     if it['pstatus'] == '草稿':
         db.run("UPDATE pos SET status='已下单' WHERE id=?", it['po_id'])
 
-    # 入库记的是库存单位，采购记的是采购单位：按换算率折回去
+    # 入库数量 → 采购单位。
+    # 采购记的是采购单位（卷），入库填的可能是库存单位（平米），所以要折算。
+    #
+    # v3.42 修的坑：以前不看口径，一律 qty/conv。但使用者在入库页选了
+    # 「数量按 卷」时，qty 本来就是卷，再除一次换算率就少记了 conv 倍 ——
+    # 订 10 卷、供应商交齐 10 卷，采购单却只记 2 卷，一直停在「部分到货」，
+    # 结不了单、欠款也对不上。
+    # 所以：口径跟采购单位一致就原样记，跟库存单位一致才除换算率；
+    # 老单据没记口径（v3.27 之前）维持原行为除换算率，不改动历史数据。
     try:
         conv = float(it['conv'] or 1) or 1.0
     except (TypeError, ValueError):
         conv = 1.0
-    po_qty = round(qty / conv, 6) if conv else qty
+    _qu = (qty_unit or '').strip()
+    _pu = (it['unit'] or '').strip()             # 采购单位（卷）
+    _su = (it['stock_unit'] or '').strip()       # 库存单位（平米）
+    if _qu and _pu and _qu == _pu:
+        po_qty = qty                              # 填的就是卷，不用折
+    elif _qu and _su and _qu == _su:
+        po_qty = round(qty / conv, 6) if conv else qty
+    else:
+        po_qty = round(qty / conv, 6) if conv else qty   # 老数据/认不出：原行为
+    po_qty = round(po_qty, 6)
     remain = round(float(it['qty'] or 0) - float(it['recv_qty'] or 0), 6)
     if remain <= 1e-9:
         return False, '批次 %s 已经交齐了，这次入库没有计入采购单' % b

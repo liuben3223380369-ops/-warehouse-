@@ -45,6 +45,14 @@ def app_dir():
 
     注意：源码运行时必须回到**项目根目录**（run.py 所在的那层），
     不能停在 wh/core，否则升级改目录结构后数据文件会跟着跑丢。"""
+    # Android / 自定义数据目录：环境变量优先，行为不变（未设置时走原逻辑）
+    _home = os.environ.get('WAREHOUSE_HOME')
+    if _home:
+        try:
+            os.makedirs(_home, exist_ok=True)
+        except Exception:
+            pass
+        return _home
     if _is_frozen():
         return os.path.dirname(os.path.abspath(sys.executable))
     # wh/core/db.py -> core -> wh -> 项目根
@@ -912,10 +920,18 @@ _FORM_FUNCS = {
     'round': round, 'abs': abs, 'min': min, 'max': max,
     'int': int, 'float': float, 'len': len, 'sum': sum,
 }
-_ALLOWED = (_ast.Expression, _ast.BinOp, _ast.UnaryOp, _ast.Num, _ast.Constant,
-            _ast.Name, _ast.Load, _ast.Add, _ast.Sub, _ast.Mult, _ast.Div,
-            _ast.Pow, _ast.Mod, _ast.USub, _ast.UAdd, _ast.Call, _ast.keyword,
-            _ast.Tuple, _ast.List)
+# 注意：_ast.Num / _ast.Str / _ast.NameConstant 在 Python 3.12 起已被彻底移除，
+# 直接引用会在**导入时**就 AttributeError（整个程序起不来）。
+# 这里用 getattr 兜底：新版本统一由 Constant 表示，老版本挂上各自的节点。
+_ALLOWED = tuple(x for x in (
+    _ast.Expression, _ast.BinOp, _ast.UnaryOp, _ast.Constant,
+    _ast.Name, _ast.Load, _ast.Add, _ast.Sub, _ast.Mult, _ast.Div,
+    _ast.Pow, _ast.Mod, _ast.USub, _ast.UAdd, _ast.Call, _ast.keyword,
+    _ast.Tuple, _ast.List,
+    getattr(_ast, 'Num', None), getattr(_ast, 'Str', None),
+    getattr(_ast, 'NameConstant', None), getattr(_ast, 'Bytes', None),
+    getattr(_ast, 'Index', None),
+) if x is not None)
 
 def calc_formula(expr, values):
     """算公式。只放行四则运算和几个函数，**不用 eval**，防注入。

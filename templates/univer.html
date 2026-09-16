@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{ name }} · 表格</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='univer/univer.css') }}">
+<style>
+  html,body{margin:0;padding:0;height:100%;overflow:hidden;
+    font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;}
+  #app{position:absolute;inset:0;}
+  /* 顶部工具条：只放真正用得上的，其余交给 Univer 自己的菜单 */
+  #bar{position:fixed;top:0;left:0;right:0;height:40px;z-index:9999;
+    display:flex;align-items:center;gap:8px;padding:0 10px;
+    background:#fff;border-bottom:1px solid #e3e6ea;}
+  #bar .t{font-weight:600;font-size:13px;color:#1f2937;
+    max-width:38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  #bar .sp{flex:1}
+  #bar button{height:26px;padding:0 12px;font-size:12px;border-radius:5px;
+    border:1px solid #d0d5dd;background:#fff;color:#344054;cursor:pointer;}
+  #bar button:hover{background:#f4f6f8}
+  #bar button.pri{background:#2563eb;border-color:#2563eb;color:#fff}
+  #bar button.pri:hover{background:#1d4ed8}
+  #msg{font-size:12px;color:#16a34a}
+  #app{top:40px}
+  #boot{position:fixed;inset:0;display:flex;align-items:center;
+    justify-content:center;flex-direction:column;gap:10px;
+    background:#fff;z-index:10000;color:#475569;font-size:14px}
+  #boot .err{color:#b42318;max-width:70%;text-align:center;line-height:1.7}
+  .spin{width:26px;height:26px;border:3px solid #e3e6ea;border-top-color:#2563eb;
+    border-radius:50%;animation:r .8s linear infinite}
+  @keyframes r{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+
+<div id="bar">
+  <span class="t">{{ name }}</span>
+  <span class="sp"></span>
+  <span id="msg"></span>
+  <button onclick="doSave()" class="pri" type="button">保存</button>
+  <button onclick="location.href='/sheet/{{ bid }}'" type="button">旧版表格</button>
+  <button onclick="location.href='/sheet'" type="button">返回</button>
+</div>
+
+<div id="app"></div>
+<div id="boot"><div class="spin"></div><div>正在加载表格引擎…</div></div>
+
+<script src="{{ url_for('static', filename='univer/react.js') }}"></script>
+<script src="{{ url_for('static', filename='univer/react-dom.js') }}"></script>
+<script src="{{ url_for('static', filename='univer/rxjs.js') }}"></script>
+<script src="{{ url_for('static', filename='univer/echarts.js') }}"></script>
+
+<script>
+/* UMD 场景适配：Univer 需要 ReactJSXRuntime，而 React 18 的 UMD 不带它 */
+(function (g) {
+  var R = g.React, RD = g.ReactDOM;
+  if (!R) { return; }
+  if (!g.ReactJSXRuntime) {
+    function jsx(type, props, key) {
+      var p = {};
+      for (var k in (props || {})) { if (k !== 'children') p[k] = props[k]; }
+      if (typeof key !== 'undefined' && key !== null) p.key = key;
+      if (props && 'children' in props) p.children = props.children;
+      return R.createElement(type, p);
+    }
+    g.ReactJSXRuntime = { jsx: jsx, jsxs: jsx, jsxDEV: jsx, Fragment: R.Fragment };
+  }
+  if (RD && !RD.createRoot) {
+    RD.createRoot = function (c) {
+      return {
+        render: function (el) { RD.render(el, c); },
+        unmount: function () { RD.unmountComponentAtNode(c); }
+      };
+    };
+    RD.createRoot_ = RD.createRoot;
+  }
+  if (!g.Rx && g.rxjs) { g.Rx = g.rxjs; }        /* 旧命名的兜底 */
+  if (typeof g.global === 'undefined') { g.global = g; }   /* 部分包用 typeof global 判断 */
+})(window);
+</script>
+<script src="{{ url_for('static', filename='univer/univer-presets.js') }}"></script>
+<script src="{{ url_for('static', filename='univer/univer-sheets-core.js') }}"></script>
+<script src="{{ url_for('static', filename='univer/univer-zh-CN.js') }}"></script>
+
+
+<script>
+var SNAPSHOT = {{ snapshot|safe }};
+var SAVE_URL = '/api/univer/{{ bid }}/save';
+var NONCE    = '{{ nonce }}';
+var uni = null;
+
+function bootFail(msg) {
+  var b = document.getElementById('boot');
+  if (!b) return;
+  b.innerHTML = '<div class="err"><b>表格引擎没能启动</b><br>' + msg +
+    '<br><br>不影响其他功能。<br>' +
+    '<a href="/sheet/{{ bid }}">点这里用旧版表格打开</a></div>';
+}
+
+function doSave() {
+  var m = document.getElementById('msg');
+  if (!uni) { if (m) m.textContent = '还没准备好'; return; }
+  try {
+    var wb = uni.getActiveWorkbook();
+    if (!wb) { if (m) m.textContent = '没有打开的工作簿'; return; }
+    var snap = wb.save();
+    if (m) { m.style.color = '#475569'; m.textContent = '保存中…'; }
+    fetch(SAVE_URL, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(snap)
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (m) {
+          m.style.color = d && d.ok ? '#16a34a' : '#b42318';
+          m.textContent = d && d.ok ? '已保存 ' : '保存失败';
+          setTimeout(function () { m.textContent = ''; }, 2500);
+        }
+      })
+      .catch(function () {
+        if (m) { m.style.color = '#b42318'; m.textContent = '保存失败'; }
+      });
+  } catch (e) {
+    bootFail('保存出错：' + (e && e.message ? e.message : e));
+  }
+}
+
+/* Ctrl+S 保存 */
+document.addEventListener('keydown', function (e) {
+  if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
+    e.preventDefault(); doSave();
+  }
+});
+
+/* 收集页面上所有 Univer 命名空间。不同构建版本挂载的全局名不完全一致，
+   逐个猜容易漏，这里扫描一遍再从里面找需要的东西。 */
+(function () {
+  var NS = [];
+  try {
+    for (var k in window) {
+      if (k.indexOf('Univer') === 0 && window[k] && typeof window[k] === 'object') {
+        NS.push(window[k]);
+      }
+    }
+  } catch (e) { /* 遍历失败则退化为已知的几个 */ }
+  /* LocaleType 出自 @univerjs/core（UMD 全局 UniverCore），
+     createUniver / mergeLocales 出自 UniverPresets，两者都排到最前 */
+  var prefer = ['UniverCore', 'UniverPresets', 'UniverPresetSheetsCore', 'UniverSheets', 'UniverUi'];
+  for (var pi = prefer.length - 1; pi >= 0; pi--) {
+    if (window[prefer[pi]]) NS.unshift(window[prefer[pi]]);
+  }
+
+  /* 在所有命名空间里找第一个满足条件的成员 */
+  function pick(fn) {
+    for (var i = 0; i < NS.length; i++) {
+      try { var v = fn(NS[i]); if (v) return v; } catch (e) { /* 跳过取值异常的 */ }
+    }
+    return null;
+  }
+
+  try {
+    var createUniver = pick(function (n) { return n.createUniver; });
+    var PresetCtor   = pick(function (n) { return n.UniverSheetsCorePreset; });
+    if (!createUniver || !PresetCtor) {
+      var names = [];
+      try { for (var q in window) { if (q.indexOf('Univer') === 0) names.push(q); } } catch (e2) {}
+      throw new Error('引擎文件没加载出来（离线资源缺失）。<br>' +
+        '<span style="font-size:12px;color:#64748b">已识别到：' +
+        (names.length ? names.join('、') : '（无）') + '</span>');
+    }
+
+    /* LocaleType 在部分构建里不挂在 UniverPresets 上；
+       找不到就用字符串值，Univer 内部按字符串比较，等效。 */
+    var LocaleType = pick(function (n) {
+      return (n.LocaleType && n.LocaleType.ZH_CN) ? n.LocaleType : null;
+    }) || { ZH_CN: 'zhCN', EN_US: 'enUS', ZH_TW: 'zhTW' };
+
+    var mergeLocales = pick(function (n) { return n.mergeLocales; });
+    var zh = window.UniverPresetSheetsCoreZhCN ||
+             pick(function (n) { return n.UniverPresetSheetsCoreZhCN; });
+
+    var locales = {};
+    if (zh) {
+      try {
+        locales[LocaleType.ZH_CN] = mergeLocales ? mergeLocales(zh) : zh;
+      } catch (e3) {
+        locales[LocaleType.ZH_CN] = zh;
+      }
+    }
+
+    var r = createUniver({
+      locale: LocaleType.ZH_CN,
+      locales: locales,
+      presets: [ PresetCtor({ container: 'app' }) ]
+    });
+    uni = r.univerAPI || r.univer;
+    uni.createWorkbook(SNAPSHOT);
+    var b = document.getElementById('boot');
+    if (b) b.style.display = 'none';
+  } catch (e) {
+    var dep = [];
+    dep.push('React=' + (window.React ? 'ok' : '缺'));
+    dep.push('ReactDOM=' + (window.ReactDOM ? 'ok' : '缺'));
+    dep.push('ReactJSXRuntime=' + (window.ReactJSXRuntime ? 'ok' : '缺'));
+    dep.push('rxjs=' + (window.rxjs ? 'ok' : '缺'));
+    dep.push('echarts=' + (window.echarts ? 'ok' : '缺'));
+    dep.push('UniverPresets=' + (window.UniverPresets ? 'ok' : '缺'));
+    dep.push('PresetSheetsCore=' + (window.UniverPresetSheetsCore ? 'ok' : '缺'));
+    bootFail((e && e.message ? e.message : e) +
+      '<br><span style="font-size:12px;color:#64748b">依赖：' + dep.join(' · ') +
+      '<br>引擎版本 {{ ver }}</span>');
+  }
+})();
+</script>
+</body>
+</html>

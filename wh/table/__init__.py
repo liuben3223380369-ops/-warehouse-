@@ -17,6 +17,7 @@ from ..core.router import Router
 bp = Router('table')
 
 from . import model, formula, parse, ops, export, render, helpers  # noqa: E402
+from . import form, batch, ref                                      # noqa: E402
 from . import sp_addr, sp_lexer, sp_parser, sp_funcs, sp_style    # noqa: E402
 from . import sp_engine, sp_io                                     # noqa: E402
 
@@ -33,6 +34,12 @@ from .export import (to_xlsx, to_csv, to_json, csv_safe,                   # noq
                      xlsx_response, csv_response)
 from .render import render, render_tabledef, input_grid                    # noqa
 from .helpers import all_custom_cols, cell_val                            # noqa
+from .form import (schema as form_schema, card_fields, label_map,          # noqa
+                   PINNED_TXN, PINNED_PO, AREA_FIDS)
+from .batch import (next_no as next_batch_no, peek as peek_batch_no,               # noqa
+                    fill as fill_batch, label as batch_label, DEFAULT_ROWS,
+                    PREFIX as BATCH_PREFIX)
+from .ref import (from_stock_tpl, from_po_tpl, convert_all as convert_tpls)        # noqa
 
 
 class _Facade(object):
@@ -72,6 +79,36 @@ class _Facade(object):
 
     def render(self, headers, rows, **kw):
         return render.render(headers, rows, **kw)
+
+    # --- 表单服务：录入卡片长什么样，由表格说了算 ---
+    def form_schema(self, tid, scene='txn'):
+        return form.schema(tid, scene)
+
+    def card_fields(self, tid, scene='txn'):
+        return form.card_fields(tid, scene)
+
+    def label_map(self, tid, scene='txn'):
+        return form.label_map(tid, scene)
+
+    # --- 批次号：A 列的自动编号 ---
+    def next_batch(self, n=1):
+        return batch.next_no(n)
+
+    def fill_batch(self, sheet, rows=batch.DEFAULT_ROWS, with_header=True):
+        return batch.fill(sheet, rows, with_header)
+
+    def batch_label(self):
+        return batch.label()
+
+    # --- 参考模板：把在用模板摊成电子表格 ---
+    def ref_from_stock_tpl(self, tid, with_batch=True):
+        return ref.from_stock_tpl(tid, with_batch)
+
+    def ref_from_po_tpl(self, tid, with_batch=True):
+        return ref.from_po_tpl(tid, with_batch)
+
+    def ref_all(self, with_batch=True):
+        return ref.convert_all(with_batch)
 
     # --- 电子表格引擎 ---
     def new_book(self, name='工作簿'):

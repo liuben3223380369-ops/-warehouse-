@@ -44,11 +44,9 @@
 <input type="hidden" name="_n" value="{{new_nonce()}}">
 <input type="hidden" name="nrow" id="nrow" value="{{n}}">
 <input type="hidden" name="tpl" value="{{tid}}">
-{% if batches %}
 <datalist id="batchlist">
-{% for b in batches %}<option value="{{b.b}}">{{b.n}}</option>{% endfor %}
+{% for b in batches %}<option value="{{b.b}}">{{b.n}} · 未交 {{b.left}} {{b.un}}{% if b.sup %} · {{b.sup}}{% endif %}</option>{% endfor %}
 </datalist>
-{% endif %}
 <div id="cards"></div>
 
 <div id="gridBox" class="card" style="display:none;padding:0;overflow-x:auto">
@@ -130,6 +128,8 @@ var XCOLS = {{ xcols|default([],true)|tojson }};
 var FIXED = {{ 'true' if fixed else 'false' }};
 var KIND = {{ fixed|tojson }};
 var TODAY = {{ tdate|tojson }};
+/* v3.42 批次候选：未结单的采购明细（带供应商/物料/规格，用于联想与自动带出） */
+var BATCHES = {{ batches|tojson }};
 /* localStorage 在某些环境（file://、隐私模式、部分 WebView）会直接抛异常。
    不包 try 的话整段脚本挂掉，卡片也跟着不出来 —— 记住选择只是锦上添花，不能拖垮录入页。 */
 var MODE = 'card';
@@ -316,6 +316,14 @@ function cardHtml(i){
      + '<input name="name_'+i+'" id="nm'+i+'" class="mname" data-i="'+i+'" autocomplete="off" placeholder="输入名称或料号">'
      + '<input type="hidden" name="mid_'+i+'" id="mid'+i+'">'
      + '<div id="sg'+i+'" style="display:none"></div></div>';
+  /* v3.42：批次号常驻卡片 —— 紧跟物料名称，不再塞在底部跟备注挤一起。
+     采购到货全靠它对账，藏太深等于没有。输入即联想未结单的采购批次，
+     选中后物料名、规格、供应商一并带出（见 pickBatch）。 */
+  h += '<div class="f full" style="margin-bottom:8px;position:relative">'
+     + '<label>批次号（输入即联想未结单的采购批次，选中自动带出物料）</label>'
+     + '<input name="batch_'+i+'" id="bt'+i+'" class="btno" data-i="'+i+'"'
+     + ' list="batchlist" autocomplete="off" placeholder="选填：填采购单上的批次号，这批货就计入该单">'
+     + '<div id="bg'+i+'" style="display:none"></div></div>';
   // 其余字段
   h += '<div class="fields">';
   COLS_FULL.forEach(function(c){
@@ -344,9 +352,6 @@ function cardHtml(i){
   }
   h += '</div>';
   h += '<div class="qtyrow">'
-     + '<div class="f"><label>批次</label>'
-     + '<input name="batch_'+i+'" list="batchlist" placeholder="选填，对上采购批次">'
-     + '</div>'
      /* v3.39：填了批次号的入库默认是供应商到货，会计入采购单；
         但退料、调拨、盘盈这类也是「进」，却不是供应商发的货，
         照记会把到货数越滚越高，采购单提前结单。这里给个明确的开关。
@@ -528,12 +533,29 @@ function addCard(copy){
         if(el.id==='mt'+oi) el.id='mt'+rowIdx;
         if(el.id==='av'+oi) el.id='av'+rowIdx;
         if(el.id==='sg'+oi) el.id='sg'+rowIdx;
+        /* v3.42：批次框常驻卡片后，「复制上一笔」必须一起改 id，
+           否则新卡片沿用 bt0，getElementById('bt1') 拿不到，联想直接失效。 */
+        if(el.id==='bt'+oi) el.id='bt'+rowIdx;
       }
       if(el.classList&&el.classList.contains('qty')){ el.value=''; el.dataset.i=rowIdx; }
       if(el.classList&&el.classList.contains('pc')) el.dataset.i=rowIdx;
       if(el.classList&&el.classList.contains('pe')) el.dataset.i=rowIdx;
       if(el.classList&&el.classList.contains('mname')) el.dataset.i=rowIdx;
     });
+    /* 批次联想容器是 div，上面的 input/select 循环遍历不到，单独改名 + 清空 */
+    old.querySelectorAll('[id^="bg"]').forEach(function(el){
+      el.id='bg'+rowIdx; el.style.display='none'; el.innerHTML='';
+    });
+    /* v3.42：光靠 outerHTML 复制不出使用者填的东西。
+       input 的 value 是 property，序列化成 HTML 时不会写成 value="..."
+       属性（selected 同理），所以"复制上一笔"以前复制出来的是一张空卡。
+       这里按位置把旧卡片的值逐个搬过来，数量除外——下一笔数量几乎不可能一样。 */
+    var srcs=last.querySelectorAll('input,select');
+    var dsts=old.querySelectorAll('input,select');
+    for(var k=0;k<srcs.length && k<dsts.length;k++){
+      if(dsts[k].classList && dsts[k].classList.contains('qty')) continue;
+      try{ dsts[k].value=srcs[k].value; }catch(e){}
+    }
     var av=old.querySelector('.av'); if(av){av.textContent='—';av.className='av';}
   } else {
     d.innerHTML=cardHtml(rowIdx);
@@ -570,6 +592,83 @@ function showSug(i, list){
   });
 }
 function hideSug(i){ var b=document.getElementById('sg'+i); if(b){b.style.display='none';b.innerHTML='';} }
+
+/* ---------- v3.42 批次联想 ----------
+   场景：供应商送了一批货，采购单上写着批次 CG20260916-001-1。
+   入库时使用者往往只记得"这是张师傅那批铜箔"，记不住一串号。
+   所以：本卡片已经填了供应商 / 物料名时，批次下拉优先给对得上的；
+   直接输号也能模糊匹配。选中一条 → 物料名、规格、供应商一并带出。 */
+function batchMatch(i, v){
+  var sup=(document.querySelector('[name="supplier_'+i+'"]')||{}).value||'';
+  var nm=(document.getElementById('nm'+i)||{}).value||'';
+  sup=sup.trim().toLowerCase(); nm=nm.trim().toLowerCase(); v=(v||'').trim().toLowerCase();
+  var r=[];
+  for(var k=0;k<BATCHES.length;k++){
+    var b=BATCHES[k];
+    // 已填供应商/物料的，只留对得上的（避免几十条里挑花眼）
+    // 供应商可能填简称（"松杨" vs "松杨电子"），双向包含都算命中
+    if(sup){
+      var bs=(b.sup||'').toLowerCase();
+      if(bs.indexOf(sup)<0 && sup.indexOf(bs)<0) continue;
+    }
+    if(nm && (b.n||'').toLowerCase().indexOf(nm)<0) continue;
+    if(v && (b.b||'').toLowerCase().indexOf(v)<0
+         && (b.n||'').toLowerCase().indexOf(v)<0
+         && (b.sup||'').toLowerCase().indexOf(v)<0
+         && (b.po||'').toLowerCase().indexOf(v)<0) continue;
+    r.push(b);
+  }
+  return r;
+}
+function showBatchSug(i, list){
+  var box=document.getElementById('bg'+i); if(!box) return;
+  if(!list.length){
+    box.innerHTML='<div class="none">没有未结单的采购批次（也可直接手填）</div>';
+    box.style.display='block'; return;
+  }
+  var h='';
+  list.slice(0,12).forEach(function(b){
+    h+='<div data-b="'+esc(b.b)+'">'
+      +'<span class="n">'+esc(b.b)+'</span>'
+      +'<span class="c">'+esc(b.n)+(b.sp?' '+esc(b.sp):'')+'</span>'
+      +'<span class="s">未交 '+fmt(b.left)+' '+esc(b.un||'')+' · '+esc(b.sup||'')+'</span>'
+      +'</div>';
+  });
+  box.innerHTML='<div class="sug">'+h+'</div>';
+  box.style.display='block';
+  box.querySelectorAll('.sug div[data-b]').forEach(function(d){
+    d.onclick=function(){ pickBatch(i, d.dataset.b); };
+  });
+}
+function hideBatchSug(i){ var b=document.getElementById('bg'+i); if(b){b.style.display='none';b.innerHTML='';} }
+
+/* 选中一个批次：把采购明细上的物料信息带进这一行 */
+function pickBatch(i, bno){
+  var hit=null;
+  for(var k=0;k<BATCHES.length;k++) if(BATCHES[k].b===bno) hit=BATCHES[k];
+  if(!hit) return;
+  var bt=document.getElementById('bt'+i); if(bt) bt.value=hit.b;
+  var nm=document.getElementById('nm'+i);
+  if(nm && !(nm.value||'').trim()){
+    nm.value=hit.n;
+    var mt=document.getElementById('mt'+i);
+    if(mt) mt.textContent=hit.n;
+    if(hit.mid) { var m0=document.getElementById('mid'+i); if(m0) m0.value=hit.mid; }
+    // 物料档案里有的话走 pick()，能连库存、长宽、口径一起带出
+    if(hit.mid){ try{ pick(i, hit.mid); }catch(e){} }
+  }
+  // 供应商 / 规格 / 单位：只填空着的，不覆盖使用者已经改过的
+  var setIfEmpty=function(f, v){
+    if(!v) return;
+    var el=document.querySelector('[name="'+f+'_'+i+'"]');
+    if(el && !(el.value||'').trim()) el.value=v;
+  };
+  setIfEmpty('supplier', hit.sup);
+  setIfEmpty('spec', hit.sp);
+  setIfEmpty('unit', hit.un);
+  hideBatchSug(i);
+  var q=document.querySelector('.qty[data-i="'+i+'"]'); if(q) q.focus();
+}
 
 function pick(i, id){
   var hit=null; for(var k=0;k<MATS.length;k++) if(MATS[k].id===id) hit=MATS[k];
@@ -610,6 +709,18 @@ function bind(i){
     showSug(i,r);
   });
   el.addEventListener('blur', function(){ setTimeout(function(){hideSug(i);},200); });
+  /* v3.42 批次联想：聚焦就给候选（已填供应商/物料会自动筛，
+     一个都没填时列最近未结单的），输入则模糊匹配批次号/物料/供应商/单号 */
+  var bt=document.getElementById('bt'+i);
+  if(bt){
+    bt.addEventListener('focus', function(){ showBatchSug(i, batchMatch(i,'')); });
+    bt.addEventListener('input', function(){
+      var v=(this.value||'').trim();
+      if(!v){ showBatchSug(i, batchMatch(i,'')); return; }
+      showBatchSug(i, batchMatch(i, v));
+    });
+    bt.addEventListener('blur', function(){ setTimeout(function(){hideBatchSug(i);},200); });
+  }
   var q=document.querySelector('.qty[data-i="'+i+'"]');
   if(q) q.addEventListener('input', function(){
     var av=document.getElementById('av'+i); if(!av) return;

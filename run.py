@@ -20,6 +20,7 @@ try:
 except Exception:
     pass
 
+from wh import __version__ as __ver
 from wh import desktop                                      # noqa: E402
 from wh.core import db                                      # noqa: E402
 from wh.core.util import say, cleanup_tmp                   # noqa: E402
@@ -77,7 +78,7 @@ def main():
 
     banner = [
         '-' * 46,
-        '  仓库管理系统 v4.0',
+        '  仓库管理系统 v' + __ver,
         '  数据: %s' % st['path'],
         '  物料 %d 种 · 单据 %d 条 · 预警 %d 项'
         % (st['materials'], st['txns'], st['alerts']),

@@ -16,6 +16,9 @@ HERE = os.path.abspath('.')
 # 随程序一起打进去的数据文件（源路径, 解包后的相对目录）
 datas = [
     ('templates', 'templates'),
+    # 表格引擎离线资源（static/univer，约 12MB）。
+    # 不打进去的话 exe 里点「新引擎」全是 404，所以必须带上。
+    ('static', 'static'),
     ('seed_materials.json', '.'),
 ]
 

@@ -41,19 +41,42 @@ MODULES = [
 def _template_folder():
     """模板目录。
 
+    Android / 自定义部署可用环境变量 WAREHOUSE_TEMPLATES 覆盖。
+
     源码运行：项目根下的 templates（wh/ 的上一级）
     打包成 exe：PyInstaller 解包出来的临时目录
     用 Flask(__name__) 的默认行为会找成 wh/templates，所以对路径必须给全。
     """
+    _env = os.environ.get('WAREHOUSE_TEMPLATES')
+    if _env:
+        return _env
     if getattr(sys, 'frozen', False):
         return os.path.join(db.res_dir(), 'templates')
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(root, 'templates')
 
 
+def _static_folder():
+    """静态资源目录（和模板同样的道理，必须给绝对路径）。
+
+    表格引擎的离线资源（static/univer，约 12MB）就放在这里，
+    不指定的话 Flask 会去找 wh/static，结果全 404。
+
+    Android / 自定义部署可用环境变量 WAREHOUSE_STATIC 覆盖。
+    """
+    _env = os.environ.get('WAREHOUSE_STATIC')
+    if _env:
+        return _env
+    if getattr(sys, 'frozen', False):
+        return os.path.join(db.res_dir(), 'static')
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(root, 'static')
+
+
 def create_app(init_db=True, verbose=True):
     """造一个装配好的 Flask 应用"""
-    app = Flask(__name__, template_folder=_template_folder())
+    app = Flask(__name__, template_folder=_template_folder(),
+                static_folder=_static_folder())
 
     # ---------- 1. 数据库（损坏要在这里就接住，否则窗口模式一闪而过） ----------
     if init_db:

@@ -1,0 +1,51 @@
+plugins {
+    id 'com.android.application'
+    id 'com.chaquo.python'          // ChaQuopy：让 APK 里能跑 Python
+}
+
+repositories {
+    google()
+    mavenCentral()
+    maven { url 'https://chaquo.com/maven' }
+}
+
+android {
+    namespace 'com.liuben.warehouse'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.liuben.warehouse'
+        minSdk 24            // Android 7.0 以上
+        targetSdk 34
+        versionCode 1
+        versionName '3.54'
+        // 只打手机常用的两种架构，省一半体积
+        ndk {
+            abiFilters 'arm64-v8a', 'armeabi-v7a'
+        }
+        python {
+            version '3.11'
+            pip {
+                // 后端用到的纯 Python 依赖（openpyxl 导出 Excel、xlrd 读旧格式）
+                install 'Flask>=3.0'
+                install 'openpyxl>=3.0'
+                install 'xlrd>=2.0'
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+}
+
+dependencies {
+    // WebView 是系统自带组件，不需要额外依赖；保持空依赖以减少构建失败点
+}

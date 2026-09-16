@@ -1,0 +1,86 @@
+name: 打包 Android APK
+
+# Android 官方构建链（Gradle + Android SDK）在 Linux 上跑，
+# 推 tag 或手动点“运行”都会触发，产物直接挂到 Release。
+#
+# 思路：APK 里用 ChaQuopy 跑同一套 Python（wh/ 那套代码一行不改），
+# 系统 WebView 打开本机 Flask 服务，所以手机端功能与电脑端一致。
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 准备 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 准备 Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: 准备 Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.5
+
+      - name: 查看构建环境
+        run: |
+          java -version 2>&1 | head -3
+          gradle --version | head -6
+          echo "ANDROID_HOME=$ANDROID_HOME"
+
+      - name: 把 Python 源码放进 Android 工程
+        run: |
+          set -e
+          mkdir -p android/app/src/main/python
+          cp -r wh android/app/src/main/python/
+          cp -r templates android/app/src/main/python/
+          cp -r static android/app/src/main/python/
+          cp run.py android_entry.py android/app/src/main/python/
+          # 表格新引擎（static/univer 约 12MB JS）在手机 WebView 上加载很吃力，
+          # Android 版不带它，用回自带的轻量制表台。需要的话删掉这一行即可。
+          rm -rf android/app/src/main/python/static/univer
+          du -sh android/app/src/main/python
+
+      - name: 构建 APK
+        run: gradle -p android assembleDebug --no-daemon
+
+      - name: 收集产物
+        run: |
+          mkdir -p out
+          cp android/app/build/outputs/apk/debug/*.apk out/ 2>/dev/null || true
+          ls -la out
+          test -n "$(ls -A out)" || (echo "没找到 APK" && exit 1)
+
+      - name: 发布到 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: 仓库管理系统 ${{ github.ref_name }}
+          body: |
+            ## 仓库管理系统 ${{ github.ref_name }}
+
+            - **Windows**：下载 `仓库管理系统-windows.zip`，解压后双击 `仓库管理系统.exe`
+            - **Android**：下载 `仓库管理系统-android.apk`，安装后直接打开
+
+            两个平台用的是同一套业务代码，功能一致（Android 版为了体积与流畅度，
+            未内置桌面级表格新引擎，制表台仍可正常使用）。
+
+            **数据说明：**
+            - Windows：数据保存在 exe 旁的 `warehouse.db`，换电脑时一起拷走
+            - Android：数据保存在 App 私有目录，卸载会清空，重要数据请先在电脑端导出
+          files: |
+            out/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

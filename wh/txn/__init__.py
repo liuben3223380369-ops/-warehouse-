@@ -104,9 +104,11 @@ def txn():
     tid = tid or db.default_tpl_id()
     if not db.tpl(tid):
         tid = db.default_tpl_id()
-    cols = db.tpl_cols(tid)
-    # 单位列已整体取消（v3.21）：单位改由每一列自己配，不再有独立的一列
-    fids = [c['fid'] for c in cols if c['fid'] != 'unit']
+    # v3.43：录入卡片长什么样，全部问表格模块要 —— 卡片字段 = 这张表的列。
+    # 换表格 / 加列 / 减列 / 改名，卡片跟着变，出入库这边不做任何列判断。
+    _sch = tbl.form_schema(tid, scene='txn')
+    cols = _sch['raw_cols']
+    fids = _sch['fids']
     only_stock = fixed == '出' and request.args.get('allm') != '1'
     mats = [dict(r) for r in db.q(
         "SELECT * FROM v_stock WHERE active=1" + (" AND stock>0" if only_stock else "")
@@ -223,7 +225,10 @@ def txn():
                 if kind == '进' and (request.form.get(f'to_po_{i}') or '1') == '1':
                     _ok, _pt = sync_txn_to_po(
                         _bt, vals.get('name') or '', mid, qty,
-                        request.form.get('price_%d' % i), d, note, _tid_new)
+                        request.form.get('price_%d' % i), d, note, _tid_new,
+                        # v3.42：带上这一笔的数量口径（按平米还是按卷），
+                        # 采购侧才知道该不该除换算率，否则「按卷」录入会少记 conv 倍
+                        qty_unit=qu)
                 else:
                     _ok, _pt = False, ''
                 if _pt:
@@ -297,33 +302,55 @@ def txn():
                            tdate=today(), rows=range(n), n=n, tid=tid,
                            TPLS=db.tpls(),
                            # sqlite3.Row 不能直接 tojson，前端只需要 fid/label 两列
-                           col_defs=[{'fid': c['fid'], 'label': c['label'],
-                                      'unit': (c['unit'] if 'unit' in c.keys() else '') or ''}
-                                     for c in cols if c['fid'] != 'unit'],
-                           xcols=[{'fid': x['fid'], 'label': x['label'],
-                                   'xtype': x['xtype'] or 'text',
-                                   'xopt': x['xopt'] or '', 'xform': x['xform'] or '',
-                                   'unit': (x['unit'] if 'unit' in x.keys() else '') or ''}
-                                  for x in db.tpl_custom_cols(tid)],
+                           col_defs=_sch['cols'],
+                           xcols=_sch['xcols'],
                            js_mats=js_mats_with_price(mats),
                            # v3.35 批次候选：录单时下拉能选到采购到货登记过的批次
                            batches=_batch_choices(),
                            # 启用了平米/卷料列才显示「数量按 平米/卷」的口径选择
-                           cols_has_area=('sqm' in fids or 'rolls' in fids))
+                           cols_has_area=_sch['has_area'])
 
-def _batch_choices(limit=200):
-    """录入页的批次候选：采购到货登记过的批次号，最近的在前。
+def _batch_choices(limit=300):
+    """录入页的批次候选：**未结单**的采购明细批次号。
 
-    带上物料名是为了让使用者知道"这个批次是哪批货"，只给一串号没法选。
+    为什么改查 po_items（而不是到货登记表 po_receipts）：
+    v3.30 起采购与库存解耦、v3.35 起到货按入库录入算，批次号在建单时就
+    生成在 po_items 上了。第一次入库时 po_receipts 还是空的 —— 照旧查它，
+    使用者在最需要联想的时候（刚建完单、还没到货）反而一个候选都看不到。
+
+    只要「还没交齐」的单据：订 10 已到 10 的批次再选就没意义了，
+    留着只会让人挑花眼、还可能重复入库。
     """
     try:
         rows = db.q(
-            "SELECT pr.batch, i.name FROM po_receipts pr"
-            " JOIN po_items i ON i.id=pr.item_id"
-            " WHERE COALESCE(pr.batch,'')<>''"
-            " GROUP BY pr.batch, i.name"
-            " ORDER BY pr.rdate DESC, pr.id DESC LIMIT ?", limit)
-        return [{'b': r['batch'], 'n': r['name']} for r in rows]
+            "SELECT i.batch, i.name, i.spec, i.unit, i.conv,"
+            "       i.stock_unit, i.qty, i.recv_qty, i.material_id,"
+            "       p.supplier, p.pono, p.status"
+            " FROM po_items i JOIN pos p ON p.id=i.po_id"
+            " WHERE COALESCE(i.batch,'')<>''"
+            "   AND COALESCE(i.recv_qty,0) < i.qty - 1e-9"      # 未交齐
+            "   AND p.status NOT IN ('已取消','草稿')"
+            " ORDER BY p.odate DESC, i.id DESC LIMIT ?", limit)
+        out = []
+        for r in rows:
+            left = (r['qty'] or 0) - (r['recv_qty'] or 0)
+            if left <= 1e-9:
+                continue
+            out.append({
+                'b': r['batch'],
+                'n': r['name'],
+                'sp': r['spec'] or '',
+                'un': r['unit'] or '',
+                'su': r['stock_unit'] or '',
+                'cv': r['conv'] or 1,
+                'mid': r['material_id'] or 0,
+                'sup': r['supplier'] or '',
+                'po': r['pono'] or '',
+                'st': r['status'] or '',
+                'left': round(left, 4),
+                'ord': r['qty'] or 0,
+            })
+        return out
     except Exception:
         return []
 
@@ -438,6 +465,12 @@ def txn_import():
             if not os.path.exists(p):
                 return render_template('txn_import.html', fixed=fixed, TPLS=db.tpls(), tid=tid, ep=ep,
                                        err='预览已过期，请重新选择文件')
+            # v3.53：导入的「进」是否计入采购到货。
+            # 退料/调拨/盘盈同样带批次号，照记会把供应商到货数越滚越高，
+            # 采购单提前结单、财务按虚高的到货数付全款。默认「否」——
+            # 导入来源复杂（一张 Excel 常混着入库和退料），宁可不记也不能错记；
+            # 确属供应商到货的，导入时显式选「是」即可。
+            _imp_to_po = (request.form.get('to_po') or '0') == '1'
             if request.form.get('manual') == '1':
                 colmap = {}
                 for k in request.form.keys():
@@ -569,11 +602,14 @@ def txn_import():
                          str(d.get('batch') or '').strip()[:40])
                   _new_id = scalar("SELECT last_insert_rowid()")
                   # v3.35 导入同样一分为二：库存 + 采购流水（按批次号桥接）
-                  if kind == '进' and str(d.get('batch') or '').strip():
+                  # v3.53 加开关：退料/调拨/盘盈默认不计入，避免虚增到货
+                  if kind == '进' and _imp_to_po and str(d.get('batch') or '').strip():
                       _ok2, _pt2 = sync_txn_to_po(
                           str(d.get('batch') or '').strip(),
                           d.get('name') or '', mid, qty, d.get('price'),
-                          d.get('date') or dflt_date, d.get('note', ''), _new_id)
+                          d.get('date') or dflt_date, d.get('note', ''), _new_id,
+                          # v3.42：导入同样要带口径，理由同上
+                          qty_unit=(_vv.get('qty_unit') or d.get('qty_unit') or ''))
                       if _pt2:
                           po_tips.add(_pt2)
                   # Excel 里列名能对上自定义列的，一并存进 extra
@@ -773,9 +809,63 @@ def txn_import_tpl():
                              "attachment; filename=tpl.xlsx; filename*=UTF-8''%s.xlsx" % quote('出入库导入模板')})
 
 
+def _unlink_po_receipts(ids, c):
+    """删出入库单前，先把这批单据挂在采购上的到货记录撤掉。
+
+    v3.35 起「到货按入库录入算」：入库单上填了批次号，就会在 po_receipts
+    生成一条带 txn_id 的到货记录。外键 txn_id -> txns(id) 于是把这张入库单
+    锁住了 —— 直接 DELETE 会抛 IntegrityError，页面上就是 500，删不掉。
+
+    录错了想重录是每天都在做的事，必须能删。
+    这里连同到货数一起回滚（recv_qty 减回、单头状态重算），
+    否则会出现「入库单没了、采购账还记着到货」，后面重新入库时到货数翻倍，
+    供应商欠着货却显示已完成、货款多付 —— 这正是 v3.39 修的那类问题。
+
+    必须用调用方传进来的事务连接 c，别在循环里另开连接：
+    嵌套写会提前提交，事务就散了。
+    """
+    ids = [int(x) for x in ids if str(x).strip().lstrip('-').isdigit()]
+    if not ids:
+        return 0
+    ph = ','.join('?' * len(ids))
+    # 列名必须带表别名：两张表都有 id，写裸 id 会 ambiguous column name
+    rows = c.execute("SELECT r.id, r.item_id, r.qty, i.po_id FROM po_receipts r"
+                     " JOIN po_items i ON i.id=r.item_id"
+                     " WHERE r.txn_id IN (%s)" % ph, tuple(ids)).fetchall()
+    if not rows:
+        return 0
+    po_ids = set()
+    for r in rows:
+        c.execute("UPDATE po_items SET recv_qty=MAX(0, COALESCE(recv_qty,0)-?)"
+                  " WHERE id=?", (r['qty'] or 0, r['item_id']))
+        po_ids.add(r['po_id'])
+    c.execute("DELETE FROM po_receipts WHERE txn_id IN (%s)" % ph, tuple(ids))
+    # 状态回到「已下单 / 部分到货」，不能还挂着「已完成」
+    from ..po import logic as po_logic
+    for pid in po_ids:
+        try:
+            st = po_logic.derive_status(pid)
+            if st:
+                c.execute("UPDATE pos SET status=? WHERE id=?", (st, pid))
+        except Exception:
+            pass
+    return len(rows)
+
+
 @bp.route('/txn/del/<int:tid>')
 def txn_del(tid):
-    db.run("DELETE FROM txns WHERE id=?", tid)
+    """删一张单据。
+
+    不能裸 DELETE：v3.35 起带批次的入库单会生成采购到货记录并外键引用它，
+    直接删会 IntegrityError → 页面 500。必须先解掉采购侧的引用。
+    """
+    try:
+        with db.tx() as c:
+            _unlink_po_receipts([tid], c)
+            c.execute("DELETE FROM txns WHERE id=?", (tid,))
+    except Exception:
+        return redirect((request.referrer or url_for('txns'))
+                        + '?msg=' + quote('删除失败，已回滚，请重试'))
     return redirect(request.referrer or url_for('txns'))
 
 @bp.route('/txns/batch', methods=['POST'])
@@ -824,11 +914,17 @@ def txns_batch():
                     raise ValueError('count-mismatch')
                 if cur > TXN_PAGE:
                     raise ValueError('too-many')
+                # 条件删除：先把命中这批单据的采购到货引用解掉（否则外键拦下 → 500）
+                hit = [r[0] for r in c.execute(
+                    "SELECT t.id FROM txns t JOIN materials m ON m.id=t.material_id"
+                    + (" WHERE " + " AND ".join(w) if w else ""), tuple(args)).fetchall()]
+                _unlink_po_receipts(hit, c)
                 cur = c.execute(sql, tuple(args))
                 n = cur.rowcount if cur.rowcount and cur.rowcount > 0 else declared
             else:
                 if not ids:
                     return redirect((back or url_for('txns')) + '?msg=' + quote('未勾选任何单据'))
+                _unlink_po_receipts(ids, c)
                 ph = ','.join('?' * len(ids))
                 c.execute("DELETE FROM txns WHERE id IN (%s)" % ph, tuple(ids))
                 n = len(ids)

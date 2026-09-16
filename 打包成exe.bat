@@ -1,58 +1,89 @@
 @echo off
-chcp 65001 >nul
+chcp 936 >nul
+setlocal enabledelayedexpansion
 REM ============================================
-REM  ä»“åº“ç®¡ç†ç³»ç»Ÿ â€”â€” Windows ä¸€é”®æ‰“åŒ…æˆ exe
-REM  åŒå‡»è¿è¡Œå³å¯ï¼Œäº§ç‰©åœ¨ dist\ä»“åº“ç®¡ç†ç³»ç»Ÿ.exe
+REM  ²Ö¿â¹ÜÀíÏµÍ³ ¡ª¡ª Windows Ò»¼ü´ò°ü³É exe
+REM  Ë«»÷ÔËÐÐ¼´¿É£¬²úÎïÔÚ dist\²Ö¿â¹ÜÀíÏµÍ³.exe
 REM ============================================
 
 echo.
 echo   ============================================
-echo    ä»“åº“ç®¡ç†ç³»ç»Ÿ  æ‰“åŒ…å·¥å…·
+echo    ²Ö¿â¹ÜÀíÏµÍ³  ´ò°ü¹¤¾ß
 echo   ============================================
 echo.
 
-where python >nul 2>nul
-if errorlevel 1 (
-    echo   [x] æ²¡æ‰¾åˆ° Python
+REM ÒÀ´Î³¢ÊÔ py Æô¶¯Æ÷ / python / python3£¬Ë­ÔÚ¾ÍÓÃË­
+set "PYCMD="
+where py >nul 2>nul && set "PYCMD=py"
+if not defined PYCMD (where python >nul 2>nul && set "PYCMD=python")
+if not defined PYCMD (where python3 >nul 2>nul && set "PYCMD=python3")
+
+if not defined PYCMD (
+    echo   [x] Ã»ÕÒµ½ Python
     echo.
-    echo   è¯·å…ˆåˆ° https://www.python.org/downloads/ ä¸‹è½½å®‰è£…
-    echo   å®‰è£…æ—¶åŠ¡å¿…å‹¾é€‰ "Add Python to PATH"
+    echo   ÇëÏÈµ½ https://www.python.org/downloads/ ÏÂÔØ°²×°
+    echo   °²×°Ê±Îñ±Ø¹´Ñ¡ "Add Python to PATH"
     echo.
     pause
     exit /b 1
 )
 
-echo   [1/4] æ£€æŸ¥ Python...
-python --version
-
-echo   [2/4] å®‰è£…æ‰“åŒ…ä¾èµ–...
-python -m pip install -r requirements.txt pyinstaller -q
+echo   [1/5] Ê¹ÓÃ½âÊÍÆ÷: %PYCMD%
+%PYCMD% --version
 if errorlevel 1 (
-    echo   [x] ä¾èµ–å®‰è£…å¤±è´¥ï¼Œæ£€æŸ¥ç½‘ç»œåŽé‡è¯•
+    echo   [x] ½âÊÍÆ÷ÎÞ·¨Ö´ÐÐ
     pause
     exit /b 1
 )
 
-echo   [3/4] æ¸…ç†æ—§äº§ç‰©...
+REM ÇÐµ½ bat ËùÔÚÄ¿Â¼£¬±ÜÃâ´Ó±ð´¦Ë«»÷Ê±Â·¾¶²»¶Ô
+cd /d "%~dp0"
+echo   µ±Ç°Ä¿Â¼: %CD%
+echo.
+
+echo   [2/5] °²×°´ò°üÒÀÀµ...
+%PYCMD% -m pip install -r requirements.txt pyinstaller
+if errorlevel 1 (
+    echo.
+    echo   [x] ÒÀÀµ°²×°Ê§°Ü£¬¼ì²éÍøÂçºóÖØÊÔ
+    echo      ¹úÄÚ¿É¼Ó¾µÏñÖØÊÔ:
+    echo      pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt pyinstaller
+    pause
+    exit /b 1
+)
+
+echo.
+echo   [3/5] ÇåÀí¾É²úÎï...
 if exist build rmdir /s /q build
 if exist dist rmdir /s /q dist
 
-echo   [4/4] æ­£åœ¨æ‰“åŒ…ï¼Œè¯·è€å¿ƒç­‰å¾… 1~3 åˆ†é’Ÿ...
-python -m PyInstaller warehouse.spec --noconfirm --clean
+echo.
+echo   [4/5] ÕýÔÚ´ò°ü£¬ÇëÄÍÐÄµÈ´ý 1~5 ·ÖÖÓ...
+%PYCMD% -m PyInstaller warehouse.spec --noconfirm --clean
 if errorlevel 1 (
     echo.
-    echo   [x] æ‰“åŒ…å¤±è´¥ï¼Œè¯·å¾€ä¸Šç¿»çœ‹é”™è¯¯ä¿¡æ¯
+    echo   [x] ´ò°üÊ§°Ü£¬ÇëÍùÉÏ·­¿´´íÎóÐÅÏ¢
+    pause
+    exit /b 1
+)
+
+echo.
+echo   [5/5] ¼ì²é²úÎï...
+if not exist "dist\²Ö¿â¹ÜÀíÏµÍ³.exe" (
+    echo   [x] Ã»ÕÒµ½ dist\²Ö¿â¹ÜÀíÏµÍ³.exe
+    echo      dist Ä¿Â¼ÄÚÈÝ£º
+    dir /b dist 2>nul
     pause
     exit /b 1
 )
 
 echo.
 echo   ============================================
-echo    æ‰“åŒ…å®Œæˆ
+echo    ´ò°üÍê³É
 echo.
-echo    ç¨‹åºä½ç½®:  dist\ä»“åº“ç®¡ç†ç³»ç»Ÿ.exe
-echo    åŒå‡» exe ä¼šè‡ªåŠ¨æ‰“å¼€æµè§ˆå™¨
-echo    æ•°æ®ä¿å­˜åœ¨ exe æ—è¾¹çš„ warehouse.dbï¼Œåˆ«åˆ 
+echo    ³ÌÐòÎ»ÖÃ:  dist\²Ö¿â¹ÜÀíÏµÍ³.exe
+echo    Ë«»÷ exe »á´ò¿ª¶ÀÁ¢´°¿Ú£¨²»ÊÇä¯ÀÀÆ÷£©
+echo    Êý¾Ý±£´æÔÚ exe ÅÔ±ßµÄ warehouse.db£¬±ðÉ¾
 echo   ============================================
 echo.
 if exist dist explorer dist

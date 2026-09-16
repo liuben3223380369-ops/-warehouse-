@@ -33,6 +33,8 @@ from ..core import db, util
 from ..core.router import Router
 from ..core.util import new_nonce
 from . import sp_engine as E
+from . import batch, ref
+from . import sp_group as GR
 from . import sp_io as IO
 from . import sp_style as ST
 from . import sp_funcs as F
@@ -124,20 +126,35 @@ def _sh(book, name=None):
 @bp.route('/sheet')
 def sheet_index():
     rows = db.q("SELECT id, name, updated FROM wb ORDER BY id DESC")
-    return render_template('sheet.html', mode='list', books=rows)
+    return render_template('sheet.html', mode='list', books=rows,
+                           msg=request.args.get('msg', ''))
 
 
 @bp.route('/sheet/new', methods=['POST'])
 def sheet_new():
+    # v3.44：A 列默认批次号并自动编号，建表时可勾选是否启用。
     name = (request.form.get('name') or '').strip() or '工作簿'
+    # 勾选项是「不启用」，所以没勾 = 启用（默认开）
+    with_batch = request.form.get('no_batch') != '1'
     book = E.Workbook(name)
     sh = book.add('Sheet1')
     sh.book = book
+    if with_batch:
+        batch.fill(sh, rows=batch.DEFAULT_ROWS, with_header=True)
     now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     db.run("INSERT INTO wb(name, data, updated) VALUES(?,?,?)",
            name, json.dumps(book.to_dict(), ensure_ascii=False), now)
     row = db.q("SELECT last_insert_rowid() AS id")[0]
     return redirect(url_for('sheet_open', bid=row['id']))
+
+
+@bp.route('/sheet/ref', methods=['POST'])
+def sheet_ref():
+    """把在用的库存模板 / 采购模板转成参考表（只读快照）。"""
+    ok, skip, notes = ref.convert_all(
+        with_batch=(request.form.get('no_batch') != '1'))
+    msg = ('已生成 %d 份参考表' % ok) if ok else '没有可转换的模板'
+    return redirect(url_for('sheet_index', msg=msg, n=skip))
 
 
 @bp.route('/sheet/<int:bid>')
@@ -603,6 +620,21 @@ def a_width(book, st, sh, g, rect):
     return {}
 
 
+def a_group(book, st, sh, g, rect):
+    """按列分组 / 折叠展开（开源表格的通用能力）。"""
+    r1, c1, r2, c2 = rect
+    col = int(g.get('col') if g.get('col') is not None else c1)
+    op = g.get('op') or 'group'
+    hd = int(g.get('header') or 0)
+    if op == 'collapse' or op == 'expand':
+        gs = GR.build_groups(sh, col, r1, r2, hd)
+        n = GR.collapse(sh, gs, hide=(op == 'collapse'))
+        return {'n': len(gs), 'hidden': n}
+    _push(st, '分组', sh.name, _snap(sh, r1, 0, r2, sh.cols - 1))
+    gs, ok = GR.group_by(sh, col, r1, r2, hd, insert=(op != 'sortonly'))
+    return {'groups': gs, 'ok': ok}
+
+
 def a_merge(book, st, sh, g, rect):
     r1, c1, r2, c2 = rect
     op = g.get('op') or 'merge'
@@ -798,7 +830,16 @@ _ACTIONS = {
     'width': a_width, 'merge': a_merge, 'freeze': a_freeze,
     'sheets': a_sheets, 'undo': a_undo, 'redo': a_redo, 'find': a_find,
     'names': a_names, 'note': a_note, 'cond': a_cond,
-    'autofit': a_autofit, 'save': a_save, 'eval': a_eval,
+    'autofit': a_autofit, 'group': a_group, 'save': a_save, 'eval': a_eval,
     # 进阶：剪贴板 / 自动求和 / 序列 / 隐藏 / 有效性 / 图表 / 透视 / 清除
     **EXTRA,
 }
+
+# ------------------------------------------------------------------ Univer 引擎
+# 工业级表格内核（Apache-2.0）。资源在 static/univer，全部离线，不联网。
+try:
+    from . import univer as _UNI
+    _UNI.register(bp)
+except Exception as _e:          # 引擎挂了也要保证旧表格能用
+    import sys
+    print('[univer] 未启用：%s' % _e, file=sys.stderr)

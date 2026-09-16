@@ -20,7 +20,8 @@ body.fs-l{ --fs-body:16px; --fs-title:18px; --fs-h2:16px; --fs-table:15px;
 
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 body{margin:0;font:var(--fs-body)/1.5 -apple-system,"Noto Sans CJK SC","Microsoft YaHei",sans-serif;
-background:#f2f4f7;color:#1c2430;padding-bottom:64px}
+background:#f2f4f7;color:#1c2430;padding-bottom:54px}
+body[data-sub="1"]{padding-bottom:92px}
 header{background:#1f6feb;color:#fff;padding:12px 14px;position:sticky;top:0;z-index:9;
 display:flex;align-items:flex-start;gap:10px}
 header .inner{max-width:960px;margin:0 auto;flex:1;min-width:0}
@@ -29,7 +30,7 @@ background:rgba(255,255,255,.18);color:#fff;font-size:16px;line-height:1;cursor:
 header .tools{display:flex;gap:6px;flex:none}
 @media(min-width:820px){.wbtn{display:block}}
 @media(min-width:820px){body.wide main,body.wide header .inner{max-width:none}
-body.wide nav{padding-left:0;padding-right:0}}
+body.wide .tabbar-in,body.wide .subnav-in{max-width:none}}
 header h1{margin:0;font-size:var(--fs-title);font-weight:600}
 header .sub{opacity:.85;font-size:var(--fs-label);margin-top:2px}
 main{padding:12px;max-width:960px;margin:0 auto}
@@ -53,10 +54,19 @@ label.ckl{display:flex;align-items:center;justify-content:center;gap:8px;
 padding:11px 8px;margin:0;cursor:pointer;-webkit-tap-highlight-color:transparent}
 tr.sel td{background:#eaf2fe}
 textarea{min-height:60px}
-button,.btn{display:block;width:100%;padding:13px;border:0;border-radius:10px;background:#1f6feb;
-color:#fff;font-size:var(--fs-btn);font-weight:600;text-align:center;text-decoration:none;margin-top:14px}
+button,.btn{display:block;width:100%;padding:12px;border:0;border-radius:10px;background:#1f6feb;
+color:#fff;font-size:var(--fs-btn);font-weight:600;text-align:center;text-decoration:none;margin-top:12px;
+box-shadow:0 1px 2px rgba(16,24,40,.07);transition:filter .15s,transform .05s}
 .btn.g{background:#12a150}.btn.r{background:#e5484d}.btn.o{background:#6b7785}
 .btn.s{padding:9px;font-size:var(--fs-body);margin-top:8px}
+/* 次级按钮：白底描边，跟主按钮并排时主次分明，不再是一排同样重的色块 */
+.btn.ghost{background:#fff;color:#3c4757;border:1px solid #d7dce3;box-shadow:none;font-weight:500}
+.btn.mini{display:inline-block;width:auto;padding:5px 11px;margin:0;border-radius:8px;
+font-size:var(--fs-label);font-weight:500;box-shadow:none}
+/* 按钮组：横排等分，省掉一半的纵向高度 */
+.btnrow{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.btnrow>*{flex:1 1 0;min-width:96px;margin-top:0}
+button:active,.btn:active{filter:brightness(.95);-webkit-transform:translateY(1px);transform:translateY(1px)}
 table{width:100%;border-collapse:collapse;font-size:var(--fs-table)}
 th,td{padding:7px 4px;border-bottom:1px solid #eef0f3;text-align:left;white-space:nowrap}
 th{color:#7a869a;font-weight:500;font-size:var(--fs-th);position:sticky;top:0;background:#fff}
@@ -65,13 +75,29 @@ td.n,th.n{text-align:right}
 .low{color:#e5484d;font-weight:600}
 .pill{display:inline-block;padding:1px 7px;border-radius:20px;font-size:var(--fs-label);background:#eef2f7;color:#5b6675}
 .pill.i{background:#e6f6ed;color:#12a150}.pill.o{background:#fdeced;color:#e5484d}
-nav{position:fixed;bottom:0;left:0;right:0;display:grid;grid-template-columns:repeat(4,1fr);
-background:#fff;border-top:1px solid #e3e7ec;padding-bottom:env(safe-area-inset-bottom)}
-nav a{padding:8px 0 7px;text-align:center;font-size:var(--fs-nav);color:#7a869a;text-decoration:none}
-nav a.on{color:#1f6feb}nav a i{display:block;font-size:var(--fs-navico);font-style:normal;line-height:1.2}
+/* ---- 底部导航：一行 7 项，磨砂半透明，不抢内容 ---- */
+.tabbar{position:fixed;bottom:0;left:0;right:0;z-index:20;
+background:rgba(255,255,255,.93);-webkit-backdrop-filter:saturate(180%) blur(12px);
+backdrop-filter:saturate(180%) blur(12px);border-top:1px solid #e6e9ee;
+padding-bottom:env(safe-area-inset-bottom)}
+.tabbar-in{display:grid;grid-template-columns:repeat(7,1fr);max-width:960px;margin:0 auto}
+.tabbar-in a{padding:5px 0 6px;text-align:center;font-size:var(--fs-nav);color:#8b93a1;
+text-decoration:none;line-height:1.2;overflow:hidden}
+.tabbar-in a.on{color:#1f6feb;font-weight:600}
+.tabbar-in a i{display:block;font-size:var(--fs-navico);font-style:normal;line-height:1.3;
+opacity:.72;-webkit-filter:grayscale(.4);filter:grayscale(.4)}
+.tabbar-in a.on i{opacity:1;-webkit-filter:none;filter:none}
+.subnav{border-bottom:1px solid #eef1f5}
+.subnav-in{display:flex;gap:6px;overflow-x:auto;padding:6px 8px;max-width:960px;margin:0 auto;
+scrollbar-width:none;-webkit-overflow-scrolling:touch}
+.subnav-in::-webkit-scrollbar{display:none}
+.subnav .chip{flex:none;padding:5px 13px;border-radius:999px;background:#f0f3f7;
+color:#5b6675;font-size:12px;text-decoration:none;white-space:nowrap;line-height:1.4}
+.subnav .chip.on{background:#1f6feb;color:#fff;font-weight:600}
 .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
 .empty{color:#98a2b3;text-align:center;padding:22px;font-size:var(--fs-table)}
-.rowflex{display:flex;gap:8px}.rowflex>*{flex:1}
+.rowflex{display:flex;gap:8px;align-items:stretch;margin-top:10px}
+.rowflex>*{flex:1;min-width:0;margin-top:0}
 .kv{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #f0f2f5;font-size:var(--fs-table)}
 input.cell{padding:6px 6px;font-size:var(--fs-table);border:1px solid #e3e7ec;border-radius:6px;min-width:64px;
 background:#fff}
@@ -96,11 +122,10 @@ tr.new{background:#f7fbff}
   .grid3{gap:14px}
 }
 @media(min-width:820px){
-  /* 底部导航始终横贯整屏、紧贴屏幕底边一行；
-     只让 6 个按钮在中间 960px 内均匀分布，背景条本身贯穿左右 */
-  nav{padding-left:max(0px,calc(50% - 480px));padding-right:max(0px,calc(50% - 480px));
-  border-radius:0;box-shadow:0 -1px 6px rgba(0,0,0,.05);border-left:0;border-right:0}
-  nav a{padding:9px 0 8px}
+  /* 底部导航：背景条横贯整屏、紧贴底边一行，7 个入口在中间 960px 内均分 */
+  .tabbar{box-shadow:0 -1px 8px rgba(16,24,40,.06)}
+  .tabbar-in a{padding:7px 0 8px}
+  .subnav .chip{padding:6px 14px}
 }
 @media(min-width:820px) and (hover:hover){
   button:hover,.btn:hover{filter:brightness(1.08)}
@@ -109,7 +134,7 @@ tr.new{background:#f7fbff}
 </style>
 {% block extra_head %}{% endblock %}
 </head>
-<body>
+<body{% if nav_sub %} data-sub="1"{% endif %}>
 {% macro th(label, f, cls='') -%}
 {% set nd = 'asc' if cur_sort != f else ('desc' if cur_dir == 'asc' else '') %}
 {% set ns = f if nd else '' %}
@@ -121,18 +146,15 @@ tr.new{background:#f7fbff}
 title="切换 紧凑/铺满">⤢</button><button id="fbtn" class="wbtn" type="button"
 title="切换字号 小/标准/大">A</button></div></header>
 <main>{% block body %}{% endblock %}</main>
-{% set ep = request.endpoint or '' %}
-<nav>
-<a href="{{url_for('index')}}" class="{{'on' if ep=='index'}}"><i>📊</i>首页</a>
-<a href="{{url_for('in')}}" class="{{'on' if ep in ('in','in_list')}}"><i>📥</i>入库</a>
-<a href="{{url_for('out')}}" class="{{'on' if ep in ('out','out_list')}}"><i>📤</i>出库</a>
-<a href="{{url_for('tpls')}}" class="{{'on' if ep=='tpls'}}"><i>🗂</i>模板</a>
-<a href="{{url_for('purchase_home')}}" class="{{'on' if ep in ('purchase_home','po_new','po_detail','suppliers')}}"><i>🛒</i>采购</a>
-<a href="{{url_for('txns')}}" class="{{'on' if ep=='txns'}}"><i>📝</i>流水</a>
-<a href="{{url_for('materials')}}" class="{{'on' if ep.startswith('material')}}"><i>🗂</i>物料</a>
-<a href="{{url_for('sheet_index')}}" class="{{'on' if ep.startswith('sheet')}}"><i>📗</i>制表</a>
-<a href="{{url_for('stk_list')}}" class="{{'on' if ep.startswith('stk')}}"><i>🔍</i>盘点</a>
-<a href="{{url_for('stat_center')}}" class="{{'on' if ep.startswith('stat_c')}}"><i>📈</i>统计</a>
+<nav class="tabbar">
+{% if nav_sub %}
+<div class="subnav"><div class="subnav-in">
+{% for it in nav_sub %}<a class="chip {{'on' if it.on}}" href="{{it.href}}">{{it.label}}</a>{% endfor %}
+</div></div>
+{% endif %}
+<div class="tabbar-in">
+{% for it in nav_main %}<a class="{{'on' if it.on}}" href="{{it.href}}"><i>{{it.icon}}</i><span>{{it.label}}</span></a>{% endfor %}
+</div>
 </nav>
 <script>
 (function(){

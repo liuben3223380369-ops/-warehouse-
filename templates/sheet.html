@@ -111,15 +111,35 @@ table.sh th.rh .rz{right:auto;bottom:-3px;top:auto;left:0;width:100%;height:7px;
 table.sh th{position:relative}
 /* 图表/透视结果展示 */
 .dlg canvas{max-width:100%}
+  #sh thead th em{display:block;font-style:normal;font-size:10px;font-weight:500;
+    color:#5b6675;line-height:1.1;margin-top:1px;max-width:96px;overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap}
+  #sh thead th{height:34px}
 </style>
 {% endblock %}
 
 {% block body %}
 {% if mode=='list' %}
+{% if msg %}<div class="card" style="background:#e8f6ee;border-left:3px solid #12a150">{{msg}}</div>{% endif %}
 <div class="card">
-  <form method="post" action="/sheet/new" style="display:flex;gap:8px">
-    <input name="name" placeholder="新工作簿名称（可留空）" style="margin:0">
+  <form method="post" action="/sheet/new" style="display:flex;gap:8px;flex-wrap:wrap">
+    <input name="name" placeholder="新工作簿名称（可留空）" style="margin:0;flex:1;min-width:150px">
     <button class="btn" type="submit" style="width:auto;padding:11px 18px;flex:none;margin:0">＋ 新建</button>
+  </form>
+  <label style="display:block;margin-top:8px;font-size:13px;color:#5b6675">
+    <input type="checkbox" name="no_batch" value="1"> 不启用批次号（默认 A 列为批次号并自动编号）
+  </label>
+</div>
+<div class="card">
+  <div style="font-size:13px;color:#5b6675;margin-bottom:8px">
+    把在用的<b>库存模板</b>、<b>采购模板</b>摊成电子表格，存一份只读快照当作参考。
+    改参考表不影响原模板。
+  </div>
+  <form method="post" action="/sheet/ref" style="display:flex;gap:8px;flex-wrap:wrap">
+    <button class="btn" type="submit" style="width:auto;padding:11px 18px;flex:none;margin:0">📋 生成参考模板</button>
+    <label style="display:flex;align-items:center;font-size:13px;color:#5b6675;gap:4px">
+      <input type="checkbox" name="no_batch" value="1"> 不带批次号
+    </label>
   </form>
 </div>
 <div class="card">
@@ -129,7 +149,9 @@ table.sh th{position:relative}
     <tr><th>名称</th><th>更新时间</th><th style="width:60px"></th></tr>
     {% for b in books %}
     <tr>
-      <td><a href="/sheet/{{b['id']}}">📗 {{b['name']}}</a></td>
+      <td><a href="/sheet/{{b['id']}}">📗 {{b['name']}}</a>
+          <a href="/sheet/{{b['id']}}/univer" style="margin-left:10px;font-size:12px;
+             color:#2563eb;text-decoration:none">新引擎 ⚡</a></td>
       <td style="color:#7a869a">{{b['updated']}}</td>
       <td><a href="/sheet/{{b['id']}}/del" style="color:#e5484d"
              onclick="return confirm('删除这本工作簿？')">删除</a></td>
@@ -144,96 +166,28 @@ table.sh th{position:relative}
 {% else %}
 
 <div class="sheetwrap">
-  <!-- ============ 工具栏 ============ -->
+  <!-- ============ 极简工具条：只留最常用的，其余全部收进「⋯」 ============ -->
   <div class="tbar" id="tbar">
-    <div class="grp">
-      <button data-a="save" title="保存">💾</button>
-      <button data-a="undo" title="撤销 Ctrl+Z">↶</button>
-      <button data-a="redo" title="重做 Ctrl+Y">↷</button>
-    </div>
+    <button data-a="save" title="保存 Ctrl+S">💾</button>
+    <button data-a="undo" title="撤销 Ctrl+Z">↶</button>
+    <button data-a="redo" title="重做 Ctrl+Y">↷</button>
     <div class="sep"></div>
-    <div class="grp">
-      <button data-a="copy" title="复制 Ctrl+C">⧉</button>
-      <button data-a="cut" title="剪切 Ctrl+X">✂</button>
-      <button data-a="paste" title="粘贴 Ctrl+V">📋</button>
-      <button data-a="pastemenu" title="选择性粘贴">▾</button>
-    </div>
+    <button data-a="copy" title="复制">⧉</button>
+    <button data-a="paste" title="粘贴">📋</button>
     <div class="sep"></div>
-    <div class="grp">
-      <select class="tin" id="fontSel" title="字体">
-        {% for f in fonts %}<option value="{{f}}">{{f or '字体'}}</option>{% endfor %}
-      </select>
-      <select class="tin" id="sizeSel" title="字号">
-        {% for s in sizes %}<option value="{{s}}">{{s or '字号'}}</option>{% endfor %}
-      </select>
-    </div>
-    <div class="grp">
-      <button data-a="bold" title="加粗 Ctrl+B"><b>B</b></button>
-      <button data-a="italic" title="斜体 Ctrl+I"><i>I</i></button>
-      <button data-a="ul" title="下划线 Ctrl+U"><u>U</u></button>
-      <button data-a="strike" title="删除线"><s>S</s></button>
-      <button data-a="color" title="字体颜色">A<span style="color:#e5484d">●</span></button>
-      <button data-a="bg" title="填充色">🪣</button>
-      <button data-a="border" title="边框（细致）">▦</button>
-      <button data-a="wrap" title="自动换行">↵</button>
-      <button data-a="merge" title="合并单元格">⊞</button>
-      <button data-a="brush" title="格式刷">🖌</button>
-    </div>
-    <div class="grp">
-      <button data-a="al" title="左对齐">◧</button>
-      <button data-a="ac" title="居中">◫</button>
-      <button data-a="ar" title="右对齐">◨</button>
-      <button data-a="vt" title="顶端对齐">🔝</button>
-      <button data-a="vm" title="垂直居中">↕</button>
-      <button data-a="vb" title="底端对齐">🔚</button>
-      <button data-a="ind" title="增加缩进">⇥</button>
-      <button data-a="outd" title="减少缩进">⇤</button>
-    </div>
+    <button data-a="bold" title="加粗 Ctrl+B"><b>B</b></button>
+    <button data-a="merge" title="合并">⊞</button>
+    <button data-a="autosum" title="求和">∑</button>
     <div class="sep"></div>
-    <div class="grp">
-      <select class="tin" id="fmtSel" title="数字格式">
-        {% for v,t in fmts %}<option value="{{v}}">{{t}}</option>{% endfor %}
-        <option value="__custom__">自定义…</option>
-      </select>
-    </div>
-    <div class="sep"></div>
-    <div class="grp">
-      <button data-a="insrow" title="插入行">＋行</button>
-      <button data-a="delrow" title="删除行">－行</button>
-      <button data-a="inscol" title="插入列">＋列</button>
-      <button data-a="delcol" title="删除列">－列</button>
-      <button data-a="width" title="列宽/行高">↔</button>
-      <button data-a="autofit" title="自适应列宽">⇔</button>
-    </div>
-    <div class="sep"></div>
-    <div class="grp">
-      <button data-a="sort" title="排序">⇅</button>
-      <button data-a="filter" title="筛选">▽</button>
-      <button data-a="find" title="查找替换 Ctrl+F">🔍</button>
-      <button data-a="autosum" title="自动求和">∑</button>
-      <button data-a="series" title="填充序列">1↓</button>
-      <button data-a="cond" title="条件格式">🎨</button>
-      <button data-a="valid" title="数据有效性">✓</button>
-      <button data-a="dedupe" title="删除重复项">⧉⊘</button>
-      <button data-a="subtotal" title="分类汇总">㊉</button>
-      <button data-a="clear" title="清除">⌫</button>
-    </div>
-    <div class="sep"></div>
-    <div class="grp">
-      <button data-a="freeze" title="冻结">🔒</button>
-      <button data-a="note" title="批注">💬</button>
-      <button data-a="chart" title="图表">📊</button>
-      <button data-a="pivot" title="透视表">🧮</button>
-      <button data-a="func" title="插入函数">fx</button>
-    </div>
-    <div class="sep"></div>
-    <div class="grp">
-      <button data-a="exportx" title="导出 Excel">⬇xlsx</button>
-      <button data-a="exportc" title="导出 CSV">⬇csv</button>
-      <button data-a="import" title="导入">⬆</button>
-      <button data-a="print" title="打印">🖨</button>
-    </div>
+    <button id="morebtn" title="全部功能">⋯</button>
+    <button data-a="exportx" title="导出 Excel">⬇</button>
+    <button data-a="import" title="导入">⬆</button>
   </div>
+
+  <!-- ============ 「⋯」面板：全部功能按组收纳，不堆在顶部 ============ -->
+  <div id="morepanel" style="display:none;position:absolute;z-index:60;right:6px;top:44px;
+       background:#fff;border:1px solid #dde2e8;border-radius:10px;box-shadow:0 8px 28px rgba(16,24,40,.14);
+       padding:10px;max-width:min(94vw,420px);max-height:70vh;overflow:auto"></div>
 
   <!-- ============ 名称框 + 公式栏 ============ -->
   <div class="fbar">
@@ -383,7 +337,10 @@ function render(){
     if(HIDCOL.indexOf(j)>=0) continue;
     var left='', cls='';
     if(j<FROZEN[1]){ cls=' frozenL'; left=' style="left:'+leftOf(j)+'px"'; }
-    out.push('<th class="'+cls.trim()+'" data-c="'+j+'"'+left+'><span>'+colL(j)+'</span>'+
+    var _nm=''; try{ _nm=colName(j); }catch(e){ _nm=''; }
+    var _sub = (_nm && _nm!==colL(j)) ? '<em>'+esc(_nm)+'</em>' : '';
+    out.push('<th class="'+cls.trim()+'" data-c="'+j+'"'+left+' title="'+esc(_nm)+'：点这里排序/筛选/隐藏">'+
+             '<span>'+colL(j)+'</span>'+_sub+
              '<i class="rz" data-rc="c" data-i="'+j+'"></i></th>');
   }
   out.push('</tr></thead><tbody>');
@@ -710,6 +667,16 @@ function menu(x,y,kind,idx){
         ['💬 批注…','note'],['⊞ 合并/取消','merge'],
         ['🔒 冻结到此','freeze'],['隐藏行','hideRow'],['隐藏列','hideCol'],['S'],
         ['取消隐藏行','unhideRow'],['取消隐藏列','unhideCol']];
+  } else if(kind==='colhdr'){
+    /* 点列标：这一列能做什么都在这里 */
+    if(idx!=null) SEL={r1:VIEW.r1,c1:idx,r2:VIEW.r2,c2:idx};
+    var nm = '(未知列)'; try{ nm = colName(idx); }catch(e){}
+    it=[['⇡ 按「'+nm+'」升序','sortasc'],['⇣ 按「'+nm+'」降序','sortdesc'],
+        ['▽ 筛选这一列','filter'],['S'],
+        ['＋ 左侧插入列','inscol'],['－ 删除本列','delcol'],
+        ['⇔ 自适应列宽','autofit'],['↔ 列宽…','width'],['S'],
+        ['🔒 冻结到此列','freeze'],['👁 隐藏本列','hideCol'],['取消隐藏列','unhideCol'],['S'],
+        ['🗂 按此列分组','group'],['⊟ 折叠分组','collapse'],['⊞ 展开分组','expand']];
   } else if(kind==='row'){
     it=[['＋ 上方插入行','insrow'],['－ 删除本行','delrow'],['S'],
         ['隐藏行','hideRow'],['取消隐藏行','unhideRow'],['行高…','width'],['⇔ 自适应行高','autofit']];
@@ -771,6 +738,62 @@ function colors(cur, cb){
   };
 }
 
+/* ---------------- 「⋯」面板：把全部功能收进这里 ---------------- */
+var MOREG = [
+  ['文件', [['exportx','导出 Excel'],['exportc','导出 CSV'],['import','导入文件'],['print','打印']]],
+  ['编辑', [['copy','复制'],['cut','剪切'],['paste','粘贴'],['pastemenu','选择性粘贴…'],
+            ['find','查找替换'],['clear','清除内容'],['dedupe','删除重复项'],['series','填充序列']]],
+  ['字体', [['bold','加粗'],['italic','斜体'],['ul','下划线'],['strike','删除线'],
+            ['color','字体颜色'],['bg','填充色'],['wrap','自动换行']]],
+  ['对齐', [['al','左对齐'],['ac','居中'],['ar','右对齐'],
+            ['vt','顶端'],['vm','垂直居中'],['vb','底端'],['ind','增缩进'],['outd','减缩进']]],
+  ['单元格', [['merge','合并'],['border','边框'],['brush','格式刷'],['note','批注'],['valid','数据有效性']]],
+  ['行与列', [['insrow','插入行'],['delrow','删除行'],['inscol','插入列'],['delcol','删除列'],
+              ['width','列宽/行高'],['autofit','自适应列宽'],['freeze','冻结窗格']]],
+  ['数据', [['sort','排序'],['filter','筛选'],['subtotal','分类汇总'],['cond','条件格式']]],
+  ['视图', [['chart','图表'],['pivot','透视表'],['func','插入函数']]]
+];
+function buildMore(){
+  var p=$('morepanel'); if(!p) return;
+  var h='<div style="font-size:12px;color:#98a2b3;margin:2px 0 8px">全部功能（点一下即用）</div>';
+  MOREG.forEach(function(gp){
+    h+='<div style="font-size:12px;font-weight:700;color:#1c2430;margin:9px 0 5px">'+gp[0]+'</div>';
+    h+='<div style="display:flex;flex-wrap:wrap;gap:5px">';
+    gp[1].forEach(function(it){
+      h+='<button data-a="'+it[0]+'" style="width:auto;min-width:0;padding:6px 10px;font-size:12px;'+
+         'border:1px solid #dde2e8;border-radius:7px;background:#f7f9fc;color:#1c2430;margin:0">'+it[1]+'</button>';
+    });
+    h+='</div>';
+  });
+  p.innerHTML=h;
+}
+document.addEventListener('click', function(e){
+  var p=$('morepanel'), mb=$('morebtn');
+  if(!p||!mb) return;
+  if(mb.contains(e.target)){ p.style.display = (p.style.display==='block'?'none':'block'); return; }
+  if(p.style.display==='block' && !p.contains(e.target)) p.style.display='none';
+});
+
+/* ---------------- 列头菜单：以「列」为一等公民 ---------------- */
+/* 表格模块就是一张表：每一列有名字、能排序、能筛选、能隐藏、能冻结。
+   所以这些操作挂在列标上，而不是堆成一片按钮。 */
+function colName(j){
+  /* 第一行的字就是这一列的表格名；没有就用列标 A/B/C */
+  try{ var cl=cellAt(0,j); var v=cl ? (cl.v!=null?cl.v:(cl.raw||'')) : '';
+       v=String(v==null?'':v).trim(); }catch(e){ var v=''; }
+  return v || colL(j);
+}
+document.addEventListener('click', function(e, _retry){
+  var th = e.target.closest ? e.target.closest('th[data-c]') : null;
+  if(!th) return;
+  if(e.target.classList && e.target.classList.contains('rz')) return;   // 拖列宽
+  if(window.__colMenuHandled) return;
+  window.__colMenuHandled = 1;
+  setTimeout(function(){ window.__colMenuHandled = 0; }, 50);
+  var j = parseInt(th.getAttribute('data-c'), 10);
+  menu(e.clientX, e.clientY, 'colhdr', j);
+}, true);
+
 /* ---------------- 动作分发 ---------------- */
 function R(){ return {r1:SEL.r1,c1:SEL.c1,r2:SEL.r2,c2:SEL.c2}; }
 function after(j){ if(j) refresh(); }
@@ -786,6 +809,23 @@ function toggleStyle(patch){
 function ACT(a){
   var o;
   switch(a){
+  case 'sortasc': case 'sortdesc': {
+    var asc = (a==='sortasc') ? 1 : 0;
+    var hd = (SEL.r1===0) ? 1 : 0;
+    post('sort', {r1:0, c1:0, r2:VIEW.r2, c2:VIEW.c2,
+                  keys:[[SEL.c1, asc]], header:hd},
+         function(j){ if(j){ refresh(); toast((asc?'升序':'降序')+'：'+ (colName(SEL.c1)||'')); } });
+    return;
+  }
+  case 'group': case 'collapse': case 'expand': {
+    var op = (a==='group') ? 'group' : a;
+    var hd = (SEL.r1===0) ? 1 : 0;
+    post('group', {r1:0, c1:0, r2:VIEW.r2, c2:VIEW.c2, col:SEL.c1, header:hd, op:op},
+      function(j){ if(j && !j.err){ refresh();
+        toast(a==='group' ? ('已分 '+(j.groups?j.groups.length:0)+' 组')
+             : (a==='collapse' ? '已折叠' : '已展开')); } });
+    return;
+  }
   case 'save': post('save',{},function(){ toast('已保存'); }); return;
   case 'undo': post('undo',{},function(j){ if(j){refresh();toast('撤销：'+(j.label||''));} }); return;
   case 'redo': post('redo',{},function(j){ if(j){refresh();toast('重做：'+(j.label||''));} }); return;
@@ -1328,7 +1368,8 @@ function commitFromBar(){
     if(j) refresh();
   });
 }
-if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', init);
+try{ buildMore(); }catch(e){}
+if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', function(){ try{ buildMore(); }catch(e){} init(); });
 else init();
 })();
 </script>

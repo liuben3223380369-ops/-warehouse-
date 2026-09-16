@@ -49,7 +49,7 @@
  <td>{{r.name}}{% if r.code %}<br><span class="pill">{{r.code}}</span>{% endif %}</td>
  <td class="n"><span class="pill {{'i' if r.kind=='进' else 'o'}}">{{r.kind}}</span></td>
  <td class="n"><b class="{{'in' if r.kind=='进' else 'out'}}">{{'%g'|format(r.qty)}}</b> {{r.unit}}</td>
- <td class="n">{% if r.price %}{{'%.2f'|format(r.price)}}<br>{% if r.price_src=='po' %}<span class="pill" style="background:#eef4ff;color:#1f6feb" title="按采购到货实价（不含税）折算">采购价</span>{% else %}<span class="pill" title="单据自己填的价，没有匹配的采购记录">手填</span>{% endif %}{% endif %}</td>
+ <td class="n">{% if r.price %}{{'%.2f'|format(r.price)}}<br>{% if r.price_src=='batch' %}<span class="pill" style="background:#eef4ff;color:#1f6feb" title="按这一批的采购到货实价（不含税）折算 —— 批次精确匹配">批次价</span>{% elif r.price_src=='mat' %}<span class="pill" style="background:#eef4ff;color:#1f6feb" title="按该物料最近一次采购到货实价（不含税）折算">采购价</span>{% else %}<span class="pill" title="单据自己填的价，没有匹配的采购记录">手填</span>{% endif %}{% endif %}</td>
  <td class="n">{% if r.price %}<b>{{'%.2f'|format(r.amount or 0)}}</b>{% endif %}</td>
  <td>{{r.note}}</td>
  {% for x in XC %}<td>{{ (XVAL.get(r.id) or {}).get(x.fid,'') }}</td>{% endfor %}

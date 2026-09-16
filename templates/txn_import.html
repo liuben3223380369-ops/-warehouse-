@@ -116,6 +116,15 @@
     {% if request.form.get('manual') %}{% else %}{% endif %}
     <label>日期为空时，用这个日期</label>
     <input type="date" name="defdate" value="{{defdate}}">
+    {% if fixed != '出' %}
+    <label>带批次号的入库，是否计入采购到货
+      <span style="font-weight:400;color:#7a869a;font-size:12px">（退料 / 调拨 / 盘盈请选「否」，否则供应商到货数会虚高、采购单提前结单）</span>
+    </label>
+    <select name="to_po">
+      <option value="0" selected>否（退料、调拨、盘盈）</option>
+      <option value="1">是（供应商到货）</option>
+    </select>
+    {% endif %}
     {% if fixed=='出' or not fixed %}
     <label style="display:flex;align-items:center;gap:6px">
       <input type="checkbox" name="allow_over" value="1" style="width:auto">

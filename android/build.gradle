@@ -1,0 +1,10 @@
+// 根工程：只声明插件版本，具体配置在 app/build.gradle
+plugins {
+    id 'com.android.application' version '8.1.4' apply false
+    // ChaQuopy：让 APK 里能跑 Python（版本在根工程统一声明）
+    id 'com.chaquo.python' version '15.0.1' apply false
+}
+
+tasks.register('clean', Delete) {
+    delete rootProject.buildDir
+}

@@ -1,0 +1,87 @@
+# -*- coding: utf-8 -*-
+"""Android 启动入口（由 MainActivity 通过 ChaQuopy 调用）
+
+只做三件事：
+    1. 把数据目录指向 App 私有目录（可写），源码目录在 APK 里是只读的
+    2. 把 templates / static 复制到私有目录（Flask 要能 stat / open 真实文件）
+    3. 在后台线程起 Flask，等端口真的能连上再把端口号交回给 WebView
+
+    start_server(files_dir) -> int 端口号
+"""
+import os
+import shutil
+import socket
+import threading
+import time
+
+SRC = os.path.dirname(os.path.abspath(__file__))
+
+
+def _free_port():
+    s = socket.socket()
+    s.bind(('127.0.0.1', 0))
+    p = s.getsockname()[1]
+    s.close()
+    return p
+
+
+def _mirror(name, dst_root):
+    """把源码里的 templates / static 复制到可写目录，返回最终可用路径"""
+    src = os.path.join(SRC, name)
+    dst = os.path.join(dst_root, name)
+    try:
+        if os.path.isdir(src) and not os.path.isdir(dst):
+            shutil.copytree(src, dst)
+        if os.path.isdir(dst):
+            return dst
+    except Exception:
+        pass
+    return src
+
+
+def _wait_up(port, timeout=20.0):
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            c = socket.create_connection(('127.0.0.1', port), 0.5)
+            c.close()
+            return True
+        except Exception:
+            time.sleep(0.25)
+    return False
+
+
+def start_server(files_dir):
+    try:
+        os.makedirs(files_dir, exist_ok=True)
+    except Exception:
+        pass
+
+    # 1) 数据目录：数据库、备份、上传临时文件、日志都落在这里
+    os.environ['WAREHOUSE_HOME'] = files_dir
+    os.environ['WAREHOUSE_DB'] = os.path.join(files_dir, 'warehouse.db')
+
+    # 2) 模板与静态资源：APK 里是只读虚拟路径，复制到私有目录后 Flask 才能正常 stat
+    os.environ['WAREHOUSE_TEMPLATES'] = _mirror('templates', files_dir)
+    os.environ['WAREHOUSE_STATIC'] = _mirror('static', files_dir)
+
+    # 3) 起服务
+    from wh.dispatch import create_app
+
+    app = create_app()
+    port = _free_port()
+
+    def run():
+        try:
+            app.run('127.0.0.1', port, debug=False, threaded=True, use_reloader=False)
+        except Exception as e:
+            try:
+                with open(os.path.join(files_dir, 'warehouse.log'), 'a',
+                          encoding='utf-8') as f:
+                    f.write('服务异常: %r\n' % (e,))
+            except Exception:
+                pass
+
+    threading.Thread(target=run, daemon=True).start()
+    _wait_up(port)
+    return port
