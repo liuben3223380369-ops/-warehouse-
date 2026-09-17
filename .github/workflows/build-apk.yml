@@ -10,6 +10,11 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      with_univer:
+        description: '内置桌面级表格新引擎（默认开，约 12MB；关掉可减小体积）'
+        type: boolean
+        default: true
 
 jobs:
   build:
@@ -79,9 +84,15 @@ jobs:
           cp -r templates android/app/src/main/python/
           cp -r static android/app/src/main/python/
           cp run.py android_entry.py android/app/src/main/python/
-          # 表格新引擎（static/univer 约 12MB JS）在手机 WebView 上加载很吃力，
-          # Android 版不带它，用回自带的轻量制表台。需要的话删掉这一行即可。
-          rm -rf android/app/src/main/python/static/univer
+          # 默认完整打包：表格新引擎（static/univer，约 12MB）一并打进去，
+          # 手机端跟电脑端功能完全一致。
+          # 只有在手动点「运行工作流」时显式把 with_univer 取消勾选，才做精简。
+          if [ "${{ github.event.inputs.with_univer }}" = "false" ]; then
+            rm -rf android/app/src/main/python/static/univer
+            echo "[i] 已精简：不带新引擎"
+          else
+            echo "[i] 完整包：带新引擎"
+          fi
           du -sh android/app/src/main/python
 
       - name: 构建 APK
@@ -129,8 +140,8 @@ jobs:
             - **Windows**：下载 `仓库管理系统-windows.zip`，解压后双击 `仓库管理系统.exe`
             - **Android**：下载 `仓库管理系统-android.apk`，安装后直接打开
 
-            两个平台用的是同一套业务代码，功能一致（Android 版为了体积与流畅度，
-            未内置桌面级表格新引擎，制表台仍可正常使用）。
+            两个平台用的是同一套业务代码，功能完全一致（含桌面级表格新引擎）。
+            Android 首次启动需要把内置资源释放到手机存储，约 12MB，请耐心等待十几秒。
 
             **数据说明：**
             - Windows：数据保存在 exe 旁的 `warehouse.db`，换电脑时一起拷走

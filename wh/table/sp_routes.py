@@ -123,10 +123,20 @@ def _sh(book, name=None):
 
 
 # ------------------------------------------------------------------ 页面
+def _uni_ok():
+    """新引擎离线资源是否可用（精简包返回 False，列表页就不显示入口）"""
+    try:
+        from .univer import engine_available
+        return engine_available()
+    except Exception:
+        return False
+
+
 @bp.route('/sheet')
 def sheet_index():
     rows = db.q("SELECT id, name, updated FROM wb ORDER BY id DESC")
     return render_template('sheet.html', mode='list', books=rows,
+                           uni=_uni_ok(),
                            msg=request.args.get('msg', ''))
 
 
@@ -167,6 +177,7 @@ def sheet_open(bid):
     r2 = max(sh.max_used_row(), 30)
     c2 = max(sh.max_used_col(), 12)
     return render_template('sheet.html', mode='open', bid=bid,
+                           uni=_uni_ok(),
                            name=(row[0]['name'] if row else ''),
                            book=book, sheets=book.sheets,
                            active=book.active,

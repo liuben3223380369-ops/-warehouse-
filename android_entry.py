@@ -26,16 +26,29 @@ def _free_port():
 
 
 def _mirror(name, dst_root):
-    """把源码里的 templates / static 复制到可写目录，返回最终可用路径"""
+    """把源码里的 templates / static 复制到可写目录，返回最终可用路径
+
+    先复制到 .tmp 目录再改名：static 现在有 12MB（表格引擎），
+    中途被杀掉会留下半个目录，页面就会报“引擎资源缺失”。
+    改名是原子操作，要么完整要么不存在，下次启动会自动重来。
+    """
     src = os.path.join(SRC, name)
     dst = os.path.join(dst_root, name)
+    tmp = dst + '.tmp'
     try:
-        if os.path.isdir(src) and not os.path.isdir(dst):
-            shutil.copytree(src, dst)
         if os.path.isdir(dst):
             return dst
+        if os.path.isdir(src):
+            if os.path.isdir(tmp):
+                shutil.rmtree(tmp, ignore_errors=True)
+            shutil.copytree(src, tmp)
+            os.rename(tmp, dst)
+            return dst
     except Exception:
-        pass
+        try:
+            shutil.rmtree(tmp, ignore_errors=True)
+        except Exception:
+            pass
     return src
 
 

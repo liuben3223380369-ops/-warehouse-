@@ -12,12 +12,44 @@
     打开时优先用 uni；没有（老表）就从自研格式现场转一次。
 """
 import json
+import os
+import sys
 import datetime
 
 from ..core import db
 
 ENGINE_VER = '0.25.1'
 _CACHED_COL = {'ok': False}
+_NEED = ('univer-presets.js', 'react.js', 'univer-sheets-core.js')
+
+
+# ------------------------------------------------- 离线资源是否齐全
+def static_dir():
+    """静态资源目录（跟 dispatch._static_folder 保持同一套解析规则）"""
+    try:
+        from flask import current_app
+        sf = getattr(current_app, 'static_folder', None)
+        if sf:
+            return sf
+    except Exception:
+        pass
+    _env = os.environ.get('WAREHOUSE_STATIC')
+    if _env:
+        return _env
+    if getattr(sys, 'frozen', False):
+        return os.path.join(db.res_dir(), 'static')
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(root, 'static')
+
+
+def engine_available():
+    """新引擎的离线资源是否随包安装了。
+
+    Android 精简版会把 static/univer（约 12MB JS）剔掉以缩小体积，
+    这时不能让用户撞到红色报错——应当静默用回自带制表台。
+    """
+    d = os.path.join(static_dir(), 'univer')
+    return all(os.path.exists(os.path.join(d, f)) for f in _NEED)
 
 
 # ------------------------------------------------------------------ 表结构
@@ -310,6 +342,9 @@ def register(bp):
         row, _ = _load(bid)
         if not row:
             return redirect('/sheet')
+        if not engine_available():          # 精简包：静默回退，不报错
+            return redirect('/sheet/%d?msg=%s' % (
+                bid, '本机未随包安装新引擎，已用自带制表台打开'))
         snap = load_uni(bid)
         if snap is None:                       # 老表：现场转一次
             try:

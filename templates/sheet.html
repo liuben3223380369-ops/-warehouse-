@@ -150,8 +150,8 @@ table.sh th{position:relative}
     {% for b in books %}
     <tr>
       <td><a href="/sheet/{{b['id']}}">📗 {{b['name']}}</a>
-          <a href="/sheet/{{b['id']}}/univer" style="margin-left:10px;font-size:12px;
-             color:#2563eb;text-decoration:none">新引擎 ⚡</a></td>
+          {% if uni %}<a href="/sheet/{{b['id']}}/univer" style="margin-left:10px;font-size:12px;
+             color:#2563eb;text-decoration:none">新引擎 ⚡</a>{% endif %}</td>
       <td style="color:#7a869a">{{b['updated']}}</td>
       <td><a href="/sheet/{{b['id']}}/del" style="color:#e5484d"
              onclick="return confirm('删除这本工作簿？')">删除</a></td>
