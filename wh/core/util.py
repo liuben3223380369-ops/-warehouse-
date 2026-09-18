@@ -76,7 +76,6 @@ BASE = db.app_dir()
 # set 的迭代顺序由哈希决定，是随机的 —— 满仓淘汰时会随机丢掉一半，
 # 用户正在填的表单令牌有 50% 概率被误淘汰，提交时判成"重复提交"，
 # 填了半天的数据全丢。改为先进先出后，淘汰的一定是最老的那批。
-from collections import OrderedDict
 _nonces = OrderedDict()
 _NONCE_MAX = 500          # 上限：防止开着几十个页面把内存撑大
 
@@ -125,6 +124,7 @@ MAX_UPLOAD = 20 * 1024 * 1024      # 单个上传文件上限 20MB，防止被�
 MAX_KW = 100                       # 搜索词上限：SQLite 对超长 LIKE 模式会报
                                    # "LIKE or GLOB pattern too complex" 直接 500
 MAX_ROWS = 500                     # 录单页一次最多提交/渲染多少行
+QTY_MAX = 1e9                      # 数量上限（盘点批量录入等处做上界校验）                     # 录单页一次最多提交/渲染多少行
 
 def safe_name(name, default='upload'):
     """把上传文件名压成安全的：去掉路径、空字节、控制字符，限制长度。

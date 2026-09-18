@@ -438,7 +438,7 @@ def _csv(head, rows, sno):
     for r in rows:
         w.writerow(r)
     fn = '盘点表_%s.csv' % sno
-    return Response('\ufeff' + bio.getvalue(), mimetype='text/csv; charset=utf-8',
+    return Response('\ufeff' + bio.getvalue(), content_type='text/csv; charset=utf-8',
                     headers={'Content-Disposition':
                              "attachment; filename*=UTF-8''%s" % quote(fn)})
 

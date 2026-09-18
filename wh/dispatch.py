@@ -18,7 +18,8 @@ from flask import Flask
 from .core import db, util, errors, sysinfo
 from .core.util import say, new_nonce, LABELS
 from . import ui
-from .table import bp as table_bp, sp_bp
+from .table import bp as table_bp
+from .sheet.web import bp as sp_bp
 from .inv import bp as inv_bp
 from .txn import bp as txn_bp
 from .po import bp as po_bp
@@ -101,7 +102,7 @@ def create_app(init_db=True, verbose=True):
 
         # 老采购明细补指纹：升级前建的明细没有 sig，不补就配不上采购价
         try:
-            from .po.logic import backfill_sigs
+            from .po.amount import backfill_sigs
             _n = backfill_sigs()
             if _n and verbose:
                 say('  已为 %d 条老采购明细补上指纹' % _n)

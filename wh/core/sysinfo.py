@@ -65,9 +65,9 @@ def sys_fix_recv():
            "  (SELECT SUM(r.qty) FROM po_receipts r WHERE r.item_id=po_items.id),0)")
     # 到货数变了，单头状态（已下单/部分到货/已完成）要跟着重算
     try:
-        from ..po import logic as _pl          # 延迟导入：避免 core 反向依赖 po
+        from ..po.status import refresh_status as _rs   # 延迟导入：避免 core 反向依赖 po
         for r in db.q("SELECT DISTINCT po_id FROM po_items"):
-            _pl.refresh_status(r['po_id'])
+            _rs(r['po_id'])
     except Exception as e:
         _log_err('修复到货数后重算状态失败', 'refresh_status: %s' % e)
     tip = '已按到货流水重算 %d 条明细的到货数' % n

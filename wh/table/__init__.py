@@ -16,10 +16,12 @@
 from ..core.router import Router
 bp = Router('table')
 
-from . import model, formula, parse, ops, export, render, helpers  # noqa: E402
-from . import form, batch, ref                                      # noqa: E402
-from . import sp_addr, sp_lexer, sp_parser, sp_funcs, sp_style    # noqa: E402
-from . import sp_engine, sp_io                                     # noqa: E402
+from . import model, formula, parse, ops, render, helpers          # noqa: E402
+from . import form                                                  # noqa: E402
+from ..sheet import kernel as K                                  # noqa: E402  制表内核
+from ..sheet import batch, ref                                    # noqa: E402
+from ..sheet.engine import core as sp_engine                       # noqa: E402
+from ..sheet import io as sp_io                                    # noqa: E402
 
 from .model import (ColumnDef, TableDef, fmt_value, fmt_money, fmt_qty,   # noqa
                     fmt_int, T_TEXT, T_NUM, T_DATE, T_SELECT, T_FORMULA,
@@ -30,16 +32,18 @@ from .parse import (read_table, detect_header, merge_head_layers,          # noq
                     is_total_row, find_total_rows, preview)
 from .ops import (sort_rows, filter_rows, paginate, window, aggregate,     # noqa
                   group_by, dedupe, add_total_row, next_dir)
-from .export import (to_xlsx, to_csv, to_json, csv_safe,                   # noqa
-                     xlsx_response, csv_response)
+from ..core import export                                           # noqa: E402
+from ..core.export import (to_xlsx, to_csv, to_json, csv_safe,             # noqa
+                           xlsx_response, csv_response)
 from .render import render, render_tabledef, input_grid                    # noqa
 from .helpers import all_custom_cols, cell_val                            # noqa
 from .form import (schema as form_schema, card_fields, label_map,          # noqa
                    PINNED_TXN, PINNED_PO, AREA_FIDS)
-from .batch import (next_no as next_batch_no, peek as peek_batch_no,               # noqa
-                    fill as fill_batch, label as batch_label, DEFAULT_ROWS,
-                    PREFIX as BATCH_PREFIX)
-from .ref import (from_stock_tpl, from_po_tpl, convert_all as convert_tpls)        # noqa
+from ..sheet.batch import (next_no as next_batch_no, peek as peek_batch_no,        # noqa
+                           fill as fill_batch, label as batch_label, DEFAULT_ROWS,
+                           PREFIX as BATCH_PREFIX)
+from ..sheet.ref import (from_stock_tpl, from_po_tpl,                              # noqa
+                         convert_all as convert_tpls)
 
 
 class _Facade(object):
@@ -124,19 +128,15 @@ class _Facade(object):
         """算一个 A1 风格的公式，返回 (值, 错误信息)"""
         sh = sheet or self.new_book().act
         try:
-            ast = sp_parser.parse(expr)
+            ast = K.parse(expr)
             return sh._eval_ast(ast, row, col, 0), None
         except Exception as e:
             return None, str(e)
 
     def funcs(self):
-        return sp_funcs.all_names()
+        return K.all_names()
 
 
 tbl = _Facade()
 
 from . import routes   # noqa: E402  路由挂在 bp 上，必须在 bp 之后导入
-from . import sp_routes                                            # noqa: E402
-
-#: 电子表格（类 Excel 制表台）的路由，由调度文件单独注册
-sp_bp = sp_routes.bp

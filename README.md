@@ -1,4 +1,4 @@
-# 仓库管理系统 v3.83
+# 仓库管理系统 v3.96
 
 从一份损坏的《仓库进出管理.xlsm》改造而来。原表 `#REF!` 满屏、公式不覆盖新行，
 现在改成**单据流水驱动**——只录进出，库存自动算。
@@ -43,15 +43,16 @@ WAREHOUSE_DB=/sdcard/wh.db ./run.sh     # 数据库放别处
 
 | 模块 | 目录 | 行数 | 管什么 |
 |---|---|---|---|
-| **表格** | `wh/table/` | 9542 | 制表引擎、电子表格、列定义、导入导出 |
-| **采购** | `wh/po/` | 1872 | 采购单、模板、批次、到货、付款 |
-| **出入库** | `wh/txn/` | 991 | 入库、出库、流水、Excel 导入 |
-| **统计** | `wh/stat/` | 1089 | 首页、月报、**统计中心八张表** |
-| **盘点** | `wh/count/` | 454 | 盘点单、实盘、差异、调整入账 |
-| **库存** | `wh/inv/` | 405 | 物料档案、库存视图、批量操作 |
-| **UI** | `wh/ui/` | 439 | 配色、骨架、组件 |
-| **核心** | `wh/core/` | 2123 | 数据库、路由、错误处理、工具 |
-| **调度** | `wh/dispatch.py` | 141 | 装配以上所有模块 |
+| **制表** | `wh/sheet/` | 8139 | **电子表格**：内核 / 求值 / IO / 动作 / Web 五层 + 批次号 + 参考模板（内核函数库 10 个子模块、求值层 8 个、动作层 6 个、Web 层 8 个） |
+| **表格** | `wh/table/` | 1654 | 通用录入表：列定义、模板、导入预览、录入表单 |
+| **采购** | `wh/po/` | 2014 | 采购单、模板、批次、到货、付款（拆 6 个逻辑文件 + web/ 6 个路由文件） |
+| **出入库** | `wh/txn/` | 1054 | 入库、出库、流水、Excel 导入（拆 3 个文件：录入 / 导入 / 列表删除） |
+| **统计** | `wh/stat/` | 1127 | 首页、月报、**统计中心八张表**（拆 2 个文件：月报 / 统计中心） |
+| **盘点** | `wh/count/` | 455 | 盘点单、实盘、差异、调整入账 |
+| **库存** | `wh/inv/` | 406 | 物料档案、库存视图、批量操作 |
+| **UI** | `wh/ui/` | 443 | 配色、骨架、组件 |
+| **核心** | `wh/core/` | 2536 | 数据库（拆 7 个子模块）、路由、错误处理、工具、通用报表导出 |
+| **调度** | `wh/dispatch.py` | 143 | 装配以上所有模块 |
 
 业务模块**不互相 import**，需要制表能力就调表格模块的门面 `tbl`：
 
@@ -323,12 +324,65 @@ cp warehouse.db ~/storage/downloads/         # 导出到下载目录
 ```
 run.py               启动入口（起服务、开窗口/浏览器、兜住崩溃）
 wh/dispatch.py       调度文件：装配六大模块
-wh/core/             核心：数据库、路由、错误处理、工具
-wh/table/            表格模块：制表引擎 + 类 Excel 电子表格
+wh/importer/         导入（3 文件，依赖单向：base <- wide <- txn）
+  ├ base.py          读取原语、物料档案表头映射、parse_file
+  ├ wide.py          原 Excel「宽表」：物料一行 × 每日进/出两列
+  └ txn.py           流水导入：表头别名、按列映射、整文件解析
+wh/desktop/          桌面外壳（2 文件）
+  ├ shell.py         单实例锁、端口、日志、原生窗口（webview）
+  └ qt.py            Qt WebEngine 窗口（可选后端，未安装自动跳过）
+wh/core/             核心：路由、错误处理、工具、通用报表导出
+  ├ paths.py         路径与环境：数据目录、只读资源目录、单位字典
+  ├ dbconn.py        连接与查询原语：复用连接、写锁排队、q / run / runmany
+  ├ schema.py        表结构：视图与建表 SQL、字段迁移、初始化
+  ├ query.py         常用业务查询：物料流水、库存行、批量改删
+  ├ tpl.py           模板体系：列映射、列名指纹、自定义列、库存模板
+  ├ potpl.py         采购模板
+  ├ maintain.py      运维：完整性检查、孤儿修复、备份、统计概览
+  ├ db.py            门面：把上面七个聚合成一个 db 命名空间（调用方无感）
+  └ export.py        通用报表导出（零依赖，被统计模块共用）
+wh/sheet/            制表模块（电子表格，分层）
+  ├ kernel/          词法 · 语法 · 地址 · 函数表 · 样式   ← 零业务耦合
+  │   ├ convert.py   类型转换与比较原语（to_num / to_serial / _same）
+  │   ├ num.py       数学与三角（SUM / ROUND / SIN…）
+  │   ├ stat.py      统计（AVERAGE / STDEV / SLOPE…）
+  │   ├ logic.py     逻辑（IF / AND / OR / XOR）
+  │   ├ text.py      文本（LEFT / MID / SUBSTITUTE / TEXT…）
+  │   ├ dt.py        日期与时间（DATE / DATEDIF / NETWORKDAYS…）
+  │   ├ lookup.py    查找与引用（VLOOKUP / INDEX / MATCH / OFFSET…）
+  │   ├ info.py      信息（ISERROR / ISREF / TYPE…）
+  │   ├ finance.py   财务（PMT / IRR / SLN / DB…）
+  │   ├ registry.py  函数注册表：包装器 + 装配 FUNCS 表 + 聚合导出
+  │   └ funcs.py     门面：外部 `funcs.to_num` / `F.FUNCS` 用法不变
+  ├ engine/          数据模型 · 求值器 · IronCalc 第二计算层
+  ├ io/              xlsx · csv 读写
+  ├ ops/             分组 · 撤销 · 进阶动作
+  ├ web/             路由 · Univer 前端集成（4 文件）
+  │   ├ common.py    蓝图、存取辅助、引擎偏好（其余三个共享）
+  │   ├ pages.py     页面路由：列表 / 新建 / 打开 / 重命名 / 删除
+  │   ├ io_rt.py     导入导出：xlsx 导入、导出 xlsx / csv
+  │   ├ api.py       /sheet/api/<bid>/<act> 分发与全部 a_* 动作
+  │   └ univer.py    Univer 引擎：资源检测、快照互转、/univer 路由
+  ├ batch.py         批次号（A 列自动编号）
+  └ ref.py           参考模板（把在用模板摊成电子表格）
+wh/table/            通用录入表：列定义、模板、导入预览、录入表单
 wh/inv/              库存模块：物料档案、库存视图
-wh/txn/              出入库模块：入库、出库、流水、导入
-wh/po/               采购模块：采购单、模板、批次、付款
-wh/stat/             统计模块：首页、月报、统计中心
+wh/txn/              出入库模块（3 文件）
+  ├ form.py          单据录入：入库 / 出库 / 流水三页共用
+  ├ importer.py      流水 Excel / WPS 导入 + 导入模板
+  └ browse.py        流水列表、批量操作、删除（含撤采购到货）
+wh/po/               采购模块（6 个逻辑文件 + web/ 9 个路由文件，共 2014 行）
+  ├ amount.py        金额口径、物料指纹、价格映射   ← 无内部依赖，本包最底层
+  ├ head.py          单头金额、已付、欠款
+  ├ summary.py       汇总快照（历史对账）
+  ├ status.py        状态推导（由到货事实推，不手工维护）、单号
+  ├ receive.py       到货入库（采购↔库存的唯一连接点）
+  ├ query.py         首页看板、供应商列表
+  └ web/             路由：common / home / new / detail / settle / order
+                     / tpl / supplier / export（order.py 拆为 5 个）
+wh/stat/             统计模块（2 文件）
+  ├ report.py        首页洞察、月报表、库存与流水导出
+  └ center.py        统计中心八张表与导出（口径写死在这里）
 wh/count/            盘点模块：盘点单、实盘、差异、调整入账
 wh/ui/               UI 模块：配色、骨架、组件
 templates/           页面模板（移动端优先）
@@ -388,3 +442,16 @@ warehouse.db         运行后自动生成的数据文件
 | v3.81 | 盘点全部差异被拦截时不再误标「已调整」 |
 | v3.82 | 统计表补规格列（周转/ABC/预警）；修复预警表多余样式列 |
 | v3.83 | 修复维度统计合计翻倍；趋势表按区间过滤；洞察榜补料号规格 |
+| v3.84 | 结构优化①：抽出制表内核 `wh/sheet/kernel/`（词法·语法·地址·函数表·样式） |
+| v3.85 | 结构优化②：抽出求值层 `wh/sheet/engine/`（数据模型·求值器·IronCalc） |
+| v3.86 | 结构优化③：抽出 IO 层 `wh/sheet/io/`；报表导出下沉为 `wh/core/export.py` |
+| v3.87 | 结构优化④：抽出动作层 `wh/sheet/ops/`；撤销栈下沉，消除对路由层的反向依赖 |
+| v3.88 | 结构优化⑤：抽出 Web 层 `wh/sheet/web/`（路由·Univer）；批次号与参考模板归入制表模块 |
+| v3.95 | **Web 与引擎去臃肿**：`sheet/web/api.py`(590) 拆为 edit / view / fmt / book 四个动作模块 + 90 行门面（22 个 a_* 按主题归位，`_j` 由 edit 供 book 复用）；`po/web/order.py`(554) 拆为 common / home / new / detail / settle 五个模块（13 条路由，依赖单向）；`engine/core.py`(547) 拆为 cell / sheet / book 三个模块 + 19 行门面。**顺带修复**：`po/web` 三处跨模块名未导入、`core/util.py` 缺模块级 `QTY_MAX`（盘点批量录入 `hi=QTY_MAX` 会 NameError）、`core/paths.py` 的 `unit_choices` 用了未定义的 `q`（异常被 try 吞掉，单位候选丢失历史项）；清理 9 行拆分残留的重复 import；`warehouse.spec` 清单重生成（133 条、0 缺失） |
+| v3.94 | **求值层与动作层去臃肿**：`engine/eval.py`(830) 拆为 ctx（求值原语）/ lazy_logic / lazy_cond / lazy_agg / lazy_ref（四类惰性函数）/ lazy（登记表）/ eval（AstEvaluator）七个模块，依赖严格单向；`ops/extra.py`(652) 按主题拆为 clip / fill / valid / analyze / fmt 五个模块 + extra 登记表，`_push_snap`、`_undo_hooks` 归入 undo 撤销栈。**顺带修复**：词法层不认 `$`，导致绝对引用 `$A$1` 全部报 `#NAME?`（地址层 parse_ref 一直支持，只是词法没放行） |
+| v3.93 | **函数库去臃肿**：`kernel/funcs.py`(1791) 按类别拆为 convert / num / stat / logic / text / dt / lookup / info / finance 九个模块 + registry（注册表·聚合）+ funcs 门面（20 行）；依赖严格单向 （convert ← 各类别 ← registry），`funcs.FUNCS` 仍 160、`all_names()` 仍 175；新增 symtable 全局扫描，抓出拆分时遗漏的 `_date`→`_EPOCH` 跨模块引用并修复；`warehouse.spec` 清单重生成（92 条、0 缺失） |
+| v3.92 | **导入与桌面外壳去臃肿**：`wh/importer.py`(892) 拆为 `importer/`（base / wide / txn 三层，依赖单向）；`wh/desktop.py` + `wh/qtwin.py` 合为 `desktop/`（shell + qt）；`sheet/web/routes.py`(886) 拆为 common / pages / io_rt / api 四个文件。顺带解开两处反向依赖：`_read_grid` 由 base 下移到 txn、撤销栈由路由层下沉到 ops，`warehouse.spec` 模块清单改为按实际结构自动生成（83 条、0 缺失） |
+| v3.91 | **采购模块去臃肿**：`logic.py`(965) + `routes.py`(894) 拆为 amount / head / summary / status / receive / query 六个逻辑文件 + `web/`（order·tpl·supplier·export）四个路由文件；`logic.py` 整个删掉，6 处外部调用改为直连子模块；采购包不再 import `table`/`importer` |
+| v3.90 | **核心去臃肿**：`wh/core/db.py`（1545 行）拆为 paths / dbconn / schema / query / tpl / potpl / maintain 七个子模块 + 18 行门面；门面公开符号 **83 个与拆前完全一致**，24 个调用方零改动；`_cols` 下沉解开了 schema↔potpl 循环依赖；`warehouse.spec` 模块清单改为按实际结构自动生成（67 条，0 缺失） |
+| v3.89 | **业务模块去臃肿**：`wh/stat/` 拆为 report / center，`wh/txn/` 拆为 form / importer / browse；修正 `warehouse.spec` 中 39 条指向已搬走模块的过时 hiddenimports |
+| v3.96 | **CSV 响应头规范化**：5 处 `mimetype='text/csv; charset=utf-8'` 改为 `content_type=`，消除 Werkzeug 追加导致的 `charset=utf-8; charset=utf-8` 重复；12 个 CSV 导出实测 Content-Type 均只含 1 个 charset、BOM 与中文完好 |
