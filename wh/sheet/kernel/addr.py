@@ -16,6 +16,10 @@ import re
 MAX_ROW = 1048576        # 跟 Excel 一致
 MAX_COL = 16384          # Excel 最大列 XFD
 
+# 新建工作表的默认网格（只是“初始画多大”，不是上限；超出照常可用）
+DEFAULT_ROWS = 1000
+DEFAULT_COLS = 200
+
 _LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 
 # A1 或 $A$1

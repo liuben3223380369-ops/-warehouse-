@@ -17,6 +17,7 @@ import sys
 import datetime
 
 from ...core import db
+from ..kernel.addr import DEFAULT_ROWS, DEFAULT_COLS
 
 ENGINE_VER = '0.25.1'
 _CACHED_COL = {'ok': False}
@@ -111,7 +112,10 @@ def static_dir():
         return _env
     if getattr(sys, 'frozen', False):
         return os.path.join(db.res_dir(), 'static')
-    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    # wh/sheet/web/univer.py → 上溯 4 层才是项目根（v3.98 修正：
+    # 这里少一层会指到 wh/static，导致无请求上下文时误判资源缺失）
+    root = os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     return os.path.join(root, 'static')
 
 
@@ -295,8 +299,8 @@ def book_to_univer(book):
         sheets[sid] = {
             'id': sid,
             'name': sh.name or ('Sheet%d' % (i + 1)),
-            'rowCount': max(int(getattr(sh, 'rows', 200) or 200), 200),
-            'columnCount': max(int(getattr(sh, 'cols', 26) or 26), 26),
+            'rowCount': max(int(getattr(sh, 'rows', DEFAULT_ROWS) or DEFAULT_ROWS), DEFAULT_ROWS),
+            'columnCount': max(int(getattr(sh, 'cols', DEFAULT_COLS) or DEFAULT_COLS), DEFAULT_COLS),
             'cellData': cell_data,
             'rowData': row_data,
             'columnData': col_data,
@@ -368,8 +372,8 @@ def univer_to_book(snap):
         fr = sh.get('freeze') or {}
         sheets_out.append({
             'name': sh.get('name') or 'Sheet1',
-            'rows': int(sh.get('rowCount') or 200),
-            'cols': int(sh.get('columnCount') or 26),
+            'rows': int(sh.get('rowCount') or DEFAULT_ROWS),
+            'cols': int(sh.get('columnCount') or DEFAULT_COLS),
             'cells': cells,
             'col_width': cw,
             'row_height': rh,
@@ -387,7 +391,7 @@ def univer_to_book(snap):
 
     if not sheets_out:
         sheets_out.append({
-            'name': 'Sheet1', 'rows': 200, 'cols': 26, 'cells': [],
+            'name': 'Sheet1', 'rows': DEFAULT_ROWS, 'cols': DEFAULT_COLS, 'cells': [],
             'col_width': {}, 'row_height': {}, 'frozen_rows': 0, 'frozen_cols': 0,
             'merges': [], 'filter': None, 'cond': [], 'tab_color': '',
             'hidden': 0, 'hidden_rows': [], 'hidden_cols': [],

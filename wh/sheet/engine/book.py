@@ -3,6 +3,7 @@
 
 只管装载与寻址，不管怎么算。
 """
+from ..kernel.addr import DEFAULT_ROWS, DEFAULT_COLS
 from ..kernel import addr as A
 from .sheet import Sheet
 
@@ -15,7 +16,7 @@ class Workbook(object):
         self.active = 0
 
     # ---------------- 表管理 ----------------
-    def add(self, name=None, rows=200, cols=26):
+    def add(self, name=None, rows=DEFAULT_ROWS, cols=DEFAULT_COLS):
         name = name or self._next_name()
         s = Sheet(name, rows, cols)
         s.book = self

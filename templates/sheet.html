@@ -670,10 +670,10 @@ function bindGrid(){
   /* 滚动到底自动加载更多 */
   box.addEventListener('scroll', function(){
     if(box.scrollTop+box.clientHeight >= box.scrollHeight-40){
-      if(VIEW.r2 < 4000){ VIEW.r2+=60; fetchGrid(VIEW.r2-59,VIEW.c1,VIEW.r2,VIEW.c2); }
+      if(VIEW.r2 < 20000){ VIEW.r2+=60; fetchGrid(VIEW.r2-59,VIEW.c1,VIEW.r2,VIEW.c2); }
     }
     if(box.scrollLeft+box.clientWidth >= box.scrollWidth-40){
-      if(VIEW.c2 < 200){ VIEW.c2+=10; fetchGrid(VIEW.r1,VIEW.c2-9,VIEW.r2,VIEW.c2); }
+      if(VIEW.c2 < 2000){ VIEW.c2+=10; fetchGrid(VIEW.r1,VIEW.c2-9,VIEW.r2,VIEW.c2); }
     }
   });
 }

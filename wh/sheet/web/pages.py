@@ -44,7 +44,11 @@ def sheet_new():
     db.run("INSERT INTO wb(name, data, updated) VALUES(?,?,?)",
            name, json.dumps(book.to_dict(), ensure_ascii=False), now)
     row = db.q("SELECT last_insert_rowid() AS id")[0]
-    return redirect(url_for('sheet_open', bid=row['id']))
+    bid = row['id']
+    # 引擎偏好是「新引擎」且资源随包装上了 → 直接进新引擎，别让用户再点一次
+    if get_engine() == 'new' and _uni_ok():
+        return redirect(url_for('uni_open', bid=bid))
+    return redirect(url_for('sheet_open', bid=bid))
 
 
 @bp.route('/sheet/ref', methods=['POST'])
@@ -63,8 +67,8 @@ def sheet_open(bid):
         return redirect(url_for('sheet_index', msg='这本工作簿不存在'))
     row = db.q("SELECT name FROM wb WHERE id=?", bid)
     sh = book.act
-    r2 = max(sh.max_used_row(), 30)
-    c2 = max(sh.max_used_col(), 12)
+    r2 = max(sh.max_used_row(), 60)
+    c2 = max(sh.max_used_col(), 20)
     return render_template('sheet.html', mode='open', bid=bid,
                            uni=_uni_ok(),
                            name=(row[0]['name'] if row else ''),

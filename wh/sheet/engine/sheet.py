@@ -10,6 +10,7 @@
 """
 import re
 
+from ..kernel.addr import DEFAULT_ROWS, DEFAULT_COLS
 from ..kernel import addr as A
 from ..kernel import funcs as F
 from ..kernel import Style, CondRule, format_value, is_date_code
@@ -21,7 +22,7 @@ from .cell import Cell, MAX_CELLS
 
 
 class Sheet(object):
-    def __init__(self, name='Sheet1', rows=200, cols=26):
+    def __init__(self, name='Sheet1', rows=DEFAULT_ROWS, cols=DEFAULT_COLS):
         self.name = name
         self.cells = {}           # (r,c) -> Cell
         self.rows = rows

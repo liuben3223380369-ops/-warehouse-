@@ -95,6 +95,21 @@ jobs:
           fi
           du -sh android/app/src/main/python
 
+      - name: 同步版本号（跟随 tag，避免 APK 版本停在旧值）
+        run: |
+          set -e
+          VER="${GITHUB_REF_NAME#v}"
+          # 手动运行工作流时没有 tag，就退回读代码里的 __version__
+          if [ -z "$VER" ] || [ "$VER" = "$GITHUB_REF_NAME" ]; then
+            VER="$(python3 -c "import re,io;print(re.search(r\"__version__\s*=\s*['\\"]([^'\"]+)\",io.open('wh/__init__.py',encoding='utf-8').read()).group(1))")"
+          fi
+          CODE="$(echo "$VER" | tr -d '.' | tr -cd '0-9')"
+          [ -z "$CODE" ] && CODE=1
+          echo "版本名=$VER  版本号=$CODE"
+          sed -i "s/versionCode [0-9]*/versionCode $CODE/" android/app/build.gradle
+          sed -i "s/versionName '[^']*'/versionName '$VER'/" android/app/build.gradle
+          grep -n "versionCode\|versionName" android/app/build.gradle
+
       - name: 构建 APK
         run: |
           set -e

@@ -1,4 +1,4 @@
-# 仓库管理系统 v3.96
+# 仓库管理系统 v3.97
 
 从一份损坏的《仓库进出管理.xlsm》改造而来。原表 `#REF!` 满屏、公式不覆盖新行，
 现在改成**单据流水驱动**——只录进出，库存自动算。
@@ -454,4 +454,6 @@ warehouse.db         运行后自动生成的数据文件
 | v3.91 | **采购模块去臃肿**：`logic.py`(965) + `routes.py`(894) 拆为 amount / head / summary / status / receive / query 六个逻辑文件 + `web/`（order·tpl·supplier·export）四个路由文件；`logic.py` 整个删掉，6 处外部调用改为直连子模块；采购包不再 import `table`/`importer` |
 | v3.90 | **核心去臃肿**：`wh/core/db.py`（1545 行）拆为 paths / dbconn / schema / query / tpl / potpl / maintain 七个子模块 + 18 行门面；门面公开符号 **83 个与拆前完全一致**，24 个调用方零改动；`_cols` 下沉解开了 schema↔potpl 循环依赖；`warehouse.spec` 模块清单改为按实际结构自动生成（67 条，0 缺失） |
 | v3.89 | **业务模块去臃肿**：`wh/stat/` 拆为 report / center，`wh/txn/` 拆为 form / importer / browse；修正 `warehouse.spec` 中 39 条指向已搬走模块的过时 hiddenimports |
+| v3.98 | **制表静态资源兜底路径修正**：`univer.static_dir()` 在无请求上下文时的兜底分支少上溯一层（指向 `wh/static` 而非项目根 `static`），会把新引擎资源误判为「未随包安装」从而静默回退旧制表台；改为上溯 4 层。引擎链路复核：偏好 new/old 下新建分别跳 `/sheet/<id>/univer` 与 `/sheet/<id>`、列表主链接与提示同步、新簿默认 1000 行×200 列、写入第 301 列后 Univer 快照自动扩至 302 列且数据可见 |
+| v3.97 | **制表默认引擎与网格尺寸修正**：`/sheet/new` 原忽略引擎偏好、一律跳旧制表台（实测 302→`/sheet/<id>`），改为偏好新引擎且资源随包装上时跳 `/sheet/<id>/univer`；新建工作表默认网格 200×26 提至 **1000 行 × 200 列**（`kernel.addr.DEFAULT_ROWS/COLS`，Univer 快照下限同步）；旧制表台滚动扩展上限 行 4000→20000、列 200→2000，初始视窗 30×12→60×20。 |
 | v3.96 | **CSV 响应头规范化**：5 处 `mimetype='text/csv; charset=utf-8'` 改为 `content_type=`，消除 Werkzeug 追加导致的 `charset=utf-8; charset=utf-8` 重复；12 个 CSV 导出实测 Content-Type 均只含 1 个 charset、BOM 与中文完好 |
