@@ -55,11 +55,18 @@ jobs:
           ls "dist/仓库管理系统/_internal/PySide6/" 2>/dev/null | grep -i webengine || echo "  （未随包，将退回浏览器）" 
 
       - name: 压缩便携版
+        # onedir 模式：exe 在 dist/仓库管理系统/ 里，旁边还有 _internal 依赖目录。
+        # 只压 exe 会得到一个打不开的便携版，所以整个文件夹一起压。
         shell: bash
         run: |
           cd dist
-          7z a -y ../仓库管理系统-windows.zip "仓库管理系统.exe" || \
-            powershell -Command "Compress-Archive -Path '仓库管理系统.exe' -DestinationPath '../仓库管理系统-windows.zip'"
+          rm -f ../仓库管理系统-windows.zip
+          7z a -y -r ../仓库管理系统-windows.zip "仓库管理系统" || \
+            powershell -Command "Compress-Archive -Path '仓库管理系统' -DestinationPath '../仓库管理系统-windows.zip' -Force"
+          cd ..
+          echo "便携版大小：$(stat -c%s 仓库管理系统-windows.zip) 字节"
+          7z l 仓库管理系统-windows.zip | grep "仓库管理系统.exe" || \
+            (echo "::error::压缩包里没有 exe" && exit 1)
 
       - name: 生成安装程序
         shell: bash
