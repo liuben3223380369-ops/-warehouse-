@@ -11,11 +11,12 @@
 {% if request.args.err=='dup' %}<div class="card" style="background:#fdeced;border-left:3px solid #e5484d">这一下点重复了，没有重复生成单据</div>{% endif %}
 {% if request.args.err=='nodiff' %}<div class="card" style="background:#fdeced;border-left:3px solid #e5484d">没有差异，不需要调整</div>{% endif %}
 {% if request.args.skip %}<div class="card" style="background:#fdeced;border-left:3px solid #e5484d">这几行盘亏数量超过可用库存，已跳过：{{request.args.skip}}</div>{% endif %}
+{% if request.args.none %}<div class="card" style="background:#fff5e6;border-left:3px solid #f5a524">一行都没调整成功，没有生成任何单据，盘点单保持「已盘点」。请先补足库存，或把盘亏数量改到可用库存以内。</div>{% endif %}
 
 <div class="grid2">
   <div class="stat"><span>账面总数</span><b>{{'%g'|format(summary.book)}}</b></div>
   <div class="stat"><span>实盘总数</span><b>{{'%g'|format(summary.real)}}</b></div>
-  <div class="stat"><span>总差异</span><b class="{{'out' if summary.real<summary.book else 'in'}}">{{'%g'|format(summary.real-summary.book)}}</b></div>
+  <div class="stat"><span>总差异{% if summary.partial %}<span style="font-size:var(--fs-label);color:#7a869a">（按已盘{{summary.done}}种）</span>{% endif %}</span><b class="{{'out' if summary.real<summary.book_c else 'in'}}">{{'%g'|format(summary.real-summary.book_c)}}</b></div>
   <div class="stat"><span>差异金额</span><b class="{{'out' if summary.amt<0 else 'in'}}">{{'%+.2f'|format(summary.amt)}}</b></div>
 </div>
 <div class="grid3">

@@ -304,6 +304,20 @@ def ym(d=None):
     d = d or today()
     return d[:7]
 
+def opt_ym(m):
+    """可选月份：没传或格式不对都返回 ''（表示不限月份）。
+
+    不能拿 safe_ym 顶替 —— 它没传时会回退到当前月，等于悄悄加了个筛选条件：
+    上一版 CSV 导出就是这么「默认只导当月」的，看着像全量其实不是。
+    """
+    m = (m or '').strip() if isinstance(m, str) else ''
+    if len(m) == 7 and m[4] == '-' and m[:4].isdigit() and m[5:].isdigit():
+        return m
+    if len(m) == 6 and m[4] == '-' and m[:4].isdigit() and m[5].isdigit():
+        return m[:4] + '-0' + m[5]
+    return ''
+
+
 def safe_ym(m, default=None):
     """把用户传来的月份参数规范成 YYYY-MM。
 

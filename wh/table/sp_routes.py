@@ -26,6 +26,7 @@ import os
 import re
 import json
 import datetime
+import urllib.parse
 
 from flask import request, jsonify, render_template, redirect, url_for, Response
 
@@ -132,12 +133,76 @@ def _uni_ok():
         return False
 
 
+# ------------------------------------------------------- 引擎偏好（v3.77）
+# 两个引擎都保留，只是决定「点工作簿名字默认进哪个」。
+# 旧的那个不删：新引擎加载失败时它就是退路。
+_ENGINE_DEFAULT = 'new'   # new=新引擎(Univer) / old=自带制表台
+
+
+def _q(s):
+    """中文提示塞进 URL 查询串"""
+    return urllib.parse.quote(str(s))
+
+
+def _cfg_table():
+    try:
+        db.run("CREATE TABLE IF NOT EXISTS cfg "
+               "(k TEXT PRIMARY KEY, v TEXT)")
+    except Exception:
+        pass
+
+
+def get_engine():
+    """读取引擎偏好；没设过就返回默认。库不可用时也不崩。"""
+    try:
+        _cfg_table()
+        rows = db.q("SELECT v FROM cfg WHERE k='sheet_engine'")
+        if rows:
+            v = (rows[0]['v'] or '').strip().lower()
+            if v in ('new', 'old'):
+                return v
+    except Exception:
+        pass
+    return _ENGINE_DEFAULT
+
+
+def set_engine(v):
+    v = (v or '').strip().lower()
+    if v not in ('new', 'old'):
+        return False
+    try:
+        _cfg_table()
+        db.run("INSERT INTO cfg(k,v) VALUES('sheet_engine',?) "
+               "ON CONFLICT(k) DO UPDATE SET v=excluded.v", v)
+        return True
+    except Exception:
+        return False
+
+
 @bp.route('/sheet')
 def sheet_index():
     rows = db.q("SELECT id, name, updated FROM wb ORDER BY id DESC")
+    uni = _uni_ok()
+    eng = get_engine()
+    # 偏好新引擎但资源没随包装上（精简 APK）→ 静默回退，不让用户撞红字
+    if eng == 'new' and not uni:
+        eng = 'old'
     return render_template('sheet.html', mode='list', books=rows,
-                           uni=_uni_ok(),
+                           uni=uni, eng=eng,
                            msg=request.args.get('msg', ''))
+
+
+@bp.route('/sheet/engine', methods=['POST'])
+def sheet_engine_set():
+    """切换「点工作簿名字默认进哪个引擎」。两个引擎都还在，只是改默认。"""
+    v = (request.form.get('engine') or '').strip().lower()
+    if v not in ('new', 'old'):
+        return redirect('/sheet?msg=' + _q('引擎参数不对'))
+    if v == 'new' and not _uni_ok():
+        return redirect('/sheet?msg=' + _q('新引擎资源没随包安装'))
+    set_engine(v)
+    tip = '已切换：默认用新引擎' if v == 'new' else '已切换：默认用自带制表台'
+    return redirect('/sheet?msg=' + _q(tip))
 
 
 @bp.route('/sheet/new', methods=['POST'])

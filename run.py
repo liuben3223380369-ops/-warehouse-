@@ -41,6 +41,13 @@ def open_browser_later(port, delay=1.2):
 
 
 def main():
+    # 单实例：已经有一个在跑就直接退出，避免开两个窗口、两个进程抢同一个库
+    if desktop.already_running():
+        desktop.msgbox('仓库管理系统已经在运行了。\n\n'
+                       '请看看任务栏或屏幕上的窗口；'
+                       '如果确实找不到，关掉后重新打开就行。')
+        return
+
     from wh.dispatch import create_app
 
     args = [a for a in sys.argv[1:]]
@@ -102,7 +109,7 @@ def main():
         for b in banner:
             say(b)
             desktop.log(b.strip())
-        ok = desktop.run_window(app, port)
+        ok = desktop.run_window(app, port, title='仓库管理系统 v' + __ver)
         if not ok:                       # 窗口起不来就退回浏览器
             say('  独立窗口启动失败，已退回浏览器模式')
             open_browser_later(port)

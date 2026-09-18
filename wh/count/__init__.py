@@ -76,15 +76,26 @@ def _items(stk_id):
 
 
 def _summary(items):
-    """汇总：物料种类、盘盈盘亏种类与数量、差异金额"""
+    """汇总：物料种类、盘盈盘亏种类与数量、差异金额
+
+    book   = 全部物料的账面合计（应盘）
+    book_c = 只统计「已盘」物料的账面合计
+
+    差异与差异率必须用 book_c 而不是 book：盘点进行到一半时，
+    「实盘」只累加已盘行，若拿它去减「全部账面」，会把未盘物料的账面数
+    当成盘亏显示出来。实测 250 种只盘了 100 种、且这 100 种全部盘盈 +3，
+    合计却显示 -3946 的虚假大额亏损。
+    """
     s = dict(n=len(items), done=0, over=0, short=0, match=0,
-             over_qty=0.0, short_qty=0.0, amt=0.0, book=0.0, real=0.0)
+             over_qty=0.0, short_qty=0.0, amt=0.0, book=0.0, real=0.0,
+             book_c=0.0, partial=False)
     for it in items:
         s['book'] += float(it['book_qty'] or 0)
         if not it['counted']:
             continue
         s['done'] += 1
         s['real'] += float(it['real_qty'] or 0)
+        s['book_c'] += float(it['book_qty'] or 0)
         df = it['diff'] or 0
         if abs(df) < 1e-9:
             s['match'] += 1
@@ -95,7 +106,10 @@ def _summary(items):
             s['short'] += 1
             s['short_qty'] += -df
         s['amt'] += it['diff_amt'] or 0
-    s['rate'] = round((s['real'] - s['book']) / s['book'] * 100, 2) if s['book'] else None
+    # 差异、差异率都只按已盘部分算；没盘完时 partial=True，页面上要写明进度，
+    # 免得"账面总数（全部）"和"实盘总数（已盘）"并排放着被误读成亏损。
+    s['partial'] = s['done'] < s['n']
+    s['rate'] = round((s['real'] - s['book_c']) / s['book_c'] * 100, 2) if s['book_c'] else None
     return s
 
 
@@ -288,9 +302,14 @@ def stk_adjust(sid):
                              float(it['price'] or 0) or None, note[:200], now, ''))
             c.execute("UPDATE stk_items SET txn_id=? WHERE id=?", (cur.lastrowid, it['id']))
             made += 1
-        c.execute("UPDATE stk SET status='已调整' WHERE id=?", (sid,))
+        # 只有真生成了单据才改状态：全部被拦截时不能假装「已调整」
+        if made:
+            c.execute("UPDATE stk SET status='已调整' WHERE id=?", (sid,))
     if skipped:
-        return redirect(url_for('stk_detail', sid=sid) + '?skip=' + quote('、'.join(skipped)))
+        url = url_for('stk_detail', sid=sid) + '?skip=' + quote('、'.join(skipped))
+        if not made:
+            url += '&none=1'
+        return redirect(url)
     return redirect(url_for('stk_detail', sid=sid) + '?made=%d' % made)
 
 
@@ -356,10 +375,14 @@ def stk_export(sid):
                      it['price'] or '', it['diff_amt'] or '',
                      it['reason'] or '', it['handle'] or '', row['counter'] or '',
                      row['checker'] or '', it['note'] or ''])
+    # 差异数量按「已盘部分」算：实盘只累加已盘行，若减全部账面，
+    # 未盘物料的账面数会被当成盘亏显示出来（实测 250 种只盘 100 种时显示 -3946 的假亏损）。
+    # 没盘完时在备注里写明进度，免得"账面（全部）"与"实盘（已盘）"并排被误读。
+    tail = ('已盘 %d/%d 种 · 总差异率' % (s['done'], s['n'])) if s['partial'] else '总差异率'
     rows.append(['合计', '', '', '%d 种' % s['n'], '盘盈 %d 种 / 盘亏 %d 种' % (s['over'], s['short']),
-                 '', '', s['book'], s['real'], s['real'] - s['book'],
+                 '', '', s['book'], s['real'], round(s['real'] - s['book_c'], 2),
                  '' if s['rate'] is None else s['rate'], '', round(s['amt'], 2),
-                 '', '', '', '', '总差异率'])
+                 '', '', '', '', tail])
 
     fmt = (request.args.get('fmt') or 'xlsx').lower()
     if fmt == 'csv':

@@ -41,7 +41,7 @@ cd /d "%~dp0"
 echo   当前目录: %CD%
 echo.
 
-echo   [2/5] 安装打包依赖...
+echo   [2/6] 安装核心依赖...
 %PYCMD% -m pip install -r requirements.txt pyinstaller
 if errorlevel 1 (
     echo.
@@ -53,12 +53,20 @@ if errorlevel 1 (
 )
 
 echo.
-echo   [3/5] 清理旧产物...
+echo   [3/6] 安装独立窗口依赖(Qt WebEngine,约 400MB,可选)...
+%PYCMD% -m pip install -r requirements-desktop.txt
+if errorlevel 1 (
+    echo   [!] Qt 没装上,程序仍能打包,但会退回浏览器打开
+    echo      想用独立窗口请手动执行: %PYCMD% -m pip install PySide6
+)
+
+echo.
+echo   [4/6] 清理旧产物...
 if exist build rmdir /s /q build
 if exist dist rmdir /s /q dist
 
 echo.
-echo   [4/5] 正在打包，请耐心等待 1~5 分钟...
+echo   [5/6] 正在打包，请耐心等待 3~10 分钟(Qt 较大)...
 %PYCMD% -m PyInstaller warehouse.spec --noconfirm --clean
 if errorlevel 1 (
     echo.
@@ -68,9 +76,9 @@ if errorlevel 1 (
 )
 
 echo.
-echo   [5/5] 检查产物...
-if not exist "dist\仓库管理系统.exe" (
-    echo   [x] 没找到 dist\仓库管理系统.exe
+echo   [6/6] 检查产物...
+if not exist "dist\仓库管理系统\仓库管理系统.exe" (
+    echo   [x] 没找到 dist\仓库管理系统\仓库管理系统.exe
     echo      dist 目录内容：
     dir /b dist 2>nul
     pause
@@ -81,9 +89,11 @@ echo.
 echo   ============================================
 echo    打包完成
 echo.
-echo    程序位置:  dist\仓库管理系统.exe
+echo    程序目录:  dist\仓库管理系统\
+echo    主程序:    仓库管理系统.exe
 echo    双击 exe 会打开独立窗口（不是浏览器）
 echo    数据保存在 exe 旁边的 warehouse.db，别删
+echo    注意: _internal 文件夹是运行必需的，不要删、不要单独拷走 exe
 echo   ============================================
 echo.
 if exist dist explorer dist

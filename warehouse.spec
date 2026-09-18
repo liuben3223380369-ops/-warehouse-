@@ -20,6 +20,9 @@ datas = [
     # 不打进去的话 exe 里点「新引擎」全是 404，所以必须带上。
     ('static', 'static'),
     ('seed_materials.json', '.'),
+    # 程序图标：既要嵌进 exe（下面 icon=），也要在运行时能取到
+    # （pywebview 开窗时要读它，单文件模式下从 _MEIPASS 取）
+    ('app.ico', '.'),
 ]
 
 # Flask/Jinja2 的模块是动态导入的，静态分析抓不全，这里手动挂上
@@ -65,6 +68,22 @@ hiddenimports = [
     'wh.po.routes',
     'wh.stat',
     'wh.count',
+    # 独立窗口（Qt WebEngine 自带 Chromium，优先于 pywebview）
+    'wh.qtwin',
+    'PySide6',
+    'PySide6.QtCore',
+    'PySide6.QtGui',
+    'PySide6.QtWidgets',
+    'PySide6.QtNetwork',
+    'PySide6.QtWebEngineCore',
+    'PySide6.QtWebEngineWidgets',
+    'PySide6.QtWebChannel',
+    'PyQt6',
+    'PyQt6.QtCore',
+    'PyQt6.QtGui',
+    'PyQt6.QtWidgets',
+    'PyQt6.QtWebEngineCore',
+    'PyQt6.QtWebEngineWidgets',
     'flask',
     'jinja2',
     'jinja2.ext',
@@ -105,6 +124,7 @@ hiddenimports = [
     'webbrowser',
     'email.mime.multipart',
     'email.mime.text',
+    'xlsxwriter',
 ]
 
 a = Analysis(
@@ -118,6 +138,7 @@ a = Analysis(
     runtime_hooks=[],
     excludes=[
         'tkinter', 'matplotlib', 'numpy', 'pandas', 'PIL',
+        # 注意：不要排 PySide6 / PyQt6 —— 独立窗口要用
         'PyQt5', 'PySide2', 'IPython', 'pytest',
     ],
     win_no_prefer_redirects=False,
@@ -131,11 +152,9 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    [],
-    name='仓库管理系统',   # 无 COLLECT = 单文件模式，就一个 exe
+    [],                    # 二进制不塞进 exe，交给下面的 COLLECT
+    exclude_binaries=True,
+    name='仓库管理系统',   # 目录模式：exe + 依赖目录，WebEngine 更稳
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -148,5 +167,18 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,             # 想换图标就填 icon='app.ico'
+    icon='app.ico',        # exe 图标（任务栏 / Alt+Tab / 资源管理器都用它）
+)
+
+# 目录模式：WebEngine 的 QtWebEngineProcess / 资源 / 翻译都要在 exe 旁边，
+# 单文件模式下它们被解压到临时目录，路径解析容易出错（典型症状：白屏）
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name='仓库管理系统',
 )

@@ -47,12 +47,20 @@ if errorlevel 1 (
 )
 
 echo.
-echo   [3/5] Cleaning old output...
+echo   [3/6] Installing window deps (Qt WebEngine, ~400MB, optional)...
+%PYCMD% -m pip install -r requirements-desktop.txt
+if errorlevel 1 (
+    echo   [!] Qt not installed. Build continues, app falls back to browser.
+    echo      For a standalone window run: %PYCMD% -m pip install PySide6
+)
+
+echo.
+echo   [4/6] Cleaning old output...
 if exist build rmdir /s /q build
 if exist dist rmdir /s /q dist
 
 echo.
-echo   [4/5] Building, please wait 1-5 minutes...
+echo   [5/6] Building, please wait 1-5 minutes...
 %PYCMD% -m PyInstaller warehouse.spec --noconfirm --clean
 if errorlevel 1 (
     echo.
@@ -62,9 +70,9 @@ if errorlevel 1 (
 )
 
 echo.
-echo   [5/5] Checking output...
-if not exist "dist\warehouse.exe" (
-    if not exist "dist\WarehouseSystem.exe" (
+echo   [6/6] Checking output...
+if not exist "dist\warehouse\warehouse.exe" (
+    if not exist "dist\warehouse\WarehouseSystem.exe" (
         echo   [x] exe not found in dist
         dir /b dist 2>nul
         pause

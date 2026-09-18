@@ -55,6 +55,6 @@
 </div>
 <div class="rowflex">
   <a class="btn g s" href="{{url_for('export_xlsx',t='stock',kw=kw,f=f,sort=cur_sort,dir=cur_dir)}}">⬇ 导出 Excel</a>
-  <a class="btn o s" href="{{url_for('export_csv',t='stock')}}">导出 CSV</a>
+  <a class="btn o s" href="{{url_for('export_csv',t='stock',kw=kw,f=f,sort=cur_sort,dir=cur_dir)}}">导出 CSV</a>
 </div>
 {% endblock %}

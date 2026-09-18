@@ -38,11 +38,26 @@
   </div>
 </div>
 
+{% if chart %}
+<div class="card" id="chartCard" style="padding:10px">
+  <div style="display:flex;justify-content:space-between;align-items:center;
+              gap:8px;margin-bottom:6px;flex-wrap:wrap">
+    <b style="font-size:var(--fs-label)">📊 {{chart.title}}</b>
+    <div style="display:flex;gap:4px" id="chartBtns">
+      <button type="button" class="btn s o" data-t="bar">柱</button>
+      <button type="button" class="btn s o" data-t="line">线</button>
+      <button type="button" class="btn s o" data-t="pie">饼</button>
+    </div>
+  </div>
+  <div id="statChart" style="width:100%;height:320px"></div>
+</div>
+{% endif %}
+
 <div class="card" style="padding:0;overflow:hidden">
 {% if body %}<div class="scroll"><table>
 <tr>{% for h in head %}<th>{{h}}</th>{% endfor %}</tr>
 {% for r in body %}
-<tr>{% for v in r %}
+<tr class="{{rowcls[loop.index0]}}">{% for v in r %}
   {% if v is number %}
     <td class="n">{{'%g'|format(v) if v is not none else ''}}</td>
   {% else %}
@@ -77,4 +92,71 @@
     盘点差异取自盘点模块，只有「已调整」的单子才真正改过库存
   </div>
 </div>
+{% if chart %}
+<script src="{{url_for('static', filename='vendor/echarts.js')}}"></script>
+<script>
+(function () {
+  var spec = {{ chart|tojson }};
+  var box = document.getElementById('chartCard');
+  var el = document.getElementById('statChart');
+  if (!spec || !el) return;
+  // 资源没随包发布（比如精简版 APK）就安静收起，不报错、不挡表格
+  if (typeof echarts === 'undefined') { if (box) box.style.display = 'none'; return; }
+  var cur = (spec.type === 'line') ? 'line' : (spec.type === 'pie' ? 'pie' : 'bar');
+  var chart = echarts.init(el);
+  function opt(t) {
+    var cats = spec.cats || [], ss = spec.series || [];
+    if (t === 'pie') {
+      var s0 = ss[0] || { name: '', values: [] };
+      return {
+        tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
+        legend: { type: 'scroll', bottom: 0 },
+        series: [{
+          type: 'pie', name: s0.name, radius: ['35%', '62%'],
+          data: cats.map(function (c, i) {
+            return { name: c, value: (s0.values && s0.values[i]) || 0 };
+          }),
+          label: { formatter: '{b}\n{d}%' }
+        }]
+      };
+    }
+    return {
+      tooltip: { trigger: 'axis' },
+      legend: { type: 'scroll', bottom: 0 },
+      grid: { left: 8, right: 12, top: 20, bottom: 46, containLabel: true },
+      xAxis: {
+        type: 'category', data: cats,
+        axisLabel: { interval: 0, rotate: cats.length > 6 ? 30 : 0 }
+      },
+      yAxis: { type: 'value' },
+      series: ss.map(function (s) {
+        return {
+          name: s.name, type: t, data: s.values, smooth: (t === 'line'),
+          areaStyle: (t === 'line') ? { opacity: 0.15 } : null,
+          itemStyle: { borderRadius: [3, 3, 0, 0] }
+        };
+      })
+    };
+  }
+  function draw(t) { chart.setOption(opt(t), true); }
+  draw(cur);
+  var btns = document.querySelectorAll('#chartBtns button');
+  function mark(t) {
+    for (var i = 0; i < btns.length; i++) {
+      btns[i].className = (btns[i].getAttribute('data-t') === t) ? 'btn s' : 'btn s o';
+    }
+  }
+  mark(cur);
+  for (var i = 0; i < btns.length; i++) {
+    (function (b) {
+      b.addEventListener('click', function () {
+        cur = b.getAttribute('data-t'); mark(cur); draw(cur);
+      });
+    })(btns[i]);
+  }
+  window.addEventListener('resize', function () { chart.resize(); });
+})();
+</script>
+{% endif %}
+
 {% endblock %}

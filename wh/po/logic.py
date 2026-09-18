@@ -346,6 +346,71 @@ def po_totals(po_id):
     }
 
 
+def po_totals_many(po_ids):
+    """批量版 po_totals：一次算多张单，口径与 po_totals 逐字段一致。
+
+    为什么不能简化成 SUM(qty*price)：到货金额要按「实价折不含税」，
+    没有到货记录的还要退回订购价，简化算法会跟详情页/汇总页对不上。
+    列表页 v3.65 的批量用的是简化口径，导出必须走这个精确版。
+    """
+    po_ids = [int(i) for i in (po_ids or []) if i]
+    if not po_ids:
+        return {}
+    ph = ','.join('?' * len(po_ids))
+    heads = {}
+    for r in db.q("SELECT id, tax_rate, price_tax FROM pos WHERE id IN (%s)" % ph, *po_ids):
+        try:
+            tax = float(r['tax_rate'] or 0)
+        except (TypeError, ValueError):
+            tax = 0.0
+        try:
+            pt = int(r['price_tax']) if r['price_tax'] is not None else 1
+        except (TypeError, ValueError):
+            pt = 1
+        heads[r['id']] = (tax, pt)
+    items_by_po, item_ids = {}, []
+    for r in db.q("SELECT * FROM po_items WHERE po_id IN (%s) ORDER BY id" % ph, *po_ids):
+        items_by_po.setdefault(r['po_id'], []).append(dict(r))
+        item_ids.append(r['id'])
+    rec_by_item = {}
+    if item_ids:
+        ph2 = ','.join('?' * len(item_ids))
+        for r in db.q("SELECT item_id, COALESCE(SUM(qty),0) q,"
+                      " COALESCE(SUM(qty*price),0) s"
+                      " FROM po_receipts WHERE item_id IN (%s) GROUP BY item_id" % ph2,
+                      *item_ids):
+            rec_by_item[r['item_id']] = (float(r['q'] or 0), float(r['s'] or 0))
+    out = {}
+    for pid, items in items_by_po.items():
+        tax, pt = heads.get(pid, (0.0, 1))
+        tot_qty = tot_amt = tot_tax = 0.0
+        recv_qty = recv_amt = 0.0
+        real_amt = 0.0
+        for it in items:
+            a, t, _ = line_amount(it['qty'], it['price'], tax, pt)
+            tot_qty += float(it['qty'] or 0)
+            tot_amt += a
+            tot_tax += t
+            rq = float(it['recv_qty'] or 0)
+            recv_qty += rq
+            rqty, real = rec_by_item.get(it['id'], (0.0, 0.0))
+            if rqty:
+                v = round(rqty * net_price(real / rqty, tax, pt), 2)
+                real_amt += v
+                recv_amt += v
+            else:
+                recv_amt += round(rq * net_price(it['price'], tax, pt), 2)
+        out[pid] = {
+            'qty': tot_qty, 'amount': round(tot_amt, 2), 'tax': round(tot_tax, 2),
+            'total': round(tot_amt + tot_tax, 2),
+            'recv_qty': recv_qty, 'recv_amount': round(recv_amt, 2),
+            'open_qty': round(tot_qty - recv_qty, 2),
+            'real_amount': round(real_amt, 2),
+            'tax_rate': tax, 'price_tax': pt,
+        }
+    return out
+
+
 def paid_amount(po_id):
     got = db.q("SELECT COALESCE(SUM(amount),0) s FROM po_payments WHERE po_id=?", po_id)
     return round(float(got[0]['s'] or 0), 2)
@@ -400,11 +465,27 @@ def summary_list(st='', sup='', kw='', m=''):
     if m:
         w.append("p.odate LIKE ?"); a.append(m + '%')
     where = (" WHERE " + " AND ".join(w)) if w else ""
+    _sql = ("SELECT p.id,p.pono,p.odate,p.ddate,p.supplier,p.status,p.tax_rate,"
+            " p.price_tax, s.* FROM pos p"
+            " LEFT JOIN po_summary s ON s.po_id=p.id"
+            + where + " ORDER BY p.odate DESC, p.id DESC LIMIT 500")
+    raw = list(db.q(_sql, *a))
+    # 快照缺失时 LEFT JOIN 右半边全是 NULL，金额会被当成 0 显示。
+    # 这在付款已登记却没走到 save_summary 的场景下（老库升级、异常中断、
+    # 直接往 po_payments 插数据）会让汇总页把"已付"显示成 0，看着像没付过。
+    # 这里补齐后再查一次，宁可多算一遍也不能显示错金额。
+    miss = [r['id'] for r in raw if r['po_id'] is None]
+    if miss:
+        try:
+            with db.tx():
+                for _pid in miss[:500]:
+                    save_summary(_pid)
+        except Exception as _e:
+            _log_err('采购汇总快照补齐失败（共 %d 张）' % len(miss),
+                     'save_summary: %s' % _e)
+        raw = list(db.q(_sql, *a))
     rows = []
-    for r in db.q("SELECT p.id,p.pono,p.odate,p.ddate,p.supplier,p.status,p.tax_rate,"
-                  " p.price_tax, s.* FROM pos p"
-                  " LEFT JOIN po_summary s ON s.po_id=p.id"
-                  + where + " ORDER BY p.odate DESC, p.id DESC LIMIT 500", *a):
+    for r in raw:
         d = dict(r)
         for k in ('qty', 'amount', 'tax', 'total', 'recv_qty', 'recv_amount',
                   'recv_total', 'paid', 'owed', 'open_qty'):
@@ -417,10 +498,17 @@ def summary_list(st='', sup='', kw='', m=''):
 
 
 def sync_all():
-    """把没有快照或已过期的采购单全部重算一遍（升级老库、或发现数据对不上时用）"""
+    """把没有快照或已过期的采购单全部重算一遍（升级老库、或发现数据对不上时用）
+
+    必须放进单个事务：save_summary 每张单要写 po_summary 一次，
+    逐条提交时 300 张单就是 300 次 fsync，实测 40 秒以上打不开页面；
+    合成一个事务后只有收尾一次提交，量级下降两个数量级。
+    """
     n = 0
-    for r in db.q("SELECT id FROM pos ORDER BY id"):
-        save_summary(r['id']); n += 1
+    with db.tx():
+        for r in db.q("SELECT id FROM pos ORDER BY id"):
+            save_summary(r['id'])
+            n += 1
     return n
 
 

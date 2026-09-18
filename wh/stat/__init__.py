@@ -102,19 +102,26 @@ def _report_insights(m, top=5):
 
     cur_i, pre_i = _in(lo, hi), _in(plo, phi)
 
+    # 洞察榜原来只有物料名称，重名的物料（同名称不同规格）在榜上分不出来，
+    # 也没法照着料号去对账。这里把料号和规格一起带出来。
     names = {}
-    for r in db.q("SELECT id, name, unit FROM materials"):
-        names[r['id']] = (r['name'], r['unit'] or '')
+    for r in db.q("SELECT id, name, unit, code, spec FROM materials"):
+        names[r['id']] = (r['name'], r['unit'] or '',
+                          r['code'] or '', r['spec'] or '')
+    # 未建档的采购明细没有 material_id，只能按名称反查档案补料号/规格
+    _cs = {}
+    for r in db.q("SELECT name, code, spec FROM materials"):
+        _cs[(r['name'] or '').strip()] = (r['code'] or '', r['spec'] or '')
 
     def _nm(k):
         if isinstance(k, int) and k in names:
             return names[k]
         d = cur_p.get(k) or pre_p.get(k)
         if d:
-            return (d['name'], d['unit'])
+            return (d['name'], d['unit']) + _cs.get((d['name'] or '').strip(), ('', ''))
         if isinstance(k, str) and k.startswith('n:'):
-            return (k[2:] or '（未建档）', '')
-        return ('（未建档）', '')
+            return (k[2:] or '（未建档）', '', '', '')
+        return ('（未建档）', '', '', '')
 
     def _rank(cur, key):
         rows = []
@@ -122,7 +129,7 @@ def _report_insights(m, top=5):
             v = d[key] if isinstance(d, dict) else d
             if v <= 0:
                 continue
-            n, u = _nm(k)
+            n, u, _c, _s = _nm(k)
             prev = 0.0
             if key == 'amt' or key == 'qty':
                 pd = pre_p.get(k)
@@ -130,6 +137,7 @@ def _report_insights(m, top=5):
             else:
                 prev = (pre_u.get(k) or 0.0)
             rows.append(dict(mid=k if isinstance(k, int) else None, name=n, unit=u,
+                             code=_c, spec=_s,
                              val=round(v, 2), prev=round(prev, 2),
                              delta=round(v - prev, 2),
                              pct=(round((v - prev) / prev * 100, 1) if prev else None)))
@@ -143,9 +151,9 @@ def _report_insights(m, top=5):
     for k, v in cur_u.items():
         if v <= 0:
             continue
-        n, u = _nm(k)
+        n, u, _c, _s = _nm(k)
         prev = pre_u.get(k) or 0.0
-        use_rows.append(dict(mid=k, name=n, unit=u, val=round(v, 2),
+        use_rows.append(dict(mid=k, name=n, unit=u, code=_c, spec=_s, val=round(v, 2),
                              prev=round(prev, 2), delta=round(v - prev, 2),
                              pct=(round((v - prev) / prev * 100, 1) if prev else None)))
     use_rows.sort(key=lambda x: -x['val'])
@@ -163,8 +171,9 @@ def _report_insights(m, top=5):
         pa = pp['amt'] if pp else 0.0
         if not (ci or pi_ or cu or pu or ca or pa):
             continue
-        n, u = _nm(k)
+        n, u, _c, _s = _nm(k)
         trend.append(dict(mid=k if isinstance(k, int) else None, name=n, unit=u,
+                          code=_c, spec=_s,
                           i_cur=round(ci, 2), i_pre=round(pi_, 2),
                           o_cur=round(cu, 2), o_pre=round(pu, 2),
                           a_cur=round(ca, 2), a_pre=round(pa, 2)))
@@ -257,21 +266,50 @@ def _stock_rows(kw, f, sort, dir_):
         sql += " ORDER BY category, name"
     return db.q(sql, *args)
 
-def _txn_rows(kw, d, kind, sort, dir_):
-    sql = ("SELECT t.*, m.name, m.unit, m.code, m.category, m.spec, m.supplier,"
-           " m.id AS mid, %s AS amount FROM txns t"
-           " JOIN materials m ON m.id=t.material_id" % AMT)
+def _txn_where(kw, d, kind, m=None):
+    """流水筛选条件（导出与计数共用，避免两处写法走偏）。
+
+    m 为可选月份（yyyy-mm）。界面上「按日期」和「或按月份」是两个互斥的框，
+    所以两者都给时以更精确的 d 为准；只给 m 时按月份前缀匹配。
+    """
     w, args = [], []
     if d:
         w.append("t.tdate=?"); args.append(d)
+    elif m:
+        w.append("t.tdate LIKE ?"); args.append(m + '%')
     if kind:
         w.append("t.kind=?"); args.append(kind)
     if kw:
         w.append("(m.name LIKE ? OR m.code LIKE ? OR t.note LIKE ? OR m.category LIKE ?)")
         args += ['%%%s%%' % kw] * 4
+    return w, args
+
+
+def _txn_count(kw, d, kind, m=None):
+    """符合条件的总笔数 —— 用于判断导出是否被截断。"""
+    w, args = _txn_where(kw, d, kind, m)
+    sql = "SELECT COUNT(*) FROM txns t JOIN materials m ON m.id=t.material_id"
     if w:
         sql += " WHERE " + " AND ".join(w)
-    sql += " ORDER BY t.tdate DESC, t.id DESC LIMIT 2000"
+    r = db.q(sql, *args)
+    try:
+        return int(r[0][0] or 0)
+    except (IndexError, TypeError, ValueError):
+        return 0
+
+
+def _txn_rows(kw, d, kind, sort, dir_, limit=2000, m=None):
+    # 导出曾经沿用页面思路写死 LIMIT 2000：5 万笔单据导出只出 2000 笔且不给提示，
+    # 拿着去对账会以为拿到了全量。页面限 2000 是为了渲染速度，导出不该共用这个上限。
+    sql = ("SELECT t.*, m.name, m.unit, m.code, m.category, m.spec, m.supplier,"
+           " m.id AS mid, %s AS amount FROM txns t"
+           " JOIN materials m ON m.id=t.material_id" % AMT)
+    w, args = _txn_where(kw, d, kind, m)
+    if w:
+        sql += " WHERE " + " AND ".join(w)
+    sql += " ORDER BY t.tdate DESC, t.id DESC"
+    if limit:
+        sql += " LIMIT %d" % int(limit)
     return db.q(sql, *args)
 
 def _report_data(m):
@@ -288,11 +326,22 @@ def _report_data(m):
     # 月报就必须照实反映，否则停用某物料后查旧月报会凭空少掉一批数据。
     mats = [dict(r) for r in db.q("SELECT * FROM v_mats ORDER BY category, name")]
 
-    # 该月之前的累计净额（进 - 出），按物料汇总
+    # 该月之前的累计净额（进 - 出），按物料汇总。
+    #
+    # 原写法 "WHERE tdate < ? GROUP BY material_id, kind" 会被 SQLite 选到
+    # idx_txns_cover(material_id,kind,qty)：该索引不含 tdate，于是逐行回表查日期。
+    # 5 万单据实测 6~9s，月报页整体 11.8s，是全系统最慢的页面。
+    #
+    # 改成"按月份一次覆盖扫描"（走 idx_txns_full，索引内即可完成，不回表）后 0.17s。
+    # 注意：这里刻意不加 WHERE —— 实测加了 WHERE tdate<=? 反而会让 SQLite 改用
+    # idx_txns_date 再次回表，耗时回到 6s。不加 WHERE 才是快的那个。
     before = {}
-    for r in db.q("SELECT material_id, kind, SUM(qty) q FROM txns WHERE tdate < ?"
-                  " GROUP BY material_id, kind", first):
-        before[r['material_id']] = before.get(r['material_id'], 0.0) +             (r['q'] if r['kind'] == '进' else -r['q'])
+    for r in db.q("SELECT substr(tdate,1,7) ym, material_id, kind, SUM(qty) q"
+                  " FROM txns GROUP BY ym, material_id, kind"):
+        if not r['ym'] or r['ym'] >= m:
+            continue
+        before[r['material_id']] = before.get(r['material_id'], 0.0) + \
+            (r['q'] if r['kind'] == '进' else -r['q'])
 
     raw = db.q("SELECT tdate,material_id,kind,SUM(qty) q FROM txns WHERE tdate BETWEEN ? AND ?"
                " GROUP BY tdate,material_id,kind", first, last)
@@ -363,15 +412,28 @@ def export_xlsx():
     elif kind == 'report':
         mats, days = _report_data(m)
         ws.title = m
-        ws.append(['物料 / 料号'] + ['%d进' % d2 for d2 in range(1, days + 1)]
+        ws.append(['物料 / 料号 / 规格'] + ['%d进' % d2 for d2 in range(1, days + 1)]
                   + ['%d出' % d2 for d2 in range(1, days + 1)] + ['进汇总', '出汇总', '月末'])
         for r in mats:
-            ws.append([r['name'] + (' / ' + r['code'] if r['code'] else '')]
+            _lab = r['name']
+            if r['code']:
+                _lab += ' / ' + r['code']
+            if r.get('spec'):
+                _lab += ' / ' + r['spec']
+            ws.append([_lab]
                       + [c[0] or None for c in r['cells']] + [c[1] or None for c in r['cells']]
                       + [r['min'], r['mout'], r['ending']])
         fn = '进出月报' + m
     else:
-        rows = _txn_rows(kw, d, request.args.get('kind') or '', sort, dir_)
+        # 导出要拿全量：上限 20 万笔（Excel 单表 104 万行，留足余量）。
+        # 真超了就在末尾写明，绝不静默截断。
+        _TXLIMIT = 200000
+        # 月份也要接：界面上有「或按月份」框，导出却只认 d，
+        # 结果选了月份导出的还是全量（Excel 50002 条 vs CSV 2088 条）。
+        _m = opt_ym(request.args.get('m'))
+        rows = _txn_rows(kw, d, request.args.get('kind') or '', sort, dir_,
+                         limit=_TXLIMIT, m=_m)
+        _txtotal = _txn_count(kw, d, request.args.get('kind') or '', _m)
         ws.title = '流水'
         # 自定义列（客户订单号/单价/金额等）也一并导出
         _xtid = int_arg(request.args, 'tpl') or 0
@@ -415,6 +477,10 @@ def export_xlsx():
                        r['qty']] + _calc +
                       [r['price'], (r['amount'] if r['price'] else None), r['note']]
                       + [csv_safe(_ex.get(x['fid'], '')) for x in _xcs])
+        # 截断必须写明：否则使用者以为拿到全量，拿去对账才发现少了大半。
+        if _txtotal > len(rows):
+            ws.append(['（本表仅导出最新 %d 笔，实际共 %d 笔。'
+                       '请按日期或物料筛选后分批导出）' % (len(rows), _txtotal)])
         fn = ('出入库流水' + (d or m))
     for c in ws[1]:
         c.font = head_font; c.fill = fill; c.alignment = Alignment(horizontal='center')
@@ -431,39 +497,84 @@ def export_xlsx():
 
 @bp.route('/export.csv')
 def export_csv():
+    """CSV 导出。
+
+    必须跟 /export.xlsx 取同一批数据、同一套表头：以前 CSV 只传月份、
+    不看搜索词/日期/类型/排序，屏幕筛选「铜箔」后导出的却是当月全部
+    （实测 Excel 50002 条 vs CSV 2088 条，差 24 倍），跟所见不一致，
+    对账时极易误判。现在两边共用 _txn_rows / _stock_rows，口径天然一致。
+    月份只是可选辅助：不传就导出全量，不再是「默认当月」。
+    """
     kind = request.args.get('t', 'stock')
+    kw = clean_kw(request.args.get('kw'))
+    f = request.args.get('f') or ''
+    d = request.args.get('d') or ''
+    m = opt_ym(request.args.get('m'))
+    sort = request.args.get('sort') or ''
+    dir_ = request.args.get('dir') or ''
+    _tpl = int_arg(request.args, 'tpl') or db.default_tpl_id()
     if kind == 'stock':
-        # 跟 xlsx 导出保持一致：表头跟随列配置（含自定义名与单位），
-        # 且不再导出 v3.21 已取消的「单位」列
-        _tpl = int_arg(request.args, 'tpl') or db.default_tpl_id()
         _cols = [x for x in db.tpl_cols(_tpl) if x['fid'] != 'unit']
-        rows, head = db.stock_rows(), [db.col_label(x) for x in _cols] + ['入库','出库','当前库存']
+        rows = _stock_rows(kw, f, sort, dir_)
+        head = [db.col_label(x) for x in _cols] + ['入库', '出库', '当前库存']
         data = [[csv_safe(cell_val(r, x)) for x in _cols]
                 + [r['in_qty'], r['out_qty'], r['stock']] for r in rows]
         fn = '库存'
     else:
-        m = safe_ym(request.args.get('m'))
-        rows = db.q("SELECT t.tdate,m.name,m.code,m.unit,t.kind,t.qty,t.sqm,t.rolls,t.price,"
-                    " %s AS amount, t.note FROM txns t"
-                    " JOIN materials m ON m.id=t.material_id WHERE t.tdate LIKE ?"
-                    " ORDER BY t.tdate,t.id"
-                    % AMT.replace('t.', 't.'), m + '%')
-        # 平米/卷料跟 xlsx 导出保持一致（录单算了就得导得出来）
+        _TXLIMIT = 200000
+        rows = _txn_rows(kw, d, request.args.get('kind') or '', sort, dir_,
+                         limit=_TXLIMIT, m=m)
+        _txtotal = _txn_count(kw, d, request.args.get('kind') or '', m)
+        _xcs = []
+        for _t in (db.tpls() if not _tpl else [db.tpl(_tpl)]):
+            if not _t:
+                continue
+            for _xc in db.tpl_custom_cols(_t['id']):
+                if _xc['label'] not in [x['label'] for x in _xcs]:
+                    _xcs.append(dict(_xc, label=db.col_label(_xc)))
         _sq_on, _rl_on = False, False
-        for _t in db.tpls():
+        for _t in (db.tpls() if not _tpl else [db.tpl(_tpl)]):
+            if not _t:
+                continue
             for _c2 in db.tpl_cols(_t['id']):
                 if _c2['fid'] == 'sqm' and _c2['enabled']:
                     _sq_on = True
                 elif _c2['fid'] == 'rolls' and _c2['enabled']:
                     _rl_on = True
-        _ch = (['平米'] if _sq_on else []) + (['卷料'] if _rl_on else [])
-        head, data = ['日期','物料名称','料号','类型','数量'] + _ch + ['单价','金额','备注'], \
-            [[r['tdate'],csv_safe(r['name']),csv_safe(r['code']),
-              r['kind'],r['qty']]
-             + ([r['sqm']] if _sq_on else []) + ([r['rolls']] if _rl_on else [])
-             + [r['price'],(r['amount'] if r['price'] else None),
-              csv_safe(r['note'])] for r in rows]
-        fn = f'流水{m}'
+        _calc_head = (['平米'] if _sq_on else []) + (['卷料'] if _rl_on else [])
+        head = (['日期', '物料名称', '料号', '类型', '进/出', '数量']
+                + _calc_head + ['单价', '金额', '备注']
+                + [x['label'] for x in _xcs])
+        data = []
+        for r in rows:
+            _ex = {}
+            if r['extra']:
+                try:
+                    _ex = json.loads(r['extra']) or {}
+                except ValueError:
+                    _log_err('CSV 导出解析自定义列失败 txn extra=%r'
+                             % (r['extra'],)[:200])
+            _calc = []
+            if _sq_on:
+                _calc.append(r['sqm'] if 'sqm' in r.keys() else '')
+            if _rl_on:
+                _calc.append(r['rolls'] if 'rolls' in r.keys() else '')
+            data.append([r['tdate'], csv_safe(r['name']), csv_safe(r['code']),
+                         csv_safe(r['category']), r['kind'], r['qty']] + _calc +
+                        [r['price'], (r['amount'] if r['price'] else None),
+                         csv_safe(r['note'])]
+                        + [csv_safe(_ex.get(x['fid'], '')) for x in _xcs])
+        # 截断必须写明：否则使用者以为拿到全量，拿去对账才发现少了大半。
+        if _txtotal > len(rows):
+            data.append(['（本表仅导出最新 %d 笔，实际共 %d 笔。'
+                         '请按日期或物料筛选后分批导出）' % (len(rows), _txtotal)])
+        fn = '出入库流水' + (d or m)
+    # 浮点长尾要抹掉：金额 3562.36 在 CSV 里会写成 3562.3600000000006，
+    # 发给别人看、再导回来都别扭。取 6 位小数 —— 远高于金额精度，
+    # 又足以吃掉 IEEE754 的噪声（数量 0.333333 这类真小数不受影响）。
+    def _num(v):
+        return round(v, 6) if isinstance(v, float) and v == v else v
+    data = [[_num(x) for x in row] for row in data]
     out = io.StringIO(); out.write('\ufeff')
     csv.writer(out).writerow(head); csv.writer(out).writerows(data)
     from urllib.parse import quote
@@ -610,16 +721,16 @@ def _build(tab, lo, hi, days):
             if abs(r['tout']) < 1e-9 and abs(r['tin']) < 1e-9 and abs(r['end']) < 1e-9:
                 continue
             tv = r['turn']
-            out.append([r['name'], r['code'] or '', r['unit'] or '',
+            out.append([r['name'], r['code'] or '', r['spec'] or '', r['unit'] or '',
                         r['begin'], r['end'], r['avg'], r['tout'],
                         tv if tv is not None else '',
                         round(days / r['turn_raw'], 1) if r['turn_raw'] and r['turn_raw'] > 1e-9 else ''])
-        out.sort(key=lambda x: -(x[7] or 0))
-        head = ['物料名称', '料号', '单位', '期初', '期末', '平均库存',
+        out.sort(key=lambda x: -(x[8] or 0))
+        head = ['物料名称', '料号', '规格', '单位', '期初', '期末', '平均库存',
                 '本期出库', '周转率(次)', '周转天数']
-        total = ['合计', '', '',
-                 round(sum(r[3] for r in out), 2), round(sum(r[4] for r in out), 2),
-                 round(sum(r[5] for r in out), 2), round(sum(r[6] for r in out), 2), '', '']
+        total = ['合计', '', '', '',
+                 round(sum(r[4] for r in out), 2), round(sum(r[5] for r in out), 2),
+                 round(sum(r[6] for r in out), 2), round(sum(r[7] for r in out), 2), '', '']
         return head, out, total, rows
 
     if tab == 'idle':
@@ -665,12 +776,12 @@ def _build(tab, lo, hi, days):
                 cls, focus = 'B', '次重点，定期盘点'
             else:
                 cls, focus = 'C', '简化管理，抽查'
-            out.append([r['name'], r['code'] or '', r['unit'] or '', r['end'],
+            out.append([r['name'], r['code'] or '', r['spec'] or '', r['unit'] or '', r['end'],
                         r['price'], r['end_amt'], round(pct, 1), cls, focus])
-        head = ['物料名称', '料号', '单位', '期末数量', '单位成本',
+        head = ['物料名称', '料号', '规格', '单位', '期末数量', '单位成本',
                 '期末金额', '累计占比(%)', '分类', '管理重点']
-        total = ['合计', '', '', round(sum(r[3] for r in out), 2), '',
-                 round(sum(r[5] for r in out), 2), '', '', '']
+        total = ['合计', '', '', '', round(sum(r[4] for r in out), 2), '',
+                 round(sum(r[6] for r in out), 2), '', '', '']
         return head, out, total, rows
 
     if tab == 'warn':
@@ -687,33 +798,49 @@ def _build(tab, lo, hi, days):
                 st, sug, cls = '超储', '控制采购', 'warn'
             else:
                 continue
-            out.append([r['name'], r['code'] or '', r['unit'] or '', r['end'],
+            out.append([r['name'], r['code'] or '', r['spec'] or '', r['unit'] or '', r['end'],
                         r['safety'], r['end'] - r['safety'], st, sug, cls])
-        out.sort(key=lambda x: x[5])
-        head = ['物料名称', '料号', '单位', '当前库存', '安全库存', '差额', '状态', '建议措施']
-        total = ['合计 %d 种' % len(out), '', '', '', '', '', '', '']
+        out.sort(key=lambda x: x[6])
+        head = ['物料名称', '料号', '规格', '单位', '当前库存', '安全库存', '差额', '状态', '建议措施']
+        total = ['合计 %d 种' % len(out), '', '', '', '', '', '', '', '']
         return head, out, total, (out, rows)
 
     if tab == 'trend':
+        # 以前这张表完全不看统计区间，恒按整张表分组再 LIMIT 24：
+        # 选了区间也照样显示全库的月份，跟其余七张表口径不一致；
+        # 单据跨过 24 个月时老数据被静默丢掉，页面上看不出少了。
+        # 现在先按区间过滤再分组，并在真截断时于合计行写明。
+        _w, _a = "tdate<>''", []
+        if lo and hi:
+            _w += " AND tdate BETWEEN ? AND ?"
+            _a += [lo, hi]
+        _nmon = db.q("SELECT COUNT(*) c FROM (SELECT DISTINCT substr(tdate,1,7) ym"
+                     " FROM txns WHERE %s)" % _w, *_a)[0]['c']
         out = []
         for r in db.q("SELECT substr(tdate,1,7) ym,"
                       " SUM(CASE WHEN kind='进' THEN qty ELSE 0 END) i,"
                       " SUM(CASE WHEN kind='出' THEN qty ELSE 0 END) o,"
                       " SUM(CASE WHEN kind='进' THEN qty*COALESCE(price,0) ELSE 0 END) ia,"
                       " SUM(CASE WHEN kind='出' THEN qty*COALESCE(price,0) ELSE 0 END) oa,"
-                      " COUNT(*) c FROM txns WHERE tdate<>'' GROUP BY ym"
-                      " ORDER BY ym DESC LIMIT 24"):
+                      " COUNT(*) c FROM txns WHERE %s GROUP BY ym"
+                      " ORDER BY ym DESC LIMIT 24" % _w, *_a):
             out.append([r['ym'], r['i'], r['o'], round(float(r['i'] or 0) - float(r['o'] or 0), 2),
                         round(float(r['ia'] or 0), 2), round(float(r['oa'] or 0), 2), r['c']])
         out.reverse()
         head = ['月份', '入库数量', '出库数量', '净额', '入库金额', '出库金额', '单据数']
-        total = ['合计', round(sum(r[1] for r in out), 2), round(sum(r[2] for r in out), 2),
+        # 提示写在合计行而不是数据行：_chart_spec 取 body[-24:] 画图，
+        # 数据行里塞提示会变成图表上一个值为 0 的假类目。
+        _lab = '合计'
+        if _nmon > 24:
+            _lab = ('合计·注意：仅含最新 %d 个月，实际共 %d 个月，'
+                    '请缩短统计区间分次查看' % (len(out), _nmon))
+        total = [_lab, round(sum(r[1] for r in out), 2), round(sum(r[2] for r in out), 2),
                  round(sum(r[3] for r in out), 2), round(sum(r[4] for r in out), 2),
                  round(sum(r[5] for r in out), 2), sum(r[6] for r in out)]
         return head, out, total, out
 
     if tab == 'dim':
-        out = []
+        cat, sup = [], []
         for r in db.q("SELECT COALESCE(NULLIF(m.category,''),'（未分类）') k,"
                       " SUM(CASE WHEN t.kind='进' THEN t.qty ELSE 0 END) i,"
                       " SUM(CASE WHEN t.kind='出' THEN t.qty ELSE 0 END) o,"
@@ -721,7 +848,7 @@ def _build(tab, lo, hi, days):
                       " SUM(CASE WHEN t.kind='出' THEN t.qty*COALESCE(t.price,0) ELSE 0 END) oa"
                       " FROM txns t JOIN materials m ON m.id=t.material_id"
                       " WHERE t.tdate BETWEEN ? AND ? GROUP BY k ORDER BY o DESC", lo, hi):
-            out.append(['类型', r['k'], round(float(r['i'] or 0), 2), round(float(r['o'] or 0), 2),
+            cat.append(['类型', r['k'], round(float(r['i'] or 0), 2), round(float(r['o'] or 0), 2),
                         round(float(r['ia'] or 0), 2), round(float(r['oa'] or 0), 2)])
         for r in db.q("SELECT COALESCE(NULLIF(m.supplier,''),'（未填）') k,"
                       " SUM(CASE WHEN t.kind='进' THEN t.qty ELSE 0 END) i,"
@@ -730,11 +857,17 @@ def _build(tab, lo, hi, days):
                       " SUM(CASE WHEN t.kind='出' THEN t.qty*COALESCE(t.price,0) ELSE 0 END) oa"
                       " FROM txns t JOIN materials m ON m.id=t.material_id"
                       " WHERE t.tdate BETWEEN ? AND ? GROUP BY k ORDER BY i DESC", lo, hi):
-            out.append(['供应商', r['k'], round(float(r['i'] or 0), 2), round(float(r['o'] or 0), 2),
+            sup.append(['供应商', r['k'], round(float(r['i'] or 0), 2), round(float(r['o'] or 0), 2),
                         round(float(r['ia'] or 0), 2), round(float(r['oa'] or 0), 2)])
+        out = cat + sup
         head = ['维度', '名称', '入库数量', '出库数量', '入库金额', '出库金额']
-        total = ['合计', '', round(sum(r[2] for r in out), 2), round(sum(r[3] for r in out), 2),
-                 round(sum(r[4] for r in out), 2), round(sum(r[5] for r in out), 2)]
+        # 「类型」和「供应商」是两条独立分组，覆盖的是同一批单据。之前合计行
+        # 把两组直接相加，得出真实值的 2 倍（实测 5524631.72 vs 2762315.86）。
+        # 任一维度各自的合计就等于真实值，所以取类型维，并在标签里写明
+        # 不要把各行加起来 —— 否则使用者照着页面加总仍会得到翻倍的数。
+        total = ['合计（各维分别统计，勿将各行相加）', '',
+                 round(sum(r[2] for r in cat), 2), round(sum(r[3] for r in cat), 2),
+                 round(sum(r[4] for r in cat), 2), round(sum(r[5] for r in cat), 2)]
         return head, out, total, out
 
     # 盘点差异
@@ -771,6 +904,110 @@ def _build(tab, lo, hi, days):
     return head, out, total, out
 
 
+def _fit(head, body):
+    """把 _build 的 body 裁成与 head 等长，并把行样式类单独摘出来。
+
+    预警表每行末尾多带一个 cls（'low'/'warn'），本意是给行上色，但既没有
+    对应表头、模板也没当样式用，结果被直接渲染成多出来的一列 ——
+    实测表头 9 列、数据 10 列，最后一格直接显示 'low'。
+    这里把它从数据里摘出来交给 <tr>，单元格严格按表头数量输出，
+    页面和导出的列数才对得上。其余报表行长度本就等于表头，原样返回。
+    """
+    n = len(head)
+    cls, out = [], []
+    for r in body:
+        cls.append(r[n] if len(r) > n else '')
+        out.append(list(r[:n]))
+    return out, cls
+
+
+def _num(v):
+    """图表用：把单元格值转成数字，空值和 '-' 都算 0"""
+    try:
+        if v is None or v == '' or v == '—':
+            return 0.0
+        return float(v)
+    except Exception:
+        return 0.0
+
+
+def _chart_spec(tab, body):
+    """把报表数据整理成图表规格。
+
+    同一份 spec 既喂页面上的 ECharts，也喂导出的 Excel 原生图表，
+    所以页面上看到的图和导出的图永远一致，不用维护两份。
+    取数用列索引，跟 _build 里 head 的顺序一一对应。
+    """
+    try:
+        if not body:
+            return None
+        if tab == 'recv':
+            rs = sorted(body, key=lambda r: -_num(r[9]))[:12]
+            return dict(type='column', title='收发存 Top12（按期末数量）',
+                        x_title='物料', y_title='数量',
+                        cats=[r[0] for r in rs],
+                        series=[{'name': '期初', 'values': [_num(r[6]) for r in rs]},
+                                {'name': '入库', 'values': [_num(r[7]) for r in rs]},
+                                {'name': '出库', 'values': [_num(r[8]) for r in rs]},
+                                {'name': '期末', 'values': [_num(r[9]) for r in rs]}])
+        if tab == 'turn':
+            rs = body[:12]
+            return dict(type='column', title='周转率 Top12',
+                        x_title='物料', y_title='次数',
+                        cats=[r[0] for r in rs],
+                        series=[{'name': '周转率(次)',
+                                 'values': [_num(r[8]) for r in rs]}])
+        if tab == 'idle':
+            agg = {}
+            for r in body:
+                agg[r[8]] = agg.get(r[8], 0.0) + _num(r[4])
+            return dict(type='pie', title='呆滞库存按库龄区间', x_title='区间',
+                        cats=list(agg.keys()),
+                        series=[{'name': '呆滞数量',
+                                 'values': [round(v, 2) for v in agg.values()]}])
+        if tab == 'abc':
+            agg = {}
+            for r in body:
+                agg[r[8]] = agg.get(r[8], 0.0) + _num(r[6])
+            order = [k for k in ('A', 'B', 'C') if k in agg]
+            return dict(type='pie', title='ABC 金额占比', x_title='分类',
+                        cats=order,
+                        series=[{'name': '期末金额',
+                                 'values': [round(agg[k], 2) for k in order]}])
+        if tab == 'warn':
+            rs = body[:15]
+            return dict(type='column', title='预警物料：当前库存 vs 安全库存',
+                        x_title='物料', y_title='数量',
+                        cats=[r[0] for r in rs],
+                        series=[{'name': '当前库存', 'values': [_num(r[4]) for r in rs]},
+                                {'name': '安全库存', 'values': [_num(r[5]) for r in rs]}])
+        if tab == 'trend':
+            rs = body[-24:]
+            return dict(type='line', title='进出趋势',
+                        x_title='月份', y_title='数量',
+                        cats=[r[0] for r in rs],
+                        series=[{'name': '入库', 'values': [_num(r[1]) for r in rs]},
+                                {'name': '出库', 'values': [_num(r[2]) for r in rs]},
+                                {'name': '净额', 'values': [_num(r[3]) for r in rs]}])
+        if tab == 'dim':
+            rs = body[:15]
+            return dict(type='column', title='维度统计 Top15',
+                        x_title='维度 / 名称', y_title='数量',
+                        cats=['%s·%s' % (r[0], r[1]) for r in rs],
+                        series=[{'name': '入库数量', 'values': [_num(r[2]) for r in rs]},
+                                {'name': '出库数量', 'values': [_num(r[3]) for r in rs]}])
+        if tab == 'diff':
+            rs = body[-20:]
+            return dict(type='column', title='盘点差异',
+                        x_title='盘点单号', y_title='数量',
+                        cats=[r[0] for r in rs],
+                        series=[{'name': '盘盈', 'values': [_num(r[6]) for r in rs]},
+                                {'name': '盘亏', 'values': [_num(r[7]) for r in rs]}])
+    except Exception:
+        return None
+    return None
+
+
 @bp.route('/stat')
 def stat_center():
     tab = request.args.get('tab') or 'recv'
@@ -785,6 +1022,8 @@ def stat_center():
     d2 = d2 if is_date(d2) else ''
     lo, hi, days, label = _span(m, d1, d2)
     head, body, total, _ = _build(tab, lo, hi, days)
+    chart = _chart_spec(tab, body)
+    body, rowcls = _fit(head, body)
 
     # 顶部四张概览卡：期末库存金额 / 本期出入库 / 呆滞种类 / 预警种类
     rows = _base_rows(lo, hi)
@@ -798,6 +1037,7 @@ def stat_center():
         " ORDER BY ym DESC LIMIT 24")]
     return render_template('stat_center.html', TABS=TABS, tab=tab, head=head, body=body,
                            total=total, label=label, m=m if not d1 else '',
+                           chart=chart, rowcls=rowcls,
                            d1=d1, d2=d2, months=months,
                            cards=[('期末库存金额', '%.2f' % end_amt, ''),
                                   ('本期入库', '%g' % tin, 'in'),
@@ -821,6 +1061,8 @@ def stat_export():
     lo, hi, days, label = _span(m, d1, d2)
     head, body, total, _ = _build(tab, lo, hi, days)
     name = dict(TABS).get(tab, '统计')
+    # 裁剪到表头长度：否则预警表会多导出一列没有表头的 'low'
+    body, _ = _fit(head, body)
     rows = body + [total]
     fmt = (request.args.get('fmt') or 'xlsx').lower()
     if fmt == 'csv':
@@ -833,38 +1075,15 @@ def stat_export():
         return Response('\ufeff' + bio.getvalue(), mimetype='text/csv; charset=utf-8',
                         headers={'Content-Disposition':
                                  "attachment; filename*=UTF-8''%s" % quote(fn)})
-    try:
-        from openpyxl import Workbook
-        from openpyxl.styles import Font, PatternFill, Alignment
-        from openpyxl.utils import get_column_letter
-    except Exception:
-        return redirect(url_for('stat_export', tab=tab, m=m, fmt='csv'))
-    wb = Workbook()
-    ws = wb.active
-    ws.title = name[:31]
-    ws.append(head)
-    for c in ws[1]:
-        c.font = Font(bold=True, color='FFFFFF')
-        c.fill = PatternFill('solid', fgColor='4F6B8A')
-        c.alignment = Alignment(horizontal='center')
-    for r in rows:
-        ws.append([csv_safe(v) for v in r])
-    for c in ws[ws.max_row]:
-        c.font = Font(bold=True)
-    ws.freeze_panes = 'A2'
-    for i in range(1, len(head) + 1):
-        ws.column_dimensions[get_column_letter(i)].width = 14
-    ws.column_dimensions['A'].width = 20
-    # 数字列右对齐
-    for row in ws.iter_rows(min_row=2):
-        for c in row:
-            if isinstance(c.value, (int, float)):
-                c.alignment = Alignment(horizontal='right')
-    bio = io.BytesIO()
-    wb.save(bio)
-    bio.seek(0)
+    # 走表格模块的导出层：xlsxwriter 优先（快、省内存），
+    # 并把页面上的那张图原样画进 Excel —— 导出的表和看到的图永远一致。
     fn = '%s_%s.xlsx' % (name, label.replace(' ', ''))
-    return Response(bio.getvalue(),
-                    mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                    headers={'Content-Disposition':
-                             "attachment; filename*=UTF-8''%s" % quote(fn)})
+    try:
+        return tbl.xlsx_response(head, rows, fn, sheet=name,
+                                 title='%s %s' % (name, label),
+                                 chart=_chart_spec(tab, body))
+    except Exception:
+        _log_err('stat_export')
+        # 两种引擎都装不上时退回 CSV，别让用户点了个没反应的按钮
+        return redirect(url_for('stat_export', tab=tab, m=m, d1=d1, d2=d2,
+                                fmt='csv'))

@@ -29,6 +29,7 @@ android {
                 // 后端用到的纯 Python 依赖（openpyxl 导出 Excel、xlrd 读旧格式）
                 install 'Flask>=3.0'
                 install 'openpyxl>=3.0'
+                install 'xlsxwriter>=3.0'
                 install 'xlrd>=2.0'
             }
         }

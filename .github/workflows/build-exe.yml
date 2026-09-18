@@ -3,7 +3,11 @@ name: 打包 Windows exe
 # 为什么需要这个：PyInstaller 不能交叉编译，
 # 想出 Windows 的 .exe 就得在 Windows 上跑。
 # 推到 GitHub 后，这里用官方 windows 机器帮你打包好，
-# 直接下载 exe，不用自己装 Python。
+# 直接下载，不用自己装 Python。
+#
+# 出两个东西：
+#   1. 安装程序（推荐）—— 装到 Program Files，有开始菜单、桌面快捷方式、卸载入口
+#   2. 便携版 zip     —— 解压即用，不写注册表，适合放 U 盘
 
 on:
   push:
@@ -30,22 +34,68 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
+      - name: 安装独立窗口依赖（Qt WebEngine）
+        # 装不上也不能让整个打包挂掉：程序会自动退回浏览器模式，功能不受影响
+        shell: bash
+        run: |
+          pip install -r requirements-desktop.txt || \
+            echo "::warning::Qt/pywebview 没装上，将退回浏览器模式" 
 
       - name: 打包
         run: pyinstaller warehouse.spec --noconfirm --clean
 
-      - name: 检查产物
+      - name: 检查主程序
+        # 目录模式：exe 在 dist/仓库管理系统/ 里，旁边是 _internal 依赖目录
         shell: bash
         run: |
           ls -la dist/
-          test -f "dist/仓库管理系统.exe" || (echo "没找到 exe" && exit 1)
+          ls -la "dist/仓库管理系统/" | head -20
+          test -f "dist/仓库管理系统/仓库管理系统.exe" || (echo "没找到 exe" && exit 1)
+          echo "Qt WebEngine 是否随包："
+          ls "dist/仓库管理系统/_internal/PySide6/" 2>/dev/null | grep -i webengine || echo "  （未随包，将退回浏览器）" 
 
-      - name: 压缩
+      - name: 压缩便携版
         shell: bash
         run: |
           cd dist
           7z a -y ../仓库管理系统-windows.zip "仓库管理系统.exe" || \
             powershell -Command "Compress-Archive -Path '仓库管理系统.exe' -DestinationPath '../仓库管理系统-windows.zip'"
+
+      - name: 生成安装程序
+        shell: bash
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          [ -z "$VER" ] && VER=unknown
+          ISCC="C:/Program Files (x86)/Inno Setup 6/ISCC.exe"
+          FOUND=0
+          if [ -f "$ISCC" ]; then FOUND=1; fi
+          if [ "$FOUND" = "0" ]; then
+            # 有些镜像放在别的位置，扫一遍
+            for p in "C:/Program Files/Inno Setup 6/ISCC.exe" \
+                     "C:/Program Files (x86)/Inno Setup 5/ISCC.exe"; do
+              if [ -f "$p" ]; then ISCC="$p"; FOUND=1; break; fi
+            done
+          fi
+          if [ "$FOUND" = "1" ]; then
+            echo "用 $ISCC 编译安装程序，版本 $VER"
+            # 安装程序是加分项：编译失败也不能连累便携版，所以不让它中断流程
+            if "$ISCC" installer.iss "/DMyAppVersion=$VER"; then
+              echo "安装程序已生成"
+            else
+              echo "::warning::安装程序编译失败，便携版不受影响"
+            fi
+          else
+            echo "::warning::这台机器没有 Inno Setup，跳过安装程序（便携版不受影响）"
+          fi
+          ls -la dist/ || true
+
+      - name: 收集附件
+        shell: bash
+        run: |
+          mkdir -p out
+          cp 仓库管理系统-windows.zip out/ 2>/dev/null || true
+          cp dist/仓库管理系统_安装程序_*.exe out/ 2>/dev/null || true
+          ls -la out/
 
       - name: 发布到 Release
         uses: softprops/action-gh-release@v2
@@ -54,16 +104,40 @@ jobs:
           body: |
             ## 仓库管理系统 ${{ github.ref_name }}
 
-            下载 **仓库管理系统-windows.zip**，解压后双击 `仓库管理系统.exe` 即可使用，
-            会自动打开独立窗口（没有浏览器地址栏）。
+            ### 怎么选
 
-            完整内置桌面级表格新引擎，跟表格相关的功能（图表、透视表、条件格式）都在。
+            | 想要什么 | 下哪个 |
+            |---|---|
+            | 像正常软件一样安装，有开始菜单、桌面图标、卸载入口 | **仓库管理系统_安装程序_*.exe** |
+            | 不安装，解压就能用，或放 U 盘带走 | 仓库管理系统-windows.zip |
 
-            **重要：**
-            - 数据保存在 exe 旁边的 `warehouse.db`，换电脑时把这个文件一起拷走
-            - 同目录的 `.bak` 是自动备份，出问题改名回 `warehouse.db` 可还原
-            - 关掉黑窗口即可停止服务
-            - 杀毒软件可能误报，加入白名单即可（PyInstaller 程序通病）
-          files: 仓库管理系统-windows.zip
+            > 便携版解压后请进 `仓库管理系统` 文件夹，双击里面的 exe。
+            > 旁边那个 `_internal` 文件夹是运行必需的，不要删、不要单独移动 exe。
+
+            ### 安装版
+
+            双击安装程序一路下一步。装好后：
+            - 开始菜单里有「仓库管理系统」
+            - 桌面会出现图标（安装时勾选）
+            - 卸载在「设置 → 应用」里，或开始菜单的「卸载 仓库管理系统」
+
+            ### 数据放在哪
+
+            - **安装版**：`%APPDATA%\仓库管理系统\warehouse.db`
+              （Program Files 是只读的，数据不能放那儿）
+            - **便携版**：exe 旁边的 `warehouse.db`
+
+            换电脑时把这个 `warehouse.db` 拷走就行。
+            同目录的 `.bak` 是自动备份，出问题改名回 `warehouse.db` 可还原。
+
+            ### 其它
+
+            - 双击出**独立窗口**，没有浏览器地址栏
+            - 内置桌面级表格引擎：图表、透视表、条件格式都在
+            - 杀毒软件可能误报，加白名单即可（PyInstaller 程序通病）
+          files: |
+            out/仓库管理系统-windows.zip
+            out/仓库管理系统_安装程序_*.exe
+          fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

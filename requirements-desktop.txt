@@ -1,0 +1,10 @@
+# 独立窗口依赖（可选，但强烈建议装）
+#
+# PySide6：Qt WebEngine 自带 Chromium，不依赖用户机器装没装 Edge WebView2，
+#          也不需要 .NET —— 打包后行为最可预测，优先用它开窗口。
+#          体积较大（约 400MB 安装后），本项目不在乎体积，要的是稳定。
+# pywebview：PySide6 装不上时的备选，轻便但依赖系统 WebView2 + pythonnet。
+#
+# 两个都装不上也没关系：程序会退回浏览器打开，功能一个不少，只是样子不同。
+PySide6>=6.6
+pywebview>=4.0

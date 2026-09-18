@@ -940,6 +940,9 @@ def txns_batch():
 @bp.route('/txns')
 def txns():
     d = request.args.get('d') or ''
+    # 月份筛选曾经是死的：模板上有「或按月份」输入框，路由却根本不读 m，
+    # 选了月份照样显示全量、还不给任何提示。既然给了框就得生效。
+    m = util.opt_ym(request.args.get('m'))
     kind = request.args.get('kind') or ''
     kw = clean_kw(request.args.get('kw'))
     sort = request.args.get('sort') or ''
@@ -950,6 +953,8 @@ def txns():
     w, args = [], []
     if d:
         w.append("t.tdate=?"); args.append(d)
+    elif m:
+        w.append("t.tdate LIKE ?"); args.append(m + '%')
     if kind:
         w.append("t.kind=?"); args.append(kind)
     if kw:
@@ -975,7 +980,7 @@ def txns():
     sql += " LIMIT %d" % TXN_PAGE
     rows = db.q(sql, *args)
     rows, mapped_n = _apply_po_price(rows)
-    return render_template('txns.html', rows=rows, d=d, kind=kind or None, m='', kw=kw,
+    return render_template('txns.html', rows=rows, d=d, kind=kind or None, m=m, kw=kw,
                            total=0, count=len(rows), real_total=real_total,
                            capped=(real_total > len(rows)),
                            url_kind='txns',

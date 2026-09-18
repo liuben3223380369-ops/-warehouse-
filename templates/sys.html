@@ -42,6 +42,22 @@
 </div>
 {% endif %}
 
+{% if drift and drift.c %}
+<div class="card" style="border-left:3px solid #e53e3e">
+  <h2>到货数不一致 <span class="pill">{{drift.c}} 条</span></h2>
+  <div style="font-size:13px;line-height:1.7;color:#4a5568">
+    采购明细的「已到货」其实存了两份：<b>到货流水</b>是源头，明细上的到货数是<b>缓存</b>（便于列表汇总）。
+    正常登记时两者在同一个事务里一起写，不会漂；但外部导入、老库升级、异常中断可能只写了一份。
+    一旦发生，页面会一直显示「已到货 0、状态 已下单」而且<b>不报错</b>，结单和欠款都会跟着错。
+    点下面的按钮以流水为准把缓存拉回来，并同步重算采购单状态（会先自动备份）。
+  </div>
+  <div class="rowflex" style="margin-top:10px">
+    <a class="btn s o" href="{{url_for('sys_fix_recv')}}"
+       onclick="return confirm('确认修复？将按到货流水重算 {{drift.c}} 条明细的到货数，并同步重算采购单状态。修复前会自动备份。')">🔧 修复这 {{drift.c}} 条</a>
+  </div>
+</div>
+{% endif %}
+
 <div class="card">
   <h2>库概况</h2>
   <div class="grid2" style="font-size:13px;line-height:2">

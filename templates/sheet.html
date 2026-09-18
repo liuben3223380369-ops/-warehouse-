@@ -143,15 +143,37 @@ table.sh th{position:relative}
   </form>
 </div>
 <div class="card">
+  {% if uni %}
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+              font-size:13px;color:#5b6675;margin-bottom:8px">
+    <span>表格引擎：</span>
+    <form method="post" action="/sheet/engine" style="margin:0">
+      <input type="hidden" name="engine" value="{{ 'old' if eng == 'new' else 'new' }}">
+      <button class="btn" type="submit"
+              style="width:auto;padding:6px 12px;margin:0;font-size:13px">
+        {% if eng == 'new' %}当前：新引擎 ⚡（点此切回旧版）{% else %}当前：自带制表台（点此切到新引擎）{% endif %}
+      </button>
+    </form>
+    <span>切换只影响「点工作簿名字进哪个」，两个引擎都保留。</span>
+  </div>
+  {% endif %}
   {% if books %}
   <div class="scroll">
   <table>
     <tr><th>名称</th><th>更新时间</th><th style="width:60px"></th></tr>
     {% for b in books %}
     <tr>
-      <td><a href="/sheet/{{b['id']}}">📗 {{b['name']}}</a>
+      <td>
+        {% if eng == 'new' %}
+          <a href="/sheet/{{b['id']}}/univer">📗 {{b['name']}}</a>
+          <a href="/sheet/{{b['id']}}" style="margin-left:10px;font-size:12px;
+             color:#7a869a;text-decoration:none">旧版</a>
+        {% else %}
+          <a href="/sheet/{{b['id']}}">📗 {{b['name']}}</a>
           {% if uni %}<a href="/sheet/{{b['id']}}/univer" style="margin-left:10px;font-size:12px;
-             color:#2563eb;text-decoration:none">新引擎 ⚡</a>{% endif %}</td>
+             color:#2563eb;text-decoration:none">新引擎 ⚡</a>{% endif %}
+        {% endif %}
+      </td>
       <td style="color:#7a869a">{{b['updated']}}</td>
       <td><a href="/sheet/{{b['id']}}/del" style="color:#e5484d"
              onclick="return confirm('删除这本工作簿？')">删除</a></td>

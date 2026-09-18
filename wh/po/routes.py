@@ -33,20 +33,32 @@ def purchase_home():
     if w:
         sql += " WHERE " + " AND ".join(w)
     sql += " GROUP BY p.id ORDER BY p.odate DESC, p.id DESC LIMIT 300"
+    raw = list(db.q(sql, *a))
+    # v3.65 批量预取：以前在循环里逐单查付款与到货金额（N+1），
+    # 300 张单就是 600 次查询、5 万单据下首页 30 秒。改成 2 次批量查完。
+    ids = [r['id'] for r in raw]
+    _paid = {}
+    # 到货金额必须走 po_totals_many（精确口径：实价折不含税）。
+    # 不能简化成 SUM(qty*price)——那会把含税价当不含税用，
+    # 实测列表页比详情页多出约 13%（正好一个税率），欠款也跟着错。
+    _tots = purchase.po_totals_many(ids)
+    if ids:
+        ph = ','.join('?' * len(ids))
+        for r in db.q("SELECT po_id, COALESCE(SUM(amount),0) s FROM po_payments"
+                      " WHERE po_id IN (%s) GROUP BY po_id" % ph, *ids):
+            _paid[r['po_id']] = round(float(r['s'] or 0), 2)
     rows = []
-    for r in db.q(sql, *a):
+    for r in raw:
         d = dict(r)
         d['tax_rate'] = float(d['tax_rate'] or 0)
         _, tax, total = purchase.line_amount(1, d['amt'], d['tax_rate'])
         d['amount'] = round(float(d['amt'] or 0), 2)
         d['tax'] = tax
         d['total'] = round(float(d['amt'] or 0) + tax, 2)
-        d['paid'] = purchase.paid_amount(d['id'])
+        d['paid'] = _paid.get(d['id'], 0.0)
         # 欠款统一按「到货」算，跟详情页 / 汇总页口径一致；
-        # 用 SUM(qty*price) 一次算出到货金额，避免逐单再查
-        d['recv_amt'] = float(db.q(
-            "SELECT COALESCE(SUM(r.qty*r.price),0) s FROM po_receipts r"
-            " JOIN po_items i ON i.id=r.item_id WHERE i.po_id=?", d['id'])[0]['s'] or 0)
+        # 取 po_totals_many 的精确值（实价折不含税），与详情页完全同源
+        d['recv_amt'] = float((_tots.get(d['id']) or {}).get('recv_amount', 0) or 0)
         _, _, d['recv_total'] = purchase.line_amount(1, d['recv_amt'], d['tax_rate'])
         d['owed'] = round(float(d['recv_total'] or 0) - float(d['paid'] or 0), 2)
         d['open_qty'] = round(float(d['tq'] or 0) - float(d['rq'] or 0), 2)
@@ -81,8 +93,12 @@ def po_summary():
     kw = clean_kw(request.args.get('kw'))
     m = safe_ym(request.args.get('m') or '', default='')
     rows, tot = purchase.summary_list(st=st, sup=sup, kw=kw, m=m)
-    # 老库（升级上来的）可能还没生成快照，这里补一次
-    if not rows and db.q("SELECT COUNT(*) c FROM pos")[0]['c']:
+    # 老库（升级上来的）可能还没生成快照，这里补一次。
+    # 只有"快照表整张是空的"才算老库；不能只看 rows 为空——
+    # 那样每次筛选无结果都会触发全量重算，页面直接卡死。
+    if (not rows
+            and not db.q("SELECT 1 FROM po_summary LIMIT 1")
+            and db.q("SELECT 1 FROM pos LIMIT 1")):
         try:
             purchase.sync_all()
             rows, tot = purchase.summary_list(st=st, sup=sup, kw=kw, m=m)
@@ -770,11 +786,14 @@ def export_po_xlsx():
                 if _c['fid'] not in _xmap:
                     _xmap[_c['fid']] = _c['label']
                     _xorder.append(_c['fid'])
+        # 「金额」= 数量×单价，单价可能是含税也可能是不含税（各单可不同），
+        # 不标口径的话用户会拿它跟汇总表的「不含税金额」直接对，发现对不上还以为算错了。
         ws.append(['采购单号', '日期', '交期', '供应商', '物料名称', '规格', '单位',
-                   '订购数', '单价', '金额', '已到货', '未到货', '状态', '批次', '备注']
+                   '订购数', '单价', '金额', '单价口径', '已到货', '未到货', '状态',
+                   '批次', '备注']
                   + [_xmap[f] for f in _xorder])
         sql = ("SELECT p.pono,p.odate,p.ddate,p.supplier,i.name,i.spec,i.unit,"
-               " i.qty,i.price,i.note,p.status,i.batch,i.extra,"
+               " i.qty,i.price,i.note,p.status,i.batch,i.extra,p.price_tax,"
                " COALESCE(SUM(r.qty),0) rq FROM po_items i"
                " JOIN pos p ON p.id=i.po_id"
                " LEFT JOIN po_receipts r ON r.item_id=i.id"
@@ -785,9 +804,13 @@ def export_po_xlsx():
                 _xv = _xj.loads(r['extra'] or '{}') or {}
             except Exception:
                 _xv = {}
+            # 口径缺省按含税处理，与 po_head() 的默认保持一致
+            _ptax = r['price_tax']
+            _ptax = 1 if _ptax is None else int(_ptax)
             ws.append([cv(r['pono']), cv(r['odate']), cv(r['ddate']), cv(r['supplier']),
                        cv(r['name']), cv(r['spec']), cv(r['unit']),
                        q, float(r['price'] or 0), round(q * float(r['price'] or 0), 2),
+                       '含税' if _ptax else '不含税',
                        rq, round(q - rq, 2), cv(r['status']), cv(r['batch']), cv(r['note'])]
                       + [cv(_xv.get(f, '')) for f in _xorder])
         fn = '采购明细'
@@ -821,12 +844,34 @@ def export_po_xlsx():
         sql = ("SELECT p.*, COALESCE(SUM(i.qty*i.price),0) amt FROM pos p"
                " LEFT JOIN po_items i ON i.po_id=p.id"
                + where + " GROUP BY p.id ORDER BY p.odate DESC, p.id DESC")
-        for r in db.q(sql, *a):
+        raw = list(db.q(sql, *a))
+        # v3.65 批量预取：导出也要走批量，否则 300 张单 = 600+ 次查询必然超时(502)。
+        # 到货金额走 po_totals_many（精确口径），付款一次 GROUP BY 取完。
+        _ids = [r['id'] for r in raw]
+        _tots = purchase.po_totals_many(_ids)
+        _paid = {}
+        if _ids:
+            ph = ','.join('?' * len(_ids))
+            for _r in db.q("SELECT po_id, COALESCE(SUM(amount),0) s FROM po_payments"
+                           " WHERE po_id IN (%s) GROUP BY po_id" % ph, *_ids):
+                _paid[_r['po_id']] = round(float(_r['s'] or 0), 2)
+        for r in raw:
             tr = float(r['tax_rate'] or 0)
-            amt = round(float(r['amt'] or 0), 2)
-            _, tax, total = purchase.line_amount(1, amt, tr)
-            paid = purchase.paid_amount(r['id'])
-            _, recv_total = purchase.owed(r['id'])
+            _t = _tots.get(r['id'])
+            if _t is None:
+                amt = round(float(r['amt'] or 0), 2)
+                _, tax, total = purchase.line_amount(1, amt, tr)
+                paid = purchase.paid_amount(r['id'])
+                _, recv_total = purchase.owed(r['id'])
+            else:
+                # 与 ?t=summary 同口径：订购金额走 po_totals（逐行折不含税再汇总），
+                # 否则两处导出的「价税合计」会差 0.01，对账时对不上。
+                amt = float(_t['amount'] or 0)
+                tax = float(_t['tax'] or 0)
+                total = float(_t['total'] or 0)
+                paid = _paid.get(r['id'], 0.0)
+                _, _, recv_total = purchase.line_amount(
+                    1, float(_t['recv_amount'] or 0), _t['tax_rate'], 0)
             ws.append([cv(r['pono']), cv(r['odate']), cv(r['ddate']), cv(r['supplier']),
                        cv(r['status']), tr, amt, round(tax, 2), round(total, 2),
                        paid, round(recv_total - paid, 2), cv(r['note'])])

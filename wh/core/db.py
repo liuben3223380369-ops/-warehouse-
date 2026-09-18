@@ -39,12 +39,39 @@ def unit_choices(extra=None):
     return out
 
 
+def _writable(d):
+    """这个目录能写吗？装到 Program Files 时普通用户是没权限的，
+    不检测的话数据库会建不出来，程序直接起不来。"""
+    try:
+        if not os.path.isdir(d):
+            os.makedirs(d, exist_ok=True)
+        t = os.path.join(d, '.wtest.tmp')
+        with open(t, 'w') as f:
+            f.write('x')
+        os.remove(t)
+        return True
+    except Exception:
+        return False
+
+
+def _user_data_dir():
+    """程序目录不可写时的落点（安装到 Program Files 的标准做法）"""
+    if os.name == 'nt':
+        base = os.environ.get('APPDATA') or os.path.expanduser('~')
+        return os.path.join(base, '仓库管理系统')
+    return os.path.join(os.path.expanduser('~'), '.warehouse')
+
+
 def app_dir():
     """程序目录：打包后是 exe 所在目录，源码运行时是项目根目录。
     数据库、备份、上传临时目录都放这里——它可写、且每次运行都固定。
 
     注意：源码运行时必须回到**项目根目录**（run.py 所在的那层），
-    不能停在 wh/core，否则升级改目录结构后数据文件会跟着跑丢。"""
+    不能停在 wh/core，否则升级改目录结构后数据文件会跟着跑丢。
+
+    打包后若 exe 所在目录不可写（装进 Program Files 的典型情况），
+    自动改用用户目录（%APPDATA%\\仓库管理系统），避免数据库建不出来。
+    """
     # Android / 自定义数据目录：环境变量优先，行为不变（未设置时走原逻辑）
     _home = os.environ.get('WAREHOUSE_HOME')
     if _home:
@@ -54,7 +81,16 @@ def app_dir():
             pass
         return _home
     if _is_frozen():
-        return os.path.dirname(os.path.abspath(sys.executable))
+        d = os.path.dirname(os.path.abspath(sys.executable))
+        if _writable(d):
+            return d
+        # 程序目录只读（Program Files）→ 数据放用户目录
+        u = _user_data_dir()
+        try:
+            os.makedirs(u, exist_ok=True)
+        except Exception:
+            pass
+        return u
     # wh/core/db.py -> core -> wh -> 项目根
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -125,6 +161,10 @@ CREATE INDEX IF NOT EXISTS idx_txns_date ON txns(tdate);
 CREATE INDEX IF NOT EXISTS idx_txns_mat  ON txns(material_id);
 CREATE INDEX IF NOT EXISTS idx_txns_kind ON txns(kind);
 CREATE INDEX IF NOT EXISTS idx_mat_active ON materials(active);
+-- v3.65 覆盖索引：库存聚合与期间统计只扫索引、不回表读数据。
+-- 没有它时 v_stock 与 _period_stats 每次都要全表扫描（5 万单据下 3 秒级），
+-- 且 LIMIT 分页完全失效（LIMIT 50 比取全量还慢）。加上后降到 60~90ms。
+CREATE INDEX IF NOT EXISTS idx_txns_cover ON txns(material_id, tdate, kind, qty);
 
 /* ============ 采购台账（与仓库单据分离，通过到货单联动） ============ */
 CREATE TABLE IF NOT EXISTS suppliers (
@@ -359,9 +399,15 @@ def conn():
             '建议：换一个有读写权限的目录（比如手机内部存储，而不是外置 SD 卡），'
             '或用 WAREHOUSE_DB 环境变量指定路径。' % (DB_PATH, e))
     c.row_factory = sqlite3.Row
+    # WAL 在某些文件系统上会**静默损坏**数据（不抛异常，只是写坏）：
+    # 网络共享盘、U 盘、exFAT、部分容器/overlay 文件系统。
+    # 所以提供 WAREHOUSE_NO_WAL=1 逃生阀：数据放这类盘上时设它。
+    _no_wal = os.environ.get('WAREHOUSE_NO_WAL', '').strip() in ('1', 'true', 'yes')
+    _pragma_wal = ("PRAGMA journal_mode=DELETE" if _no_wal
+                   else "PRAGMA journal_mode=WAL")
     for pragma in ("PRAGMA foreign_keys=ON",        # 外键真正生效
                    "PRAGMA busy_timeout=15000",     # 并发写不立刻报错
-                   "PRAGMA journal_mode=WAL"):      # 读写不互相阻塞（可选）
+                   _pragma_wal):                    # 读写不互相阻塞（可选）
         try:
             c.execute(pragma)
         except sqlite3.DatabaseError:
@@ -370,6 +416,14 @@ def conn():
                     c.execute("PRAGMA journal_mode=DELETE")
                 except sqlite3.DatabaseError:
                     pass
+    # 校验 WAL 是否真生效：有些文件系统请求 WAL 不报错但实际没生效，
+    # 此时同样退回 DELETE，避免"以为开了其实没开"的隐患。
+    if not _no_wal:
+        try:
+            if str(c.execute("PRAGMA journal_mode").fetchone()[0]).lower() != 'wal':
+                c.execute("PRAGMA journal_mode=DELETE")
+        except sqlite3.DatabaseError:
+            pass
     _local.conn = c
     return c
 
@@ -521,8 +575,11 @@ def migrate():
             c.execute("DROP VIEW IF EXISTS v_stock")
             c.execute("DROP VIEW IF EXISTS v_mats")
             c.executescript(VIEWS)
+    # v3.65 覆盖索引：老库升级也要有，否则 5 万单据下物料页/首页仍是秒级。
+    # 新库由建表脚本创建，这里只补老库；IF NOT EXISTS 保证重复执行安全。
     for idx, ddl in (('idx_txns_kind', "CREATE INDEX IF NOT EXISTS idx_txns_kind ON txns(kind)"),
-                     ('idx_mat_active', "CREATE INDEX IF NOT EXISTS idx_mat_active ON materials(active)")):
+                     ('idx_mat_active', "CREATE INDEX IF NOT EXISTS idx_mat_active ON materials(active)"),
+                     ('idx_txns_cover', "CREATE INDEX IF NOT EXISTS idx_txns_cover ON txns(material_id, tdate, kind, qty)")):
         run(ddl)
     _migrate_tpl()
 
@@ -1161,12 +1218,19 @@ def reset_cols():
     init_cols()
 
 # ---------- 数据完整性 / 备份 ----------
-def check_integrity():
-    """体检：返回问题列表（空列表=健康）"""
+def check_integrity(deep=False):
+    """体检：返回问题列表（空列表=健康）
+
+    deep=False（默认）用 quick_check：只校验文件结构，5万单据下约 0.2 秒。
+    deep=True 用 integrity_check：逐页校验内容，同一库实测 12 秒，
+    只在用户手动点「深度体检」时才跑——系统页每次都跑会卡十几秒。
+    两者都能检出文件级损坏；差别在于 deep 还会逐行核对索引与数据是否一致。
+    """
     issues = []
+    pragma = 'PRAGMA integrity_check' if deep else 'PRAGMA quick_check'
     try:
-        if q("PRAGMA integrity_check")[0][0] != 'ok':
-            issues.append('数据库文件结构异常（integrity_check 未通过）')
+        if q(pragma)[0][0] != 'ok':
+            issues.append('数据库文件结构异常（%s 未通过）' % pragma.split()[1])
     except sqlite3.DatabaseError as e:
         issues.append('数据库文件损坏，读不了了：%s' % e)
         # 只说"坏了"没用，得告诉用户手上有哪些备份可以救

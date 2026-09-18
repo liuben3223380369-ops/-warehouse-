@@ -22,6 +22,79 @@ ENGINE_VER = '0.25.1'
 _CACHED_COL = {'ok': False}
 _NEED = ('univer-presets.js', 'react.js', 'univer-sheets-core.js')
 
+# ------------------------------------------------------------------ 可选能力包
+# 核心预设只带公式/数字格式/基础 UI。下面这些是社区版免费、官方单独发布的
+# 预设包，每个都自包含（已内联其实现与 facade），彼此的依赖靠顺序解决：
+#   筛选(1) 排序(2) 查找替换(3) 图形(4) 批注(5) 备注(6)
+#   数据验证(7) ← 超链接(10) 依赖它    表格(8) 依赖 排序
+# 顺序改动前请先跑 tools 里的依赖自检，否则会白屏。
+#
+# 第 6 位 exp 有两种形态（实测 UMD 导出后确定，勿凭包名推断）：
+#   · 字符串  → 预设形态：window[ns][exp]() 得到 {plugins:[...]}
+#   · 列表    → 插件形态：该包没有预设，只有底层 Plugin，
+#               [[全局名, 导出名], ...] 逐个取出后手工包成 {plugins:[...]}
+#               筛选与数据验证就是这种，写成预设名会静默失效（不报错、功能没了）。
+EXTRA_MODULES = [
+    ('筛选',     'univer-ps-filter.js',                'univer-zh-CN-filter.js', 'univer-filter.css',
+     '-', [['UniverSheetsFilter', 'UniverSheetsFilterPlugin'],
+           ['UniverSheetsFilterUi', 'UniverSheetsFilterUIPlugin']]),
+    ('排序',     'univer-ps-sort.js',                  'univer-zh-CN-sort.js',   'univer-sort.css',
+     'UniverPresetSheetsSort',                   'UniverSheetsSortPreset'),
+    ('查找替换', 'univer-ps-find-replace.js',          'univer-zh-CN-find.js',   'univer-find.css',
+     'UniverPresetSheetsFindReplace',            'UniverSheetsFindReplacePreset'),
+    ('图形',     'univer-ps-drawing.js',               'univer-zh-CN-draw.js',   'univer-draw.css',
+     'UniverPresetSheetsDrawing',                'UniverSheetsDrawingPreset'),
+    ('批注',     'univer-ps-thread-comment.js',        'univer-zh-CN-tc.js',     'univer-tc.css',
+     'UniverPresetSheetsThreadComment',          'UniverSheetsThreadCommentPreset'),
+    ('备注',     'univer-ps-note.js',                  'univer-zh-CN-note.js',   'univer-note.css',
+     'UniverPresetSheetsNote',                   'UniverSheetsNotePreset'),
+    ('数据验证', 'univer-ps-data-validation.js',       'univer-zh-CN-dv.js',     'univer-dv.css',
+     '-', [['UniverDataValidation', 'UniverDataValidationPlugin'],
+           ['UniverSheetsDataValidation', 'UniverSheetsDataValidationPlugin'],
+           ['UniverSheetsDataValidationUi', 'UniverSheetsDataValidationUIPlugin']]),
+    ('表格',     'univer-ps-table.js',                 'univer-zh-CN-table.js',  'univer-table.css',
+     'UniverPresetSheetsTable',                  'UniverSheetsTablePreset'),
+    ('条件格式', 'univer-ps-conditional-formatting.js', 'univer-zh-CN-cf.js',    'univer-cf.css',
+     'UniverPresetSheetsConditionalFormatting',  'UniverSheetsConditionalFormattingPreset'),
+    ('超链接',   'univer-ps-hyper-link.js',            'univer-zh-CN-hl.js',     'univer-hl.css',
+     'UniverPresetSheetsHyperLink',              'UniverSheetsHyperLinkPreset'),
+    # 这两个包没有预设形态，同样是插件形态；水印无中文包与样式，留空由 extra_assets 跳过
+    ('十字准星', 'univer-crosshair.js',                'univer-zh-CN-crosshair.js', 'univer-crosshair.css',
+     '-', [['UniverSheetsCrosshairHighlight', 'UniverSheetsCrosshairHighlightPlugin']]),
+    ('水印',     'univer-watermark.js',                '',                       '',
+     '-', [['UniverWatermark', 'UniverWatermarkPlugin']]),
+]
+
+# 各能力包语言包写入的全局名（mergeLocales 用）
+EXTRA_LOCALE_GLOBALS = [
+    'UniverSheetsFilterZhCN', 'UniverSheetsFilterUiZhCN',
+    'UniverSheetsSortUiZhCN', 'UniverFindReplaceZhCN',
+    'UniverDrawingUiZhCN', 'UniverSheetsDrawingUiZhCN',
+    'UniverThreadCommentUiZhCN', 'UniverSheetsThreadCommentUiZhCN',
+    'UniverSheetsNoteUiZhCN',
+    'UniverDataValidationZhCN', 'UniverSheetsDataValidationZhCN', 'UniverSheetsDataValidationUiZhCN',
+    'UniverSheetsTableZhCN', 'UniverSheetsTableUiZhCN',
+    'UniverSheetsConditionalFormattingUiZhCN',
+    'UniverSheetsHyperLinkZhCN', 'UniverSheetsHyperLinkUiZhCN',
+]
+
+
+def extra_assets():
+    """返回实际存在的能力包资源（缺哪个就静默跳过哪个，不让页面 404）"""
+    d = os.path.join(static_dir(), 'univer')
+    js, loc, css, mods = [], [], [], []
+    for label, j, l, c, ns, exp in EXTRA_MODULES:
+        if not os.path.exists(os.path.join(d, j)):
+            continue
+        js.append(j)
+        # 空串必须挡住：os.path.exists(目录) 恒为真，会生成 src 指向目录的 404 标签
+        if l and os.path.exists(os.path.join(d, l)):
+            loc.append(l)
+        if c and os.path.exists(os.path.join(d, c)) and os.path.getsize(os.path.join(d, c)) > 0:
+            css.append(c)
+        mods.append([label, ns, exp])
+    return js, loc, css, mods
+
 
 # ------------------------------------------------- 离线资源是否齐全
 def static_dir():
@@ -353,12 +426,16 @@ def register(bp):
                 book = E.Workbook('工作簿')
                 book.add('Sheet1')
             snap = book_to_univer(book)
+        _js, _loc, _css, _mods = extra_assets()
         return render_template(
             'univer.html',
             name=row['name'], bid=bid,
             snapshot=json.dumps(snap, ensure_ascii=False),
             nonce=new_nonce(),
             ver=ENGINE_VER,
+            extra_js=_js, extra_locale=_loc, extra_css=_css,
+            extra_mods=json.dumps(_mods, ensure_ascii=False),
+            extra_locale_globals=json.dumps(EXTRA_LOCALE_GLOBALS, ensure_ascii=False),
         )
 
     @bp.route('/api/univer/<int:bid>')

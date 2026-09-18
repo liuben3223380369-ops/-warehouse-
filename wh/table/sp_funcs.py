@@ -121,8 +121,30 @@ def first_err(*vals):
 
 
 # ------------------------------------------------------------------ 日期工具
+_TIME_RE = re.compile(
+    r'^\s*(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?\s*(?:([AaPp])\.?[Mm]\.?)?\s*$')
+
+
+def _time_frac(s):
+    """纯时间文本 "13:45:30" / "1:00 PM" -> 当日小数部分；不是时间文本返回 None"""
+    m = _TIME_RE.match(s)
+    if not m:
+        return None
+    h = int(m.group(1))
+    mi = int(m.group(2))
+    se = int(m.group(3) or 0)
+    ap = (m.group(4) or '').lower()
+    if ap == 'a' and h == 12:
+        h = 0
+    elif ap == 'p' and h != 12:
+        h += 12
+    if h > 23 or mi > 59 or se > 59:
+        return None
+    return (h * 3600 + mi * 60 + se) / 86400.0
+
+
 def to_serial(v):
-    """转成 Excel 序列号。接受 date/datetime/序列号/日期文本"""
+    """转成 Excel 序列号。接受 date/datetime/序列号/日期文本/纯时间文本"""
     if v is None or v == '':
         return None
     if isinstance(v, bool):
@@ -149,6 +171,10 @@ def to_serial(v):
             frac = (int(tm.group(1)) * 3600 + int(tm.group(2)) * 60
                     + int(tm.group(3) or 0)) / 86400.0
         return (d - _EPOCH).days + frac
+    # 纯时间文本（"13:45:30"）：Excel 里其序列号就是当日的小数部分
+    tf = _time_frac(s)
+    if tf is not None:
+        return tf
     n = to_num(s)
     return n
 
@@ -435,27 +461,34 @@ def _rad_deg(*a):
     return math.degrees(v) if v is not None else '#VALUE!'
 
 
-def _mk_trig(fn, inv=False):
-    def f(*a):
-        v = to_num(a[0]) if a else 0.0
-        if v is None:
-            return '#VALUE!'
-        if inv:
-            try:
-                return math.degrees(fn(v))
-            except ValueError:
-                return '#NUM!'
-        return fn(math.radians(v))
-    return f
+def _mk_trig(fn):
+    """三角函数：与 Excel / LibreOffice 一致 —— 入参为弧度，返回比值。
 
-
-def _mk_trig_inv(fn):
+    早期实现误把入参当角度（math.radians(v)），导致 SIN(PI()/6)=0.0091 而非 0.5。
+    因 SIN(0)=0、COS(0)=1 恰好正确，该问题长期未被回归发现。
+    """
     def f(*a):
         v = to_num(a[0]) if a else 0.0
         if v is None:
             return '#VALUE!'
         try:
-            return math.degrees(fn(v))
+            return fn(v)
+        except (ValueError, OverflowError):
+            return '#NUM!'
+    return f
+
+
+def _mk_trig_inv(fn):
+    """反三角函数：与 Excel / LibreOffice 一致 —— 入参为比值，返回弧度。
+
+    早期实现误把结果转成角度（math.degrees(...)），导致 ASIN(0.5)=30 而非 0.5236。
+    """
+    def f(*a):
+        v = to_num(a[0]) if a else 0.0
+        if v is None:
+            return '#VALUE!'
+        try:
+            return fn(v)
         except (ValueError, OverflowError):
             return '#NUM!'
     return f
@@ -486,10 +519,13 @@ def _mode(*a):
     for v in vs:
         cnt[v] = cnt.get(v, 0) + 1
     top = max(cnt.values())
+    # Excel：没有任何值重复出现时返回 #N/A，而不是返回第一个数
+    if top < 2:
+        return '#N/A'
     for v in vs:
         if cnt[v] == top:
             return v
-    return '#NUM!'
+    return '#N/A'
 
 
 def _stdev(*a):
@@ -659,8 +695,9 @@ def _correl(*a):
 
 
 def _slope(*a):
-    x = nums([a[0]]) if len(a) > 1 else []
+    # Excel 语义：SLOPE(known_y's, known_x's) —— y 在前，x 在后
     y = nums([a[0]]) if a else []
+    x = nums([a[1]]) if len(a) > 1 else []
     n = min(len(x), len(y))
     if n < 2:
         return '#DIV/0!'
@@ -676,7 +713,8 @@ def _intercept(*a):
     n = min(len(x), len(y))
     if n < 1:
         return '#DIV/0!'
-    s = _slope((a[1] if len(a) > 1 else []), (a[0] if a else []))
+    # 注意保持 (y, x) 顺序，与 SLOPE 一致
+    s = _slope((a[0] if a else []), (a[1] if len(a) > 1 else []))
     if is_err(s):
         return s
     return sum(y[:n]) / n - s * sum(x[:n]) / n
@@ -825,8 +863,8 @@ def _trim(*a):
 
 
 def _clean(*a):
-    return ''.join(ch for ch in to_text(a[0] if a else '')
-                   if ord(ch) >= 32 or ch in '\t\n')
+    # Excel 的 CLEAN 删除全部 0~31 号非打印字符（含制表符与换行）
+    return ''.join(ch for ch in to_text(a[0] if a else '') if ord(ch) >= 32)
 
 
 def _substitute(*a):
@@ -1005,12 +1043,12 @@ def _weekday(*a):
     t = int(to_num(a[1]) or 1) if len(a) > 1 else 1
     if not d:
         return '#NUM!'
-    w = d.weekday()          # 0=周一
-    if t == 1:
-        return float(w + 1)
-    if t == 2:
+    w = d.weekday()          # 0=周一 … 6=周日
+    if t == 1:               # 周日=1 … 周六=7
         return float((w + 1) % 7 + 1)
-    if t == 3:
+    if t == 2:               # 周一=1 … 周日=7
+        return float(w + 1)
+    if t == 3:               # 周一=0 … 周日=6
         return float(w % 7)
     return '#NUM!'
 
@@ -1112,8 +1150,27 @@ def _time(*a):
 
 
 def _timevalue(*a):
-    v = to_serial(a[0] if a else None)
-    return (v - int(v)) if v is not None else '#VALUE!'
+    v = a[0] if a else None
+    if isinstance(v, str):
+        # to_serial 只认「日期」或「日期+时间」，纯时间文本（"13:45:30"）要先单独解析
+        m = re.match(r'^\s*(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?\s*(?:([AaPp])\.?[Mm]\.?)?\s*$',
+                     v)
+        if m:
+            h = int(m.group(1)); mi = int(m.group(2)); se = int(m.group(3) or 0)
+            ap = (m.group(4) or '').lower()
+            if ap == 'a' and h == 12:
+                h = 0
+            elif ap == 'p' and h != 12:
+                h += 12
+            if h > 23 or mi > 59 or se > 59:
+                return '#VALUE!'
+            return (h * 3600 + mi * 60 + se) / 86400.0
+        n = to_num(v)
+        if n is not None:
+            return n - int(n)
+        return '#VALUE!'
+    sv = to_serial(v)
+    return (sv - int(sv)) if sv is not None else '#VALUE!'
 
 
 def _workday(*a):
@@ -1201,17 +1258,44 @@ def _hlookup(ctx, *a):
 
 
 def _lookup(ctx, *a):
+    """LOOKUP(查找值, 查找向量, [结果向量]) / LOOKUP(查找值, 数组)
+
+    向量形式：在查找向量里找「不大于查找值的最大项」，返回【结果向量】同位置的值；
+    省略结果向量时返回查找向量里找到的那个值。查找向量需按升序排列。
+    """
     key = a[0] if a else None
+    if len(a) < 2:
+        return '#N/A'
     if len(a) > 2:
-        return _vlookup(ctx, key, a[2], 2, True)
-    vec = flat([a[1]]) if len(a) > 1 else []
-    last = '#N/A'
-    for v in vec:
+        look = flat([a[1]])
+        res = flat([a[2]])
+        n = min(len(look), len(res))
+        pos = -1
+        for i in range(n):
+            if _cmp_le(look[i], key):
+                pos = i
+            else:
+                break
+        return res[pos] if pos >= 0 else '#N/A'
+    arr = a[1]
+    rows = arr if isinstance(arr, (list, tuple)) else [[arr]]
+    rows = [r if isinstance(r, (list, tuple)) else [r] for r in rows]
+    if not rows or not rows[0]:
+        return '#N/A'
+    nr, nc = len(rows), max(len(r) for r in rows)
+    if nc >= nr:                       # 宽数组：搜第一行，返回最后一行
+        look = [rows[0][j] for j in range(nc)]
+        res = [rows[nr - 1][j] for j in range(nc)]
+    else:                              # 高数组：搜第一列，返回最后一列
+        look = [rows[i][0] for i in range(nr)]
+        res = [rows[i][nc - 1] for i in range(nr)]
+    pos = -1
+    for i, v in enumerate(look):
         if _cmp_le(v, key):
-            last = v
+            pos = i
         else:
             break
-    return last
+    return res[pos] if pos >= 0 else '#N/A'
 
 
 def _xlookup(ctx, *a):
@@ -1249,7 +1333,9 @@ def _index(ctx, *a):
 def _match(ctx, *a):
     key = a[0] if a else None
     vec = flat([a[1]]) if len(a) > 1 else []
-    mode = int(to_num(a[2]) or 1) if len(a) > 2 and a[2] not in (None, '') else 1
+    # 注意：0 是精确匹配，不能用 `to_num(...) or 1` —— 0 是 falsy，会被换成 1
+    _m = to_num(a[2]) if len(a) > 2 and a[2] not in (None, '') else None
+    mode = int(_m) if _m is not None else 1
     if mode == 0:
         for i, v in enumerate(vec):
             if _same(v, key):
@@ -1574,13 +1660,30 @@ def _with_ctx(f):
     return g
 
 
+def _raw(f):
+    """错误检查类函数：错误值不能短路，必须原样交给函数看。
+
+    ISERROR(1/0) 若走 _plain，1/0 的 #DIV/0! 会被 first_err 直接抛出，
+    函数永远收不到错误值，只能返回 #DIV/0! 而不是 TRUE。
+    """
+    def g(ctx, *args):
+        return f(*args)
+    return g
+
+
 #: 函数表。ctx 版用于需要知道"我在哪个单元格"的函数（ROW/OFFSET/INDIRECT）
 FUNCS = {}
 _CTX_FUNCS = {}
 
+#: 错误检查类：允许错误值作为参数传入（与 Excel 一致）
+_RAW_FUNCS = {'ISERROR', 'ISERR', 'ISNA', 'ERROR.TYPE', 'TYPE'}
 
-def _reg(name, fn, ctx=False):
-    FUNCS[name] = _with_ctx(fn) if ctx else _plain(fn)
+
+def _reg(name, fn, ctx=False, raw=False):
+    if raw or name in _RAW_FUNCS:
+        FUNCS[name] = _raw(fn)
+    else:
+        FUNCS[name] = _with_ctx(fn) if ctx else _plain(fn)
 
 
 # 数学
@@ -1676,7 +1779,8 @@ for _n, _f in [
 # IF 系列：必须惰性求值，交给引擎特殊处理
 LAZY = {'IF', 'IFERROR', 'IFNA', 'IFS', 'SWITCH', 'SUMIF', 'SUMIFS',
         'COUNTIF', 'COUNTIFS', 'AVERAGEIF', 'AVERAGEIFS', 'MAXIFS', 'MINIFS',
-        'SUBTOTAL', 'AGGREGATE'}
+        'SUBTOTAL', 'AGGREGATE',
+        'ROW', 'COLUMN', 'ROWS', 'COLUMNS'}
 
 
 def is_func(name):

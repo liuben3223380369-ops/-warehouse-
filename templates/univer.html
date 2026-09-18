@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{ name }} · 表格</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='univer/univer.css') }}">
+{% for f in extra_css %}<link rel="stylesheet" href="{{ url_for('static', filename='univer/' + f) }}">
+{% endfor %}
 <style>
   html,body{margin:0;padding:0;height:100%;overflow:hidden;
     font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;}
@@ -16,6 +18,9 @@
   #bar .t{font-weight:600;font-size:13px;color:#1f2937;
     max-width:38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   #bar .sp{flex:1}
+  #bar #mods{font-size:11px;color:#16a34a;background:#f0fdf4;border:1px solid #bbf7d0;
+    border-radius:10px;padding:1px 8px;white-space:nowrap;max-width:34%;
+    overflow:hidden;text-overflow:ellipsis}
   #bar button{height:26px;padding:0 12px;font-size:12px;border-radius:5px;
     border:1px solid #d0d5dd;background:#fff;color:#344054;cursor:pointer;}
   #bar button:hover{background:#f4f6f8}
@@ -30,26 +35,118 @@
   .spin{width:26px;height:26px;border:3px solid #e3e6ea;border-top-color:#2563eb;
     border-radius:50%;animation:r .8s linear infinite}
   @keyframes r{to{transform:rotate(360deg)}}
+
+  /* 图表面板 */
+  #chartMask{display:none;position:fixed;inset:0;z-index:10001;
+    background:rgba(15,23,42,.45);align-items:center;justify-content:center;}
+  #chartMask.on{display:flex}
+  #chartPanel{width:min(880px,92vw);height:min(600px,86vh);background:#fff;
+    border-radius:10px;display:flex;flex-direction:column;overflow:hidden;
+    box-shadow:0 20px 50px rgba(0,0,0,.25)}
+  #chartHead{display:flex;align-items:center;gap:8px;padding:10px 14px;
+    border-bottom:1px solid #e3e6ea;font-size:13px;flex-wrap:wrap}
+  #chartHead .sp{flex:1}
+  #chartHead select,#chartHead button{height:28px;font-size:12px;border-radius:5px;
+    border:1px solid #d0d5dd;background:#fff;color:#344054;cursor:pointer;padding:0 10px}
+  #chartHead button.pri{background:#2563eb;border-color:#2563eb;color:#fff}
+  #chartHead label{font-size:12px;color:#475569;display:flex;align-items:center;gap:4px}
+  #chartTip{padding:6px 14px;font-size:12px;color:#64748b;border-bottom:1px solid #f1f5f9}
+  #chartTip.err{color:#b42318}
+  #chartBox{flex:1;min-height:0;padding:8px}
+
+  /* 透视图面板 */
+  #pivotMask{display:none;position:fixed;inset:0;z-index:10001;
+    background:rgba(15,23,42,.45);align-items:center;justify-content:center;}
+  #pivotMask.on{display:flex}
+  #pivotPanel{width:min(1080px,95vw);height:min(680px,90vh);background:#fff;
+    border-radius:10px;display:flex;flex-direction:column;overflow:hidden;
+    box-shadow:0 20px 50px rgba(0,0,0,.25)}
+  #pivotHead{display:flex;align-items:center;gap:8px;padding:10px 14px;
+    border-bottom:1px solid #e3e6ea;font-size:13px;flex-wrap:wrap}
+  #pivotHead .sp{flex:1}
+  #pivotHead select,#pivotHead button{height:28px;font-size:12px;border-radius:5px;
+    border:1px solid #d0d5dd;background:#fff;color:#344054;cursor:pointer;padding:0 8px}
+  #pivotHead button.pri{background:#2563eb;border-color:#2563eb;color:#fff}
+  #pivotHead label{font-size:12px;color:#475569;display:flex;align-items:center;gap:4px}
+  #pivotTip{padding:6px 14px;font-size:12px;color:#64748b;border-bottom:1px solid #f1f5f9}
+  #pivotTip.err{color:#b42318}
+  #pivotBox{flex:1;min-height:0;padding:8px;overflow:auto}
 </style>
 </head>
 <body>
 
 <div id="bar">
   <span class="t">{{ name }}</span>
+  <span id="mods" title=""></span>
   <span class="sp"></span>
   <span id="msg"></span>
   <button onclick="doSave()" class="pri" type="button">保存</button>
+  <button onclick="doChart()" type="button">📊 图表</button>
+  <button onclick="doPivot()" type="button">🔀 透视</button>
   <button onclick="location.href='/sheet/{{ bid }}'" type="button">旧版表格</button>
   <button onclick="location.href='/sheet'" type="button">返回</button>
 </div>
 
 <div id="app"></div>
+
+<!-- 图表面板：选中区域 → ECharts 渲染（社区开源方案，替代 Univer Pro 图表插件） -->
+<div id="chartMask">
+  <div id="chartPanel">
+    <div id="chartHead">
+      <b>图表（基于选中区域）</b>
+      <span class="sp"></span>
+      <select id="chartType">
+        <option value="bar">柱状图</option>
+        <option value="line">折线图</option>
+        <option value="pie">饼图</option>
+        <option value="area">面积图</option>
+        <option value="scatter">散点图</option>
+      </select>
+      <label id="chartHdrWrap"><input type="checkbox" id="chartHdr" checked> 首行为表头</label>
+      <button onclick="renderChart()" class="pri" type="button">生成</button>
+      <button onclick="exportChart()" type="button">导出 PNG</button>
+      <button onclick="closeChart()" type="button">关闭</button>
+    </div>
+    <div id="chartTip"></div>
+    <div id="chartBox"></div>
+  </div>
+</div>
+<!-- 透视面板：选中区域 → VTable 透视表（MIT 开源，补 Univer Pro 才有的透视能力） -->
+<div id="pivotMask">
+  <div id="pivotPanel">
+    <div id="pivotHead">
+      <b>透视分析（基于选中区域）</b>
+      <span class="sp"></span>
+      <label>行
+        <select id="pvRow"></select>
+      </label>
+      <label>列
+        <select id="pvCol"></select>
+      </label>
+      <label>值
+        <select id="pvVal"></select>
+      </label>
+      <select id="pvAgg">
+        <option value="sum">求和</option>
+        <option value="avg">平均</option>
+        <option value="max">最大</option>
+        <option value="min">最小</option>
+        <option value="count">计数</option>
+      </select>
+      <button onclick="renderPivot()" class="pri" type="button">生成</button>
+      <button onclick="closePivot()" type="button">关闭</button>
+    </div>
+    <div id="pivotTip"></div>
+    <div id="pivotBox"></div>
+  </div>
+</div>
 <div id="boot"><div class="spin"></div><div>正在加载表格引擎…</div></div>
 
 <script src="{{ url_for('static', filename='univer/react.js') }}"></script>
 <script src="{{ url_for('static', filename='univer/react-dom.js') }}"></script>
 <script src="{{ url_for('static', filename='univer/rxjs.js') }}"></script>
 <script src="{{ url_for('static', filename='univer/echarts.js') }}"></script>
+{# VTable（2.3MB）按需加载：只在点「透视」时才插入，避免拖慢表格页首次打开 #}
 
 <script>
 /* UMD 场景适配：Univer 需要 ReactJSXRuntime，而 React 18 的 UMD 不带它 */
@@ -81,7 +178,11 @@
 </script>
 <script src="{{ url_for('static', filename='univer/univer-presets.js') }}"></script>
 <script src="{{ url_for('static', filename='univer/univer-sheets-core.js') }}"></script>
+{% for f in extra_js %}<script src="{{ url_for('static', filename='univer/' + f) }}"></script>
+{% endfor %}
 <script src="{{ url_for('static', filename='univer/univer-zh-CN.js') }}"></script>
+{% for f in extra_locale %}<script src="{{ url_for('static', filename='univer/' + f) }}"></script>
+{% endfor %}
 
 
 <script>
@@ -126,11 +227,345 @@ function doSave() {
   }
 }
 
+/* ------------------------------------------------------------------ 图表
+   Univer 社区版不带图表（官方图表在 @univerjs-pro/sheets-chart，属商业授权，
+   未授权只有 4 种类型且带水印）。这里用 Apache-2.0 的 ECharts 补齐：
+   读取当前选中区域 → 构造 option → 渲染。 */
+var chartInst = null;
+var chartRows = null;
+
+function chartTip(msg, isErr) {
+  var t = document.getElementById('chartTip');
+  if (!t) return;
+  t.textContent = msg || '';
+  t.className = isErr ? 'err' : '';
+}
+
+/* 读取选中区域。Univer 各版本 facade 命名略有差异，逐个试。 */
+function readSelection() {
+  if (!uni) return null;
+  var sheet = null;
+  try {
+    var wb = uni.getActiveWorkbook();
+    if (wb) sheet = wb.getActiveSheet();
+  } catch (e) { /* 退到下面 */ }
+  if (!sheet) return null;
+
+  var vals = null;
+  var apis = ['getActiveRange', 'getSelection', 'getActiveRanges'];
+  for (var i = 0; i < apis.length; i++) {
+    try {
+      if (typeof sheet[apis[i]] !== 'function') continue;
+      var r = sheet[apis[i]]();
+      if (!r) continue;
+      if (Array.isArray(r)) r = r[0];          /* getActiveRanges 返回数组 */
+      if (!r) continue;
+      if (typeof r.getValues === 'function') vals = r.getValues();
+      else if (typeof r.getValuesAsync === 'function') vals = r.getValuesAsync();
+      if (vals) break;
+    } catch (e2) { /* 换下一个 API */ }
+  }
+  if (!vals) return null;
+  if (vals && typeof vals.then === 'function') return null;  /* 异步的不等了 */
+  return vals;
+}
+
+function doChart() {
+  var mask = document.getElementById('chartMask');
+  if (!mask) return;
+  if (!uni) { alert('表格还没准备好'); return; }
+  var rows = readSelection();
+  chartRows = rows;
+  mask.classList.add('on');
+  if (!rows || !rows.length) {
+    chartTip('没读到选中区域。请先用鼠标框选一片数据（含表头），再点「图表」。', true);
+    document.getElementById('chartBox').innerHTML = '';
+    return;
+  }
+  chartTip('已读取 ' + rows.length + ' 行 × ' + (rows[0] ? rows[0].length : 0) + ' 列，点「生成」出图。');
+  renderChart();
+}
+
+function closeChart() {
+  var mask = document.getElementById('chartMask');
+  if (mask) mask.classList.remove('on');
+  if (chartInst) { try { chartInst.dispose(); } catch (e) {} chartInst = null; }
+}
+
+/* 把二维数组转成 ECharts option。
+   约定：第一列是类目(X轴)，其余列是系列(Y轴)；首行可作表头。 */
+function buildOption(rows, type, useHeader) {
+  var tbl = [];
+  for (var i = 0; i < rows.length; i++) {
+    var r = [];
+    for (var j = 0; j < (rows[i] ? rows[i].length : 0); j++) {
+      var v = rows[i][j];
+      r.push(v && typeof v === 'object' && 'v' in v ? v.v : v);   /* Univer 单元格是 {v:值} */
+    }
+    tbl.push(r);
+  }
+  var header = [], body = tbl;
+  if (useHeader && tbl.length) { header = tbl[0]; body = tbl.slice(1); }
+
+  var cats = [];
+  for (var k = 0; k < body.length; k++) cats.push(body[k][0]);
+
+  var maxCol = 0;
+  for (var m = 0; m < tbl.length; m++) { if (tbl[m].length > maxCol) maxCol = tbl[m].length; }
+  var series = [];
+  for (var c = 1; c < maxCol; c++) {
+    var data = [];
+    for (var n = 0; n < body.length; n++) {
+      var raw = body[n][c];
+      var num = (raw === '' || raw === null || raw === undefined) ? null : Number(raw);
+      data.push(isNaN(num) ? null : num);
+    }
+    series.push({
+      name: (header[c] || ('列' + (c + 1))) + '',
+      type: (type === 'area') ? 'line' : type,
+      data: data,
+      areaStyle: type === 'area' ? {} : undefined,
+      smooth: false
+    });
+  }
+  if (series.length === 0) return null;
+
+  /* 饼图只取第一个系列 */
+  if (type === 'pie') {
+    var pd = [];
+    for (var p = 0; p < cats.length; p++) {
+      var pv = Number(body[p] && body[p][1]);
+      if (!isNaN(pv)) pd.push({ name: String(cats[p]), value: pv });
+    }
+    if (!pd.length) return null;
+    return {
+      tooltip: { trigger: 'item' },
+      legend: { top: 8 },
+      series: [{ type: 'pie', radius: '60%', data: pd, center: ['50%', '56%'] }]
+    };
+  }
+  if (type === 'scatter') {
+    var sd = [];
+    for (var q = 0; q < body.length; q++) {
+      var qv = Number(body[q] && body[q][1]);
+      if (!isNaN(qv)) sd.push([q, qv]);
+    }
+    if (!sd.length) return null;
+    return {
+      tooltip: { trigger: 'axis' },
+      xAxis: { type: 'category', data: cats },
+      yAxis: { type: 'value' },
+      series: [{ type: 'scatter', data: sd, name: (header[1] || '值') + '' }]
+    };
+  }
+  return {
+    tooltip: { trigger: 'axis' },
+    legend: { top: 8, data: series.map(function (s) { return s.name; }) },
+    grid: { left: 50, right: 24, top: 50, bottom: 40 },
+    xAxis: { type: 'category', data: cats, name: (header[0] || '') + '' },
+    yAxis: { type: 'value' },
+    series: series
+  };
+}
+
+function renderChart() {
+  var box = document.getElementById('chartBox');
+  if (!box) return;
+  if (typeof echarts === 'undefined') { chartTip('图表库没加载出来（echarts.js 缺失）。', true); return; }
+  if (!chartRows || !chartRows.length) { chartTip('没有数据。请先框选一片区域再点「图表」。', true); return; }
+
+  var type = (document.getElementById('chartType') || {}).value || 'bar';
+  var useHdr = (document.getElementById('chartHdr') || {}).checked;
+  var opt = buildOption(chartRows, type, !!useHdr);
+  if (!opt) { chartTip('数据里没找到可用的数值列。第一列作类目，第二列起需是数字。', true); return; }
+
+  if (chartInst) { try { chartInst.dispose(); } catch (e) {} }
+  chartInst = echarts.init(box);
+  chartInst.setOption(opt, true);
+  chartTip('已生成 ' + { bar: '柱状图', line: '折线图', pie: '饼图', area: '面积图', scatter: '散点图' }[type] +
+    '（' + chartRows.length + ' 行）');
+}
+
+function exportChart() {
+  if (!chartInst) { chartTip('先生成图表再导出。', true); return; }
+  try {
+    var url = chartInst.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: '#fff' });
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = '{{ name }}_图表.png';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    chartTip('已导出 PNG。');
+  } catch (e) { chartTip('导出失败：' + (e && e.message ? e.message : e), true); }
+}
+
+/* ------------------------------------------------------------------ 透视
+   Univer 的透视表在 Pro 商业版才有。这里用 MIT 授权的 VTable 补齐：
+   读取选中区域 → 选行/列维度与指标 → 渲染透视表。 */
+var pivotInst = null;
+var pivotData = null;      /* {header:[...], body:[[...]]} */
+
+function pivotTip(msg, isErr) {
+  var t = document.getElementById('pivotTip');
+  if (!t) return;
+  t.textContent = msg || '';
+  t.className = isErr ? 'err' : '';
+}
+
+/* Univer 单元格是 {v:值}，统一取 v */
+function pvVal(v) {
+  if (v && typeof v === 'object' && 'v' in v) return v.v;
+  return v;
+}
+/* 能转成数字就转，便于聚合；转不了原样返回 */
+function pvNum(v) {
+  var s = pvVal(v);
+  if (s === '' || s === null || s === undefined) return null;
+  var n = Number(s);
+  return isNaN(n) ? s : n;
+}
+
+/* VTable 约 2.3MB，不随页面直接引入——第一次点透视时才加载，之后复用。 */
+var VT_URL = '{{ url_for('static', filename='vendor/vtable.min.js') }}';
+var vtLoading = false;
+
+function withVTable(cb) {
+  if (typeof VTable !== 'undefined' && VTable.PivotTable) { cb(); return; }
+  if (vtLoading) { pivotTip('透视组件还在加载，请稍候…'); return; }
+  vtLoading = true;
+  pivotTip('正在加载透视组件（首次约几秒）…');
+  var s = document.createElement('script');
+  s.src = VT_URL;
+  s.onload = function () {
+    vtLoading = false;
+    if (typeof VTable === 'undefined' || !VTable.PivotTable) {
+      pivotTip('透视组件没随包安装（VTable 缺失）。用完整包可启用。', true);
+      return;
+    }
+    cb();
+  };
+  s.onerror = function () {
+    vtLoading = false;
+    pivotTip('透视组件加载失败（离线资源缺失）。', true);
+  };
+  document.body.appendChild(s);
+}
+
+function doPivot() {
+  var mask = document.getElementById('pivotMask');
+  if (!mask) return;
+  if (!uni) { alert('表格还没准备好'); return; }
+  mask.classList.add('on');
+  pivotTip('');
+  withVTable(function () { buildPivot(); });
+}
+
+/* 读选中区域 → 填下拉 → 出表 */
+function buildPivot() {
+  var rows = readSelection();
+  if (!rows || !rows.length) {
+    pivotTip('没读到选中区域。请先用鼠标框选一片数据（含表头），再点「透视」。', true);
+    document.getElementById('pivotBox').innerHTML = '';
+    return;
+  }
+
+  /* 首行当表头 */
+  var header = [], body = rows;
+  var first = [];
+  for (var j = 0; j < (rows[0] ? rows[0].length : 0); j++) first.push(pvVal(rows[0][j]));
+  var looksHeader = true;
+  for (var k = 0; k < first.length; k++) {
+    if (first[k] === '' || first[k] === null || first[k] === undefined) { looksHeader = false; break; }
+  }
+  if (looksHeader) { header = first; body = rows.slice(1); }
+  for (var h = 0; h < header.length; h++) {
+    if (header[h] === '' || header[h] === null || header[h] === undefined) header[h] = '列' + (h + 1);
+  }
+  pivotData = { header: header, body: body };
+
+  fillSelect('pvRow', header, 0);
+  fillSelect('pvCol', header, -1);
+  fillSelect('pvVal', header, header.length > 1 ? 1 : 0);
+  pivotTip('已读取 ' + body.length + ' 行 × ' + header.length + ' 列，选好维度点「生成」。');
+  renderPivot();
+}
+
+function fillSelect(id, opts, sel) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  var keep = el.value;
+  el.innerHTML = '';
+  if (id === 'pvCol') {
+    var o0 = document.createElement('option');
+    o0.value = ''; o0.textContent = '（无）';
+    el.appendChild(o0);
+  }
+  for (var i = 0; i < opts.length; i++) {
+    var o = document.createElement('option');
+    o.value = opts[i]; o.textContent = opts[i];
+    el.appendChild(o);
+  }
+  if (keep && el.querySelector('option[value="' + String(keep).replace(/"/g, '') + '"]')) el.value = keep;
+  else if (sel >= 0 && opts[sel] !== undefined) el.value = opts[sel];
+}
+
+function renderPivot() {
+  var box = document.getElementById('pivotBox');
+  if (!box || !pivotData) return;
+  var rowKey = (document.getElementById('pvRow') || {}).value || '';
+  var colKey = (document.getElementById('pvCol') || {}).value || '';
+  var valKey = (document.getElementById('pvVal') || {}).value || '';
+  var agg = (document.getElementById('pvAgg') || {}).value || 'sum';
+  if (!valKey) { pivotTip('请先选一个「值」字段。', true); return; }
+
+  var header = pivotData.header, body = pivotData.body;
+  var recs = [];
+  for (var i = 0; i < body.length; i++) {
+    var o = {};
+    for (var c = 0; c < header.length; c++) o[header[c]] = pvNum(body[i] ? body[i][c] : null);
+    recs.push(o);
+  }
+
+  if (pivotInst) { try { pivotInst.release(); } catch (e) {} pivotInst = null; }
+  box.innerHTML = '';
+
+  /* VTable 新旧版本字段命名不同（dimensionKey/indicatorKey vs field），两个都给 */
+  var ind = {
+    indicatorKey: valKey, field: valKey, title: valKey,
+    width: 'auto', aggregationType: agg, format: recs.length ? undefined : undefined
+  };
+  var opt = {
+    records: recs,
+    rows: rowKey ? [{ dimensionKey: rowKey, field: rowKey, title: rowKey, width: 'auto' }] : [],
+    columns: colKey ? [{ dimensionKey: colKey, field: colKey, title: colKey, width: 'auto' }] : [],
+    indicators: [ind],
+    indicatorsAsCol: false,
+    defaultRowHeight: 28,
+    defaultHeaderRowHeight: 32,
+    widthMode: 'standard',
+    autoWrapText: false,
+    theme: VTable.themes ? VTable.themes.DEFAULT : undefined
+  };
+  try {
+    pivotInst = new VTable.PivotTable(box, opt);
+    pivotTip('透视表已生成：行=' + (rowKey || '（无）') + '，列=' + (colKey || '（无）') +
+             '，值=' + valKey + '（' + agg + '），共 ' + recs.length + ' 行源数据。');
+  } catch (e) {
+    pivotTip('渲染失败：' + (e && e.message ? e.message : e), true);
+  }
+}
+
+function closePivot() {
+  var mask = document.getElementById('pivotMask');
+  if (mask) mask.classList.remove('on');
+  if (pivotInst) { try { pivotInst.release(); } catch (e) {} pivotInst = null; }
+}
+
 /* Ctrl+S 保存 */
 document.addEventListener('keydown', function (e) {
   if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
     e.preventDefault(); doSave();
   }
+  if (e.key === 'Escape') { closeChart(); closePivot(); }
 });
 
 /* 收集页面上所有 Univer 命名空间。不同构建版本挂载的全局名不完全一致，
@@ -180,24 +615,79 @@ document.addEventListener('keydown', function (e) {
     var zh = window.UniverPresetSheetsCoreZhCN ||
              pick(function (n) { return n.UniverPresetSheetsCoreZhCN; });
 
+    /* 各能力包的中文包：逐个并入，坏一个不影响其余 */
+    var extraZh = [];
+    try {
+      ({{ extra_locale_globals|safe }} || []).forEach(function (g) {
+        if (window[g]) extraZh.push(window[g]);
+      });
+    } catch (eL) { /* 忽略 */ }
+
     var locales = {};
-    if (zh) {
+    if (zh || extraZh.length) {
+      var all = [];
+      if (zh) all.push(zh);
+      all = all.concat(extraZh);
       try {
-        locales[LocaleType.ZH_CN] = mergeLocales ? mergeLocales(zh) : zh;
+        locales[LocaleType.ZH_CN] = mergeLocales
+          ? mergeLocales.apply(null, all) : (all.length === 1 ? all[0] : all[0]);
       } catch (e3) {
-        locales[LocaleType.ZH_CN] = zh;
+        locales[LocaleType.ZH_CN] = zh || all[0];
       }
     }
 
-    var r = createUniver({
-      locale: LocaleType.ZH_CN,
-      locales: locales,
-      presets: [ PresetCtor({ container: 'app' }) ]
-    });
+    /* 能力包预设：任何一个取不到或构造失败就跳过，不让整页白屏 */
+    var loaded = [], extra = [];
+    try {
+      ({{ extra_mods|safe }} || []).forEach(function (m) {
+        /* 插件形态：这类包没有预设，只有底层 Plugin，手工包成 {plugins:[...]}。
+           若误写成预设名，下面 typeof 判断会静默跳过——功能没了还不报错。 */
+        if (Array.isArray(m[2])) {
+          var pl = [];
+          m[2].forEach(function (pe) {
+            var n = window[pe[0]], c = n && n[pe[1]];
+            if (typeof c === 'function') pl.push(c);
+          });
+          if (pl.length) { extra.push({ plugins: pl }); loaded.push(m[0]); }
+          return;
+        }
+        var ns = window[m[1]], ctor = ns && ns[m[2]];
+        if (typeof ctor !== 'function') return;
+        try {
+          var p = ctor();
+          if (p) { extra.push(p); loaded.push(m[0]); }
+        } catch (eM) { /* 该能力不可用，跳过 */ }
+      });
+    } catch (eP) { /* 忽略 */ }
+
+    var r;
+    try {
+      r = createUniver({
+        locale: LocaleType.ZH_CN,
+        locales: locales,
+        presets: [ PresetCtor({ container: 'app' }) ].concat(extra)
+      });
+    } catch (eX) {
+      /* 某个能力包跟核心冲突（例如重复注册同名插件）时，退回只装核心，
+         保住表格本身能用，而不是整页白屏 */
+      try { loaded = []; } catch (eI) {}
+      r = createUniver({
+        locale: LocaleType.ZH_CN,
+        locales: locales,
+        presets: [ PresetCtor({ container: 'app' }) ]
+      });
+    }
     uni = r.univerAPI || r.univer;
     uni.createWorkbook(SNAPSHOT);
     var b = document.getElementById('boot');
     if (b) b.style.display = 'none';
+    var me = document.getElementById('mods');
+    if (me) {
+      if (loaded.length) {
+        me.textContent = '已装 ' + loaded.length + ' 项';
+        me.title = '已加载能力：' + loaded.join('、');
+      } else { me.style.display = 'none'; }
+    }
   } catch (e) {
     var dep = [];
     dep.push('React=' + (window.React ? 'ok' : '缺'));
