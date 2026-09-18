@@ -101,7 +101,7 @@ jobs:
           VER="${GITHUB_REF_NAME#v}"
           # 手动运行工作流时没有 tag，就退回读代码里的 __version__
           if [ -z "$VER" ] || [ "$VER" = "$GITHUB_REF_NAME" ]; then
-            VER="$(python3 -c "import re,io;print(re.search(r\"__version__\s*=\s*['\\"]([^'\"]+)\",io.open('wh/__init__.py',encoding='utf-8').read()).group(1))")"
+            VER="$(grep -m1 '__version__' wh/__init__.py | tr -cd '0-9.')"
           fi
           CODE="$(echo "$VER" | tr -d '.' | tr -cd '0-9')"
           [ -z "$CODE" ] && CODE=1
