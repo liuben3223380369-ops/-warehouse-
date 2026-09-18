@@ -59,14 +59,26 @@ jobs:
         # 只压 exe 会得到一个打不开的便携版，所以整个文件夹一起压。
         shell: bash
         run: |
+          set -e
           cd dist
           rm -f ../仓库管理系统-windows.zip
           7z a -y -r ../仓库管理系统-windows.zip "仓库管理系统" || \
             powershell -Command "Compress-Archive -Path '仓库管理系统' -DestinationPath '../仓库管理系统-windows.zip' -Force"
           cd ..
-          echo "便携版大小：$(stat -c%s 仓库管理系统-windows.zip) 字节"
-          7z l 仓库管理系统-windows.zip | grep "仓库管理系统.exe" || \
-            (echo "::error::压缩包里没有 exe" && exit 1)
+          SZ=$(stat -c%s 仓库管理系统-windows.zip 2>/dev/null || echo 0)
+          echo "便携版大小：${SZ} 字节"
+          # 校验只用 ASCII 正则：7-Zip 在中文 Windows 控制台按 GBK 输出文件名，
+          # Git bash 按 UTF-8 读取会乱码，直接 grep 中文必然匹配不到（会误判失败）。
+          # 结尾 .exe 是纯 ASCII，不受编码影响。
+          CNT=$(7z l -ba 仓库管理系统-windows.zip 2>/dev/null | grep -c '\.exe$' || true)
+          echo "压缩包内 exe 个数：${CNT:-0}"
+          if [ "${CNT:-0}" -ge 1 ] && [ "${SZ:-0}" -gt 10000000 ]; then
+            echo "便携版校验通过"
+          else
+            echo "::error::便携版校验失败：大小 ${SZ} 字节，exe ${CNT:-0} 个"
+            7z l -ba 仓库管理系统-windows.zip 2>/dev/null | head -5 || true
+            exit 1
+          fi
 
       - name: 生成安装程序
         shell: bash
