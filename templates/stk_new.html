@@ -8,12 +8,6 @@
   <label>盘点日期（基准日）</label>
   <input type="date" name="sdate" value="{{today}}" required>
 
-  <label>盘点范围（按模板筛，可不选 = 全部物料）</label>
-  <select name="tpl_id">
-    <option value="0">全部物料</option>
-    {% for t in tpls %}<option value="{{t.id}}">{{t.name}}</option>{% endfor %}
-  </select>
-
   <label>范围说明（写给自己看的，如 A区 / 卷料类 / 全盘）</label>
   <input type="text" name="scope" placeholder="选填，如 A 区货架">
 

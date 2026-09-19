@@ -36,31 +36,6 @@
 </div>
 {% endif %}
 
-{% if groups and groups|length > 0 %}
-<div class="card">
-  <b>各模板分别统计</b>
-  <table style="margin-top:6px">
-    <tr><th>模板</th><th>物料</th><th>本月进</th><th>本月出</th><th>月末结存</th></tr>
-    {% for g in groups %}
-    <tr>
-      <td>{{ g.name }}</td>
-      <td>{{ g.n }} 种</td>
-      <td>{{ '{:g}'.format(g.tin) }}</td>
-      <td>{{ '{:g}'.format(g.tout) }}</td>
-      <td>{{ '{:g}'.format(g.tend) }}</td>
-    </tr>
-    {% endfor %}
-    <tr style="font-weight:600;background:#f5f7fa">
-      <td>合计</td><td>{{ groups|sum(attribute='n') }} 种</td>
-      <td>{{ '{:g}'.format(tot_in) }}</td><td>{{ '{:g}'.format(tot_out) }}</td><td>—</td>
-    </tr>
-  </table>
-  <div style="margin-top:4px;color:#5a6b7c;font-size:12px">
-    下面是所有模板的物料混在一起的原版表；上面按模板拆开看。
-  </div>
-</div>
-{% endif %}
-
 <form class="card" method="get">
   <label>选择月份</label>
   <input type="month" name="m" value="{{m}}">

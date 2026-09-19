@@ -71,24 +71,12 @@ def export_po_xlsx():
         fn = '采购单汇总'
     elif kind == 'items':
         ws.title = '采购明细'
-        # 自定义列：这批明细可能来自不同模板，先把各模板的自定义列并起来。
-        # 同名列（不同模板都叫"客户订单号"）合并成一列，避免导出一堆重复表头。
-        import json as _xj
-        _xmap = {}          # fid -> 表头名
-        _xorder = []        # 表头顺序
-        for _r in db.q("SELECT DISTINCT i.ptpl_id t FROM po_items i"
-                       " JOIN pos p ON p.id=i.po_id" + where +
-                       " AND i.ptpl_id IS NOT NULL"):
-            for _c in db.po_tpl_custom_cols(int(_r['t'])):
-                if _c['fid'] not in _xmap:
-                    _xmap[_c['fid']] = _c['label']
-                    _xorder.append(_c['fid'])
         # 「金额」= 数量×单价，单价可能是含税也可能是不含税（各单可不同），
         # 不标口径的话用户会拿它跟汇总表的「不含税金额」直接对，发现对不上还以为算错了。
         ws.append(['采购单号', '日期', '交期', '供应商', '物料名称', '规格', '单位',
                    '订购数', '单价', '金额', '单价口径', '已到货', '未到货', '状态',
                    '批次', '备注']
-                  + [_xmap[f] for f in _xorder])
+)
         sql = ("SELECT p.pono,p.odate,p.ddate,p.supplier,i.name,i.spec,i.unit,"
                " i.qty,i.price,i.note,p.status,i.batch,i.extra,p.price_tax,"
                " COALESCE(SUM(r.qty),0) rq FROM po_items i"
@@ -97,10 +85,6 @@ def export_po_xlsx():
                + where + " GROUP BY i.id ORDER BY p.odate DESC, i.id")
         for r in db.q(sql, *a):
             q = float(r['qty'] or 0); rq = float(r['rq'] or 0)
-            try:
-                _xv = _xj.loads(r['extra'] or '{}') or {}
-            except Exception:
-                _xv = {}
             # 口径缺省按含税处理，与 po_head() 的默认保持一致
             _ptax = r['price_tax']
             _ptax = 1 if _ptax is None else int(_ptax)
@@ -108,8 +92,7 @@ def export_po_xlsx():
                        cv(r['name']), cv(r['spec']), cv(r['unit']),
                        q, float(r['price'] or 0), round(q * float(r['price'] or 0), 2),
                        '含税' if _ptax else '不含税',
-                       rq, round(q - rq, 2), cv(r['status']), cv(r['batch']), cv(r['note'])]
-                      + [cv(_xv.get(f, '')) for f in _xorder])
+                       rq, round(q - rq, 2), cv(r['status']), cv(r['batch']), cv(r['note'])])
         fn = '采购明细'
     elif kind == 'recv':
         ws.title = '到货流水'

@@ -2,10 +2,11 @@
 """求值原语：上下文、运算符、条件匹配、引用取点
 
 本模块是最底层，不依赖任何惰性函数，只依赖 kernel。"""
+import math
 import re
 
 from ..kernel import addr as A          # noqa: F401  地址解析
-from ..kernel import to_num, to_text, is_err   # noqa: F401
+from ..kernel import to_num, to_text, is_err, is_blank   # noqa: F401
 
 def _clip_used(sh, r1, c1, r2, c2):
     """整行/整列引用裁到已用范围，避免遍历上百万格"""
@@ -83,27 +84,40 @@ def _binop(op, a, b):
             x, y = to_text(a).lower(), to_text(b).lower()
         return {'=': x == y, '<>': x != y, '<': x < y,
                 '>': x > y, '<=': x <= y, '>=': x >= y}[op]
+    # v3.106：文本参与算术 —— 空白当 0（与 Excel 一致），
+    # 但「有内容却不是数字」必须报 #VALUE!，不能静默当 0。
+    # 之前一律补 0.0，表格里混进表头文字或"待定"这类占位时，
+    # =A1*B1 会悄悄算出 0，金额、平米全错且毫无提示。
     if na is None:
+        if not is_blank(a):
+            return '#VALUE!'
         na = 0.0
     if nb is None:
+        if not is_blank(b):
+            return '#VALUE!'
         nb = 0.0
     if op == '+':
-        return na + nb
-    if op == '-':
-        return na - nb
-    if op == '*':
-        return na * nb
-    if op == '/':
+        r = na + nb
+    elif op == '-':
+        r = na - nb
+    elif op == '*':
+        r = na * nb
+    elif op == '/':
         return na / nb if nb else '#DIV/0!'
-    if op == '^':
+    elif op == '^':
         try:
             r = na ** nb
         except (OverflowError, ValueError, ZeroDivisionError):
             return '#NUM!'
         if isinstance(r, complex):
             return '#NUM!'
-        return float(r)
-    return '#NAME?'
+    else:
+        return '#NAME?'
+    # 溢出：9e300*9e300 会变成 inf，继续参与运算会扩散成奇怪结果，
+    # Excel 在此返回 #NUM!。
+    if isinstance(r, float) and (math.isnan(r) or math.isinf(r)):
+        return '#NUM!'
+    return float(r)
 
 def _crit_matcher(crit):
     """'>10' / '<>苹果' / '5' / '苹果' → 判断函数"""

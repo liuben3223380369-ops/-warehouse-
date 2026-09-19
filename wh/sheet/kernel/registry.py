@@ -187,13 +187,27 @@ from .text import (
     _value,
 )
 
+def _guard(v):
+    """溢出保护（v3.106）：inf / nan 一律转成 #NUM!，不许往外传。
+
+    为什么放在包装层而不是逐个函数里补：
+        算术层（engine/ctx.py）已经挡住 9e300*9e300 这类，但函数层没有 ——
+        =SUM(B4:B5) 装两个 1e308 照样算出 inf。inf 一旦落进格子，
+        后面 =C1*2、=SUM(C:C) 全跟着变成 inf，越算越离谱且毫无提示。
+        逐函数补会漏（175 个函数），统一在出口挡一次才拦得住。
+    """
+    if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+        return '#NUM!'
+    return v
+
+
 def _plain(f):
     """普通函数：参数全部先求值"""
     def g(ctx, *args):
         e = first_err(*args)
         if e:
             return e
-        return f(*args)
+        return _guard(f(*args))
     return g
 
 
@@ -202,7 +216,7 @@ def _with_ctx(f):
         e = first_err(*args)
         if e:
             return e
-        return f(ctx, *args)
+        return _guard(f(ctx, *args))
     return g
 
 

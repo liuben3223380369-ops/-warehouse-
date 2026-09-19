@@ -51,15 +51,6 @@ def sheet_new():
     return redirect(url_for('sheet_open', bid=bid))
 
 
-@bp.route('/sheet/ref', methods=['POST'])
-def sheet_ref():
-    """把在用的库存模板 / 采购模板转成参考表（只读快照）。"""
-    ok, skip, notes = ref.convert_all(
-        with_batch=(request.form.get('no_batch') != '1'))
-    msg = ('已生成 %d 份参考表' % ok) if ok else '没有可转换的模板'
-    return redirect(url_for('sheet_index', msg=msg, n=skip))
-
-
 @bp.route('/sheet/<int:bid>')
 def sheet_open(bid):
     book, st = _load(bid)

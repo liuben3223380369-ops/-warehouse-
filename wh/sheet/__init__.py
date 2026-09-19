@@ -9,14 +9,13 @@
     ops/      分组 · 撤销 · 进阶动作
     web/      路由 · Univer 前端集成
     batch.py  批次号（A 列自动编号）
-    ref.py    参考模板（把在用模板摊成电子表格）
 
 依赖方向严格自下而上：web → ops → io → engine → kernel，
 下层不认识上层。kernel 零业务耦合，可整块独立运行。
 """
 
 from . import kernel, engine, io, ops          # noqa: E402
-from . import batch, ref                        # noqa: E402
+from . import batch                             # noqa: E402
 from . import web                               # noqa: E402
 
-__all__ = ['kernel', 'engine', 'io', 'ops', 'batch', 'ref', 'web']
+__all__ = ['kernel', 'engine', 'io', 'ops', 'batch', 'web']

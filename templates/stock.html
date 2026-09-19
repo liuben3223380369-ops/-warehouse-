@@ -3,17 +3,6 @@
 {% block h1 %}实时库存{% endblock %}
 {% block sub %}期初 + 入库 − 出库 · 点表头可排序{% endblock %}
 {% block body %}
-{% if TPLS %}
-<div class="card" style="padding:8px 10px">
-  <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-    <a class="btn s {{ '' if not tid else 'o' }}" href="{{ url_for('stock', f=f, kw=kw) }}">全部模板</a>
-    {% for t in TPLS %}
-      <a class="btn s {{ '' if t.id==tid else 'o' }}" href="{{ url_for('stock', tpl=t.id, f=f, kw=kw) }}">{{ t.name }}</a>
-    {% endfor %}
-  </div>
-</div>
-{% endif %}
-
 <form class="card" method="get">
   <label>模糊搜索（名称 / 料号 / 供应商 / 类型 / 规格，不分大小写）</label>
   <input type="text" name="kw" value="{{kw}}" placeholder="如 黑化 / CPDR / 250">

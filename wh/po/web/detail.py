@@ -5,7 +5,7 @@
 """
 from flask import redirect, render_template, request, url_for
 from .common import _po_sync
-from .new import _mat_choices, _po_item_extra
+from .new import _mat_choices
 from .. import bp
 from ...core import db
 from ...core.util import (num, take_nonce, today)
@@ -35,39 +35,17 @@ def po_detail(po_id):
             d['xv'] = _json.loads(d.get('extra') or '{}') or {}
         except Exception:
             d['xv'] = {}
-        d['xcols'] = []
-        _pt = int(d.get('ptpl_id') or 0)
-        if _pt:
-            for _c in db.po_tpl_custom_cols(_pt):
-                _v = d['xv'].get(_c['fid'], '')
-                if _v not in ('', None):
-                    d['xcols'].append((_c['label'], _v))
         items.append(d)
     recs = db.q("SELECT r.*, i.name, i.unit FROM po_receipts r JOIN po_items i"
                 " ON i.id=r.item_id WHERE i.po_id=? ORDER BY r.rdate DESC, r.id DESC", po_id)
     pays = db.q("SELECT * FROM po_payments WHERE po_id=? ORDER BY pdate DESC, id DESC", po_id)
     t = head.po_totals(po_id)
     owed_amt, recv_total = head.owed(po_id)
-    # 这张单用到的采购模板（明细可能来自不同模板，取第一条的做显示）
-    # 模板优先取单头记的（建单时选的那套），没有再退到明细上带的
-    # sqlite3.Row 没有 .get()，取值前先确认这列存在（老库可能还没迁移）
-    _ptid = 0
-    try:
-        _ptid = int(po['potpl_id'] or 0)
-    except (IndexError, KeyError, TypeError, ValueError):
-        _ptid = 0
-    _ptpl = db.po_tpl(_ptid) if _ptid else None
-    if not _ptpl:
-        _pused = {int(i.get('ptpl_id') or 0) for i in items if i.get('ptpl_id')}
-        if _pused:
-            _ptpl = db.po_tpl(sorted(_pused)[0])
     return render_template('po.html', po=po, items=items, recs=recs, pays=pays,
                            t=t, paid=head.paid_amount(po_id),
                            owed=owed_amt, recv_total=recv_total,
                            STATUS=status.STATUS, today=today(), mats=_mat_choices(),
-                           units=db.unit_choices(), ptpl=_ptpl,
-                           xcols=(db.po_tpl_custom_cols(_ptpl['id'])
-                                  if _ptpl else []),
+                           units=db.unit_choices(),
                            msg=request.args.get('msg', ''), err=request.args.get('err', ''))
 
 @bp.route('/po/<int:po_id>/status', methods=['POST'])
@@ -117,14 +95,12 @@ def po_item_add(po_id):
         _sup = ''
     _bt = ((request.form.get('batch') or '').strip()
            or receive.new_item_batch(po_id))
-    _ptpl = int(request.form.get('ptpl') or 0) or None
-    _xv = _po_item_extra(_ptpl, request.form, 0, qty=q, price=p, conv=cv)
     db.run("INSERT INTO po_items(po_id,material_id,name,spec,unit,conv,stock_unit,"
            "qty,price,note,sig,batch,ptpl_id,extra) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
            po_id, mid, nm, _sp, _un, cv,
            (request.form.get('stock_unit') or '').strip(), q, p,
            (request.form.get('note') or '').strip(),
-           amount.item_sig(nm, _sp, _un, _sup), _bt, _ptpl, _xv)
+           amount.item_sig(nm, _sp, _un, _sup), _bt, 0, '')
     status.refresh_status(po_id)
     _po_sync(po_id)
     return redirect(url_for('po_detail', po_id=po_id,

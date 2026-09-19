@@ -10,16 +10,13 @@
     tbl.preview(path)               # 导入预览
     tbl.xlsx_response(...)          # 导出
 
-同时提供路由（模板制表 / 列映射 / 导出），由调度文件注册。
+不提供路由：模板管理与列映射配置已下线，表格由制表模块（wh.sheet）承载。
 """
-
-from ..core.router import Router
-bp = Router('table')
 
 from . import model, formula, parse, ops, render, helpers          # noqa: E402
 from . import form                                                  # noqa: E402
 from ..sheet import kernel as K                                  # noqa: E402  制表内核
-from ..sheet import batch, ref                                    # noqa: E402
+from ..sheet import batch                                         # noqa: E402
 from ..sheet.engine import core as sp_engine                       # noqa: E402
 from ..sheet import io as sp_io                                    # noqa: E402
 
@@ -42,8 +39,6 @@ from .form import (schema as form_schema, card_fields, label_map,          # noq
 from ..sheet.batch import (next_no as next_batch_no, peek as peek_batch_no,        # noqa
                            fill as fill_batch, label as batch_label, DEFAULT_ROWS,
                            PREFIX as BATCH_PREFIX)
-from ..sheet.ref import (from_stock_tpl, from_po_tpl,                              # noqa
-                         convert_all as convert_tpls)
 
 
 class _Facade(object):
@@ -104,16 +99,6 @@ class _Facade(object):
     def batch_label(self):
         return batch.label()
 
-    # --- 参考模板：把在用模板摊成电子表格 ---
-    def ref_from_stock_tpl(self, tid, with_batch=True):
-        return ref.from_stock_tpl(tid, with_batch)
-
-    def ref_from_po_tpl(self, tid, with_batch=True):
-        return ref.from_po_tpl(tid, with_batch)
-
-    def ref_all(self, with_batch=True):
-        return ref.convert_all(with_batch)
-
     # --- 电子表格引擎 ---
     def new_book(self, name='工作簿'):
         b = sp_engine.Workbook(name)
@@ -138,5 +123,3 @@ class _Facade(object):
 
 
 tbl = _Facade()
-
-from . import routes   # noqa: E402  路由挂在 bp 上，必须在 bp 之后导入

@@ -1,0 +1,79 @@
+{# 填写模块「显示哪些列」（v3.106）
+
+   用法：
+     {% from '_cols.html' import colbtn, colsbox %}
+     {{ colbtn('po', url_for('po_cols_cfg')) }}    ← 按钮，可放多处
+     {{ colsbox() }}                                ← 弹层，整页放一次
+
+   屏蔽掉的字段：表单上不出现，映射卡片里也不出现，也不写进表格。
+   表单字段 ≡ 映射字段（同一套 fid），所以屏蔽只需表达一次。
+#}
+{% macro colbtn(module, url) %}
+<button type="button" class="btn mini ghost" onclick="colOpen('{{module}}','{{url}}')">⚙ 显示列</button>
+{% endmacro %}
+
+{% macro colsbox() %}
+<div id="colmask" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.45);
+     z-index:80;overflow:auto;padding:16px">
+  <div style="max-width:420px;margin:0 auto;background:#fff;border-radius:14px;
+              padding:14px 14px 10px;box-shadow:0 8px 28px rgba(0,0,0,.22)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <b style="font-size:15px" id="colttl">显示哪些列</b>
+      <button type="button" onclick="colClose()"
+        style="background:none;border:0;font-size:20px;color:#98a2b3;padding:0 4px">×</button>
+    </div>
+    <div style="font-size:12px;color:#7a869a;margin-bottom:8px">
+      勾掉的列：表单上不显示，也不写进表格。字段和可映射的列是同一套，改这里两处同时生效。
+    </div>
+    <div id="collist" style="max-height:52vh;overflow:auto"></div>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <button type="button" class="btn s o" style="flex:0 0 auto;margin-top:0"
+        onclick="colAll(true)">全选</button>
+      <button type="button" class="btn s o" style="flex:0 0 auto;margin-top:0"
+        onclick="colAll(false)">全不选</button>
+      <span style="flex:1"></span>
+      <button type="button" class="btn s" style="margin-top:0" onclick="colSave()">保存</button>
+    </div>
+  </div>
+</div>
+<script>
+(function(){
+  if(window.__colInit) return;      // 入库/出库同页时只注入一次
+  window.__colInit = 1;
+  var _m = '', _u = '';
+  window.colOpen = function(m, u){
+    _m = m; _u = u;
+    fetch(u + '?m=' + encodeURIComponent(m)).then(function(r){return r.json();})
+      .then(function(d){
+        document.getElementById('colttl').textContent = '显示哪些列 · ' + (d.name||m);
+        var h = '';
+        (d.fields||[]).forEach(function(f){
+          h += '<label style="display:flex;align-items:center;gap:8px;padding:7px 4px;'
+             + 'border-bottom:1px solid #f2f4f7;font-size:14px">'
+             + '<input type="checkbox" class="colcb" value="' + f.fid + '"'
+             + (f.hide ? '' : ' checked') + ' style="width:18px;height:18px">'
+             + '<span>' + f.label + '</span></label>';
+        });
+        document.getElementById('collist').innerHTML = h;
+        document.getElementById('colmask').style.display = 'block';
+      });
+  };
+  window.colClose = function(){ document.getElementById('colmask').style.display = 'none'; };
+  window.colAll = function(v){
+    document.querySelectorAll('#collist .colcb').forEach(function(c){ c.checked = v; });
+  };
+  window.colSave = function(){
+    var fd = new FormData();
+    fd.append('m', _m);
+    document.querySelectorAll('#collist .colcb').forEach(function(c){
+      if(c.checked) fd.append('fid', c.value);
+    });
+    fetch(_u, {method:'POST', body:fd}).then(function(r){return r.json();})
+      .then(function(){ location.reload(); });
+  };
+  document.getElementById('colmask').addEventListener('click', function(e){
+    if(e.target === this) colClose();
+  });
+})();
+</script>
+{% endmacro %}

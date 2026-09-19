@@ -18,7 +18,6 @@ from flask import Flask
 from .core import db, util, errors, sysinfo
 from .core.util import say, new_nonce, LABELS
 from . import ui
-from .table import bp as table_bp
 from .sheet.web import bp as sp_bp
 from .inv import bp as inv_bp
 from .txn import bp as txn_bp
@@ -28,7 +27,6 @@ from .count import bp as count_bp
 
 # 装配顺序：底层能力在前，业务模块在后
 MODULES = [
-    ('表格', table_bp),
     ('电子表格', sp_bp),
     ('库存', inv_bp),
     ('出入库', txn_bp),

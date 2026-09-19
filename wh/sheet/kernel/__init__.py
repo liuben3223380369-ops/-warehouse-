@@ -12,7 +12,7 @@ from .addr import (col_letter, col_index, a1, rc_to_a1, a1_to_rc,
                    shift_formula)
 from .lexer import (ERRORS, Tok, LexError, tokenize)
 from .parser import parse, parse as parse_formula
-from .funcs import (is_err, to_num, to_text, to_bool, all_names)
+from .funcs import (is_err, is_blank, to_num, to_text, to_bool, all_names)
 from .style import (Style, CondRule, format_value, is_date_code, display)
 
 __all__ = [
@@ -25,7 +25,7 @@ __all__ = [
     # 语法
     'parse', 'parse_formula',
     # 函数
-    'is_err', 'to_num', 'to_text', 'to_bool', 'all_names',
+    'is_err', 'is_blank', 'to_num', 'to_text', 'to_bool', 'all_names',
     # 样式
     'Style', 'CondRule', 'format_value', 'is_date_code', 'display',
 ]

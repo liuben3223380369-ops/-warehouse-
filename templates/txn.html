@@ -1,3 +1,4 @@
+{% from '_cols.html' import colbtn, colsbox %}
 {% extends 'base.html' %}
 {% block title %}{% if fixed=='出' %}出库录入{% elif fixed=='进' %}入库录入{% else %}录入出入库{% endif %}{% endblock %}
 {% block h1 %}{% if fixed=='出' %}📤 出库录入{% elif fixed=='进' %}📥 入库录入{% else %}录入出入库{% endif %}{% endblock %}
@@ -24,28 +25,12 @@
 {% endif %}
 {% if msg %}<div class="card" style="background:#e8f6ee;border-left:3px solid #12a150">{{msg}}</div>{% endif %}
 
-{% if TPLS %}
-<div class="card" style="background:#eef4ff;border-left:3px solid #1f6feb">
-  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-    <b style="font-size:14px">库存模板</b>
-    <span style="flex:1"></span>
-    {% for t in TPLS %}
-      <a class="btn s {{ '' if t.id==tid else 'o' }}" href="{{ url_for(ep, tpl=t.id) }}">{{ t.name }}</a>
-    {% endfor %}
-    <a class="btn s o" href="{{ url_for('tpls') }}">⚙ 管理</a>
-  </div>
-  <div style="margin-top:4px;color:#3b4a5a;font-size:12px">
-    录进去的物料和单据会存到「{% for t in TPLS %}{% if t.id==tid %}{{ t.name }}{% endif %}{% endfor %}」，列也是这个模板自己的
-  </div>
-</div>
-{% endif %}
-
 <form method="post" id="f">
 <input type="hidden" name="_n" value="{{new_nonce()}}">
 <input type="hidden" name="nrow" id="nrow" value="{{n}}">
 <input type="hidden" name="tpl" value="{{tid}}">
 <datalist id="batchlist">
-{% for b in batches %}<option value="{{b.b}}">{{b.n}} · 未交 {{b.left}} {{b.un}}{% if b.sup %} · {{b.sup}}{% endif %}</option>{% endfor %}
+{% for b in batches %}<option value="{{b.b}}">{{b.n}}{% if b.src == 'sheet' %} · 表格{% if b.sq %} {{b.sq}}{% endif %}{% if b.un %} {{b.un}}{% endif %}{% else %} · 未交 {{b.left}} {{b.un}}{% endif %}{% if b.sup %} · {{b.sup}}{% endif %}</option>{% endfor %}
 </datalist>
 <div id="cards"></div>
 
@@ -64,9 +49,124 @@
   <a class="btn s o" href="javascript:addCard(true)" style="margin-top:0">＋ 复制上一笔</a>
 </div>
 
+{# v3.104 录入到电子表格：入库 / 出库各一张卡片，按批次号回写 #}
+{% macro bindcard(m, title) %}
+<div class="card" style="padding:10px 12px">
+  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+    <span style="font-size:var(--fs-label);color:#5b6675">📗 {{title}}</span>
+    <select id="bind_wb_{{m}}" name="bind_wb_{{m}}" onchange="bOnWb('{{m}}')" class="cell" style="flex:1;min-width:110px">
+      {% for b in BOOKS %}
+      <option value="{{b.id}}" {% if BINDS[m] and BINDS[m].wb_id==b.id %}selected{% endif %}>{{b.name}}</option>
+      {% endfor %}
+    </select>
+    <select id="bind_sh_{{m}}" name="bind_sh_{{m}}" onchange="bOnSh('{{m}}')" class="cell" style="flex:1;min-width:90px">
+      {% for s in SHS[m] %}
+      <option value="{{s}}" {% if BINDS[m] and BINDS[m].sh_name==s %}selected{% endif %}>{{s}}</option>
+      {% endfor %}
+    </select>
+    <button type="button" class="btn mini ghost" onclick="bToggle('{{m}}')">列映射</button>
+    {{ colbtn(m, url_for('txn_cols_cfg')) }}
+  </div>
+  <div id="mapbox_{{m}}" style="display:none;margin-top:10px"></div>
+  <div style="font-size:12px;color:#7a869a;margin-top:6px">
+    按<b>批次号</b>写入：表里有这个号就更新那行，没有才追加；没填批次号会自动编号。映射按「簿+表」记住。<br>
+    在<b>显示列</b>里勾掉的字段，表单上不出现、也不写进表格 —— 想在表格里用公式算的列（金额、卷数…），勾掉它就不会被覆盖。
+  </div>
+</div>
+{% endmacro %}
+{% if BOOKS %}
+  {% if fixed=='进' %}{{ bindcard('in', '入库录入到') }}
+  {% elif fixed=='出' %}{{ bindcard('out', '出库录入到') }}
+  {% else %}{{ bindcard('in', '入库录入到') }}{{ bindcard('out', '出库录入到') }}
+  {% endif %}
+{% endif %}
+
 <button type="submit" class="g" onclick="return chk()">💾 保存并继续录（<span id="cnt">{{n}}</span> 笔）</button>
 <button type="submit" name="goto_txn" value="1" onclick="return chk()">保存并去看流水</button>
 </form>
+
+{{ colsbox() }}
+
+<script>
+/* v3.104 表格绑定：入库 / 出库两套，互不干扰 */
+var BMAPF = {{ MAPF|tojson }};
+var BSKIP = {{ SKIP|tojson }};
+var BHEADS = {{ HEADS|tojson }};
+var BMAPS = {{ BINDS|tojson }};
+
+function bColLabel(i, h){
+  h = (h || '').trim();
+  return h ? (String.fromCharCode(65 + (i % 26)) + ' · ' + h) : ('第 ' + (i + 1) + ' 列');
+}
+function bRenderMap(m, heads, map){
+  var box = document.getElementById('mapbox_' + m);
+  if(!box) return;
+  if(!heads || !heads.length){ box.innerHTML = ''; return; }
+  var fs = BMAPF[m] || [];
+  var h = '<div style="font-size:12px;color:#7a869a;margin-bottom:6px">'
+        + '哪一列写什么（选「不写入」则该字段不进表）</div>';
+  for(var k = 0; k < fs.length; k++){
+    var fid = fs[k][0], lb = fs[k][1];
+    var cur = (map && map[fid] !== undefined) ? map[fid] : BSKIP;
+    h += '<div class="rowflex" style="margin-bottom:4px">'
+       +   '<div style="width:88px;font-size:13px;padding-top:6px">' + lb + '</div>'
+       +   '<select name="map_' + m + '_' + fid + '" class="cell" style="flex:1">'
+       +     '<option value="' + BSKIP + '"' + (cur == BSKIP ? ' selected' : '') + '>不写入</option>';
+    for(var i = 0; i < heads.length; i++){
+      h += '<option value="' + i + '"' + (cur == i ? ' selected' : '') + '>'
+         + bColLabel(i, heads[i]).replace(/</g, '&lt;') + '</option>';
+    }
+    h += '</select></div>';
+  }
+  box.innerHTML = h;
+}
+function bToggle(m){
+  var box = document.getElementById('mapbox_' + m);
+  if(!box) return;
+  if(box.style.display === 'none'){ box.style.display = 'block'; bOnSh(m); }
+  else { box.style.display = 'none'; }
+}
+function bOnWb(m){
+  var wb = document.getElementById('bind_wb_' + m).value;
+  var shSel = document.getElementById('bind_sh_' + m);
+  var box = document.getElementById('mapbox_' + m);
+  shSel.innerHTML = '';
+  if(box && box.style.display !== 'none') box.innerHTML = '';
+  if(!wb) return;
+  fetch('{{url_for("txn_bind_sheets")}}?wb=' + encodeURIComponent(wb))
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      (d.sheets || []).forEach(function(s){
+        var o = document.createElement('option');
+        o.value = s; o.textContent = s; shSel.appendChild(o);
+      });
+      bOnSh(m);
+    });
+}
+function bOnSh(m){
+  var wb = document.getElementById('bind_wb_' + m).value;
+  var sh = document.getElementById('bind_sh_' + m).value;
+  var box = document.getElementById('mapbox_' + m);
+  if(!box) return;
+  if(!wb || !sh){ box.innerHTML = ''; return; }
+  fetch('{{url_for("txn_bind_heads")}}?m=' + m + '&wb=' + encodeURIComponent(wb)
+        + '&sh=' + encodeURIComponent(sh))
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      var mp = (d.saved && Object.keys(d.saved).length) ? d.saved : d.auto;
+      bRenderMap(m, d.heads, mp);
+    });
+}
+['in','out'].forEach(function(m){
+  var w = document.getElementById('bind_wb_' + m);
+  var s = document.getElementById('bind_sh_' + m);
+  if(w && s && w.value && s.value){
+    var b = BMAPS[m];
+    bRenderMap(m, BHEADS[m],
+      (b && b.mapping && Object.keys(b.mapping).length) ? b.mapping : null);
+  }
+});
+</script>
 
 <div class="card">
   <div style="font-size:12px;color:#5b6675;line-height:1.8">
@@ -77,7 +177,6 @@
   · 日期留空默认用第一张卡片的日期
   </div>
   <a class="btn s" href="{{url_for('txn_import') if not fixed else (url_for('out_import') if fixed=='出' else url_for('in_import'))}}">⬆ 从 Excel / WPS 导入</a>
-  <a class="btn s o" href="{{url_for('columns')}}">⚙ 修改表头名称 / 显示 / 映射</a>
   <a class="btn s o" href="{{url_for('out_list') if fixed=='出' else ('in_list' if fixed=='进' else 'txns')}}">查看{{'出库' if fixed=='出' else ('入库' if fixed=='进' else '')}}流水</a>
   {% if fixed=='出' %}<a class="btn s o" href="{{url_for('in')}}">切到入库录入</a>
   {% elif fixed=='进' %}<a class="btn s o" href="{{url_for('out')}}">切到出库录入</a>{% endif %}
@@ -124,6 +223,10 @@ border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.14);z-index:30;max-height:2
 var MATS = {{ js_mats|tojson }};
 var COLS = {{ fids|tojson }};
 var COLS_FULL = {{ col_defs|tojson }};
+/* v3.106：可映射的字段 ≡ 表单字段，由「显示哪些列」决定。
+   屏蔽一列 → 表单不显示、映射里没有、也不写进表格。 */
+var FLDS = {{ FLDS|tojson }};
+var HASF = {}; FLDS.forEach(function(f){ HASF[f[0]] = 1; });
 var XCOLS = {{ xcols|default([],true)|tojson }};
 var FIXED = {{ 'true' if fixed else 'false' }};
 var KIND = {{ fixed|tojson }};
@@ -278,32 +381,6 @@ function lbl(c){
   var u = (c && c.unit ? String(c.unit).trim() : '');
   return (c ? (c.label||'') : '') + (u ? '（'+u+'）' : '');
 }
-function fieldHtml(f, i, label){
-  if(f==='name') return '';
-  /* 没填就空着留白：不再预填"0"或列名当占位，免得看着像有值 */
-  var ph = '';
-  if(f==='unit') return '';   // 单位列已取消：单位改由每列自己配（v3.21）
-  if(f==='status'){
-    return '<div class="f"><label>'+label+'</label><select name="status_'+i+'">'
-      +'<option value="">—</option><option>常用</option><option>不常用</option><option>呆滞</option></select></div>';
-  }
-  if(f==='opening'||f==='safety'){
-    return '<div class="f"><label>'+label+'</label><input name="'+f+'_'+i+'" inputmode="decimal" placeholder=""></div>';
-  }
-  if(f==='sqm'||f==='rolls'){
-    // v3.28：平米/卷料都能填 —— 填一个，另一个按长宽自动算出来。
-    // 先填平米 → 卷料 = 平米 ÷ (长×宽) 取整数，零头写「余料 X 平米」
-    // 先填卷料 → 平米 = 卷料 × (长×宽)
-    var oth = (f==='sqm') ? '卷料' : '平米';
-    return '<div class="f"><label>'+label+' <span style="color:#1f6feb;font-weight:400"'
-      +' id="hint_'+f+'_'+i+'">(填了自动算'+oth+')</span></label>'
-      +'<input name="'+f+'_'+i+'" id="'+f+'_'+i+'" inputmode="decimal" placeholder="填一个，自动算'+oth+'"'
-      +' data-i="'+i+'" oninput="calcArea('+i+',\''+f+'\')"></div>';
-  }
-  var extra = (f==='spec'||f==='width') ? ' class="dim" data-i="'+i+'" oninput="calcArea('+i+')"' : '';
-  return '<div class="f"><label>'+label+'</label><input name="'+f+'_'+i+'"'+extra+' placeholder="'+ph+'"></div>';
-}
-
 function cardHtml(i){
   var h = '<div class="ecard" id="c'+i+'">';
   h += '<div class="hd"><span class="no">'+(i+1)+'</span>'
@@ -326,26 +403,21 @@ function cardHtml(i){
      + '<div id="bg'+i+'" style="display:none"></div></div>';
   // 其余字段
   h += '<div class="fields">';
-  COLS_FULL.forEach(function(c){
-    if(c.fid==='name'||c.fid==='unit') return;
-    h += fieldHtml(c.fid, i, lbl(c));
+  FLDS.forEach(function(f){
+    var _fid = f[0];
+    /* 物料名/批次号固定在卡片顶部，日期/数量/备注在底部，不重复出现 */
+    if(_fid==='name'||_fid==='batch'||_fid==='qty'||_fid==='tdate'||_fid==='note') return;
+    h += '<div class="f"><label>'+esc(f[1])+'</label>'
+       + '<input name="'+_fid+'_'+i+'" inputmode="decimal"></div>';
   });
   h += '</div>';
-  // 自定义列（使用者自己加的，只属于这个模板）
-  if(XCOLS.length){
-    h += '<div class="fields" style="margin-top:8px">';
-    XCOLS.forEach(function(c){
-      h += xfieldHtml(c, i, lbl(c));
-    });
-    h += '</div>';
-  }
   // 日期 + 数量（或进/出）+ 备注
   h += (FIXED ? '<input type="hidden" name="kind_'+i+'" value="'+KIND+'">' : '');
   h += '<div class="qtyrow">'
      + '<div class="f"><label>日期</label><input type="date" name="tdate_'+i+'" value="'+TODAY+'"></div>'
-     + '<div class="f"><label>数量</label><input name="qty_'+i+'" inputmode="decimal" placeholder="" class="qty" data-i="'+i+'" oninput="calc('+i+');calcArea('+i+')"></div>'
-     + (HAS_AREA ? '<div class="f" style="max-width:96px"><label>数量按</label>'
-       + '<select name="qty_unit_'+i+'" class="qunit" data-i="'+i+'" onchange="calcArea('+i+')">'
+     + (HASF.qty ? '<div class="f"><label>数量</label><input name="qty_'+i+'" inputmode="decimal" placeholder="" class="qty" data-i="'+i+'"></div>' : '')
+     + (HASF.qty && HAS_AREA ? '<div class="f" style="max-width:96px"><label>数量按</label>'
+       + '<select name="qty_unit_'+i+'" class="qunit" data-i="'+i+'">'
        + '<option value="平米">平米</option><option value="卷">卷</option></select></div>' : '');
   if(!FIXED){
     h += '<div class="f"><label>进/出</label><select name="kind_'+i+'"><option>进</option><option>出</option></select></div>';
@@ -361,8 +433,8 @@ function cardHtml(i){
        + '<select name="to_po_'+i+'" title="退料、调拨、盘盈入库请选「否」，避免虚增供应商到货">'
        + '<option value="1">是（到货）</option>'
        + '<option value="0">否（退料等）</option></select></div>')
-     + '<div class="f" style="flex:1"><label>备注</label>'
-     + '<input name="note_'+i+'" placeholder="'+(KIND==='出'?'客户/领用人':'单号/客户')+'"></div>';
+     + (HASF.note ? '<div class="f" style="flex:1"><label>备注</label>'
+       + '<input name="note_'+i+'" placeholder="'+(KIND==='出'?'客户/领用人':'单号/客户')+'"></div>' : '');
   h += '</div>';
   h += '</div>';
   return h;
@@ -370,122 +442,6 @@ function cardHtml(i){
 
 // 长 × 宽 = 平米；平米 ÷ 宽 = 卷料（取整，余料自动写进备注）
 // 自定义列：文本/数字/日期/单选/公式
-function xfieldHtml(c, i, label){
-  var v = c.xtype;
-  var _lb = (label===undefined? c.label : label);
-  var inp;
-  if(v==='select'){
-    var opts=(c.xopt||'').split(',').map(function(o){
-      return '<option value="'+o.trim()+'">'+o.trim()+'</option>';}).join('');
-    inp='<select name="x_'+i+'_'+c.fid+'">'+opts+'</select>';
-  } else if(v==='calc'){
-    inp='<input name="x_'+i+'_'+c.fid+'" id="xc_'+i+'_'+c.fid+'" readonly '
-       +'style="background:#f2f4f7" placeholder="自动算" data-form="'+escq(c.xform)+'">';
-  } else if(v==='date'){
-    inp='<input type="date" name="x_'+i+'_'+c.fid+'">';
-  } else if(v==='number'){
-    inp='<input name="x_'+i+'_'+c.fid+'" inputmode="decimal" class="xsrc" data-i="'+i+'" oninput="calcX('+i+')">';
-  } else {
-    inp='<input name="x_'+i+'_'+c.fid+'">';
-  }
-  return '<div class="f"><label>'+_lb+(v==='calc'?'（自动）':'')+'</label>'+inp+'</div>';
-}
-function escq(s){ return String(s||'').replace(/"/g,'&quot;'); }
-// 公式列：数字列或数量变化时重算
-function calcX(i){
-  XCOLS.forEach(function(c){
-    if(c.xtype!=='calc') return;
-    var el=document.getElementById('xc_'+i+'_'+c.fid); if(!el) return;
-    el.value = evalForm(c.xform, i);
-  });
-}
-function evalForm(form, i){
-  if(!form) return '';
-  var env={};
-  function g(n){ var e=document.querySelector('[name='+n+'_'+i+']'); return e?e.value:''; }
-  env.qty=g('qty'); env.pieces=g('pieces'); env.per=g('per');
-  env.spec=g('spec'); env.width=g('width'); env.sqm=g('sqm'); env.rolls=g('rolls');
-  env.price=g('price'); env.opening=g('opening'); env.safety=g('safety');
-  env.unit=g('unit'); env.code=g('code'); env.supplier=g('supplier');
-  XCOLS.forEach(function(c){
-    var e=document.querySelector('[name=x_'+i+'_'+c.fid+']');
-    if(e && c.xtype!=='calc'){
-      env[c.fid]=e.value;      // 用机器名写公式：qty*x_1789...
-      env[c.label]=e.value;    // 用列名写公式：qty*单价（更好记）
-    }
-  });
-  try{
-    var names=Object.keys(env), vals=names.map(function(k){
-      var x=parseFloat(env[k]); return isFinite(x)?x:0; });
-    var f=new Function(names.join(','),'return ('+form+');');
-    var r=f.apply(null,vals);
-    if(!isFinite(r)) return '';
-    return Math.round(r*1e6)/1e6;
-  }catch(e){ return ''; }
-}
-function numOf(v){ var x=parseFloat(String(v==null?'':v).trim()); return isFinite(x)&&x>0?x:null; }
-/* v3.28：平米（总面积）与卷料（卷数）双向推算 —— 先填哪个就算另一个。
-     先填平米 → 卷料 = 平米 ÷ (长×宽)，取整数，零头写「余料 X 平米」
-     先填卷料 → 平米 = 卷料 × (长×宽)
-   都没填、只填了数量时，按「数量按 平米/卷」的口径推（v3.27 的双口径，
-   兼容以前只填数量的表）。
-   算不出来就清空留白，不填 0。 */
-function qtyUnit(i){
-  var el=document.querySelector('[name=qty_unit_'+i+']');
-  return el ? String(el.value||'平米') : '平米';
-}
-var LAST_AREA={};          // 记住这一行最后改的是平米还是卷料，避免互相覆盖
-function calcArea(i, who){
-  var L=numOf((document.querySelector('[name=spec_'+i+']')||{}).value);
-  var W=numOf((document.querySelector('[name=width_'+i+']')||{}).value);
-  var Q=numOf((document.querySelector('[name=qty_'+i+']')||{}).value);
-  var sq=(document.getElementById('sqm_'+i));
-  var ro=(document.getElementById('rolls_'+i));
-  var nt=(document.querySelector('[name=note_'+i+']'));
-  if(nt) nt.value = String(nt.value||'').replace(/\s*余料\s*[\d.]+\s*\S*/g,'').trim();
-  if(who==='sqm'||who==='rolls') LAST_AREA[i]=who;
-  if(L==null||W==null){ if(sq&&!numOf(sq.value))sq.value=''; if(ro&&!numOf(ro.value))ro.value=''; return; }
-  var per=Math.round(L*W*1e6)/1e6;          // 一卷多少平米
-  if(per<=0) return;
-  var S=numOf(sq?sq.value:null), R=numOf(ro?ro.value:null);
-  var w = who || LAST_AREA[i];
-  var r, rest=null, sqm=null;
-  if(w==='sqm' && S!=null){
-    r=Math.floor(S/per + 1e-9);             // 卷料取整数
-    rest=Math.round((S-r*per)*1e6)/1e6;
-    if(ro) ro.value=r;
-    sqm=S;
-  }else if(w==='rolls' && R!=null){
-    sqm=Math.round(R*per*1e6)/1e6;
-    if(sq) sq.value=sqm;
-    var fr=Math.round((R-Math.floor(R+1e-9))*1e6)/1e6;
-    rest = fr>1e-6 ? Math.round(fr*per*1e6)/1e6 : null;
-  }else if(S!=null){
-    r=Math.floor(S/per + 1e-9);
-    rest=Math.round((S-r*per)*1e6)/1e6;
-    if(ro) ro.value=r;
-  }else if(R!=null){
-    sqm=Math.round(R*per*1e6)/1e6;
-    if(sq) sq.value=sqm;
-  }else if(Q!=null){
-    // 只有数量：按数量口径推
-    if(qtyUnit(i)==='卷'){
-      r=Math.floor(Q + 1e-9);
-      rest=Math.round((Q-r)*per*1e6)/1e6;
-      if(ro) ro.value=r;
-      if(sq) sq.value=Math.round(Q*per*1e6)/1e6;
-    }else{
-      r=Math.floor(Q/per + 1e-9);
-      rest=Math.round((Q-r*per)*1e6)/1e6;
-      if(ro) ro.value=r;
-      if(sq) sq.value=Math.round(Q*1e6)/1e6;
-    }
-  }
-  if(rest>1e-6 && nt){
-    nt.value = (nt.value?nt.value+' ':'') + '余料 '+rest+' 平米';
-  }
-}
-
 function delCard(i){
   var el=document.getElementById('c'+i);
   if(!el) return;
@@ -569,11 +525,6 @@ function addCard(copy){
 
 function fmt(n){ return String(Math.round(n*100)/100); }
 function numv(i,cls){ var e=document.querySelector('.'+cls+'[data-i="'+i+'"]'); return parseFloat(e&&e.value)||0; }
-/* 件数 / 每件已移除（v3.20）：数量直接填，不再做三者换算。
-   calcX 仍需保留——自定义公式列要跟着数量重算。 */
-function calc(i){ try{calcX(i);}catch(e){} }
-
-
 function showSug(i, list){
   var box=document.getElementById('sg'+i); if(!box) return;
   if(!list.length){ box.innerHTML='<div class="none">没找到，直接输入也行，保存时会自动建档</div>'; box.style.display='block'; return; }
@@ -623,15 +574,20 @@ function batchMatch(i, v){
 function showBatchSug(i, list){
   var box=document.getElementById('bg'+i); if(!box) return;
   if(!list.length){
-    box.innerHTML='<div class="none">没有未结单的采购批次（也可直接手填）</div>';
+    box.innerHTML='<div class="none">没有可联想的批次（也可直接手填）</div>';
     box.style.display='block'; return;
   }
   var h='';
   list.slice(0,12).forEach(function(b){
+    /* v3.109：表格来源没有"未交"概念（表里存的是这批货的档案），
+       显示表格里记的平米；采购单来源才显示未交数量。 */
+    var tail = (b.src==='sheet')
+      ? ('表格'+(b.sq?(' '+fmt(b.sq)+' '+(b.un||'')):''))
+      : ('未交 '+fmt(b.left)+' '+(b.un||''));
     h+='<div data-b="'+esc(b.b)+'">'
       +'<span class="n">'+esc(b.b)+'</span>'
       +'<span class="c">'+esc(b.n)+(b.sp?' '+esc(b.sp):'')+'</span>'
-      +'<span class="s">未交 '+fmt(b.left)+' '+esc(b.un||'')+' · '+esc(b.sup||'')+'</span>'
+      +'<span class="s">'+esc(tail)+(b.sup?(' · '+esc(b.sup)):'')+'</span>'
       +'</div>';
   });
   box.innerHTML='<div class="sug">'+h+'</div>';
@@ -687,7 +643,6 @@ function pick(i, id){
   if(qu && hit.qty_unit) qu.value=hit.qty_unit;
   hideSug(i);
   var q=document.querySelector('.qty[data-i="'+i+'"]'); if(q){ q.focus(); }
-  calcArea(i);
 }
 
 function bind(i){

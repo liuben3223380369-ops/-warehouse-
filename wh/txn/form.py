@@ -4,7 +4,7 @@
 入库 / 出库 / 单据流水三张页面共用同一套录入逻辑，都在这里。
 Excel 导入见 importer.py，列表与删除见 browse.py。
 """
-from flask import request, redirect, url_for, Response, render_template
+from flask import request, redirect, url_for, Response, render_template, jsonify
 from datetime import datetime, date
 import calendar, io, csv, os, time, sys, json
 from urllib.parse import quote
@@ -14,6 +14,12 @@ from ..core.util import *            # noqa: F401,F403, int_arg
 from ..core.util import (_log_err, _last_prices, js_mats_with_price)  # noqa: F401
 from .. import importer
 from ..table import tbl
+# v3.104：出入库 ↔ 电子表格 桥梁（与采购同一套：映射记住、按批次号回写）
+from ..sheet import bridge as BR
+from ..sheet import batch as BT
+from ..sheet import cols as CL
+from ..sheet import colsapi
+
 # 流水页 / 出入库列表要显示自定义列，这两个函数在表格模块里。
 # 拆分时漏了这行，导致 /txns 直接 500 —— 名字带下划线是避免和 util 里的重名。
 from ..table.helpers import all_custom_cols as _all_custom_cols, cell_val as _cell_val
@@ -129,10 +135,16 @@ def txn():
         # 一次提交多行时要么全成功要么全回滚：
         # 否则中途出错（比如某一行的物料档案更新失败）会留下"录了一半"的单据，
         # 用户看到报错后重录，那几行就重复了。
+        _writes = []      # v3.104 待回写电子表格的行（事务提交成功后才写）
         try:
           with db.tx() as _cx:
             for i in range(nrow):
                 qty = num(request.form.get(f'qty_{i}'), hi=QTY_MAX)
+                # v3.106：数量列被屏蔽（不显示）时表单里根本没有这个框，
+                # 直接用平米/卷料兜底，否则整笔被当成没填数量丢掉。
+                if qty <= 0:
+                    qty = (num(request.form.get(f'sqm_{i}'))
+                           or num(request.form.get(f'rolls_{i}')) or 0)
                 vals = {f: (request.form.get(f'{f}_{i}') or '').strip() for f in
                         ('name', 'code', 'supplier', 'category', 'spec', 'width', 'unit', 'status')}
                 # v3.28：平米/卷料也收进来 —— 使用者可以直接填这两个数，
@@ -166,11 +178,11 @@ def txn():
                     qu = (request.form.get('qty_unit') or '').strip()
                 if qu not in db.QTY_UNITS:
                     qu = _mqu or '平米'
-                if 'sqm' in fids or 'rolls' in fids:
-                    # 卷数 = 总量 ÷ 一卷平米，所以要带上这一笔的数量
-                    sqm, rolls, rest = db.calc_area(dict(vals, qty=qty, qty_unit=qu))
-                    if rest:
-                        note_rest = db.rest_note(rest)
+                # v3.106：平米↔卷料 的换算交给表格写公式，表单不再代算。
+                # 数量本身就是平米（采购按平米、入库按平米+卷），卷料是独立一列，
+                # 使用者填了就记，没填就空着 —— 绝不反推，也绝不瞎填 0。
+                sqm = rolls = rest = None; note_rest = ''
+                rolls = num(request.form.get(f'rolls_{i}')) or None
                 mid, is_new = _resolve_material(vals, sqm=sqm, rolls=rolls, tpl_id=tid,
                                                 qty_unit=qu)
                 if not mid:
@@ -178,24 +190,13 @@ def txn():
                 # 录单页没填长宽时（出库页通常不填、联想也可能没带出），
                 # 回退到物料档案里的长宽再算一次 —— 否则出库单的平米/卷料
                 # 永远是空的，流水页里进有出没有，对不上账。
-                if sqm is None and rolls is None and ('sqm' in fids or 'rolls' in fids):
-                    _mrow = db.q("SELECT spec,width FROM materials WHERE id=?", mid)
-                    if _mrow and (_mrow[0]['spec'] or _mrow[0]['width']):
-                        # 注意用 or 而不是 setdefault：表单里这两列往往存在
-                        # 但值是空串，setdefault 不会覆盖空串，照样算不出来
-                        _v2 = dict(vals)
-                        _v2['spec'] = (vals.get('spec') or '').strip() or _mrow[0]['spec']
-                        _v2['width'] = (vals.get('width') or '').strip() or _mrow[0]['width']
-                        _v2['qty'] = qty
-                        _v2['qty_unit'] = qu
-                        sqm, rolls, rest = db.calc_area(_v2)
-                        if rest:
-                            note_rest = db.rest_note(rest)
+
                 newmat += is_new
                 d = safe_date(request.form.get(f'tdate_{i}'), dflt)
                 kind = fixed or (request.form.get(f'kind_{i}') or '进')
                 note = (request.form.get(f'note_{i}') or '').strip()
-                if sqm is not None and 'sqm' in fids:
+                sqm = qty          # v3.106：数量 = 平米，同一个值不再摆两遍
+                if 'sqm' in fids:
                     vals['sqm'] = sqm
                 if rolls is not None and 'rolls' in fids:
                     vals['rolls'] = rolls
@@ -210,6 +211,13 @@ def txn():
                 # 单价不在录单页填 —— 入库成本来自采购单，采购到货时写入
                 # 批次：使用者填了就用（去空格），没填留空，流水页按物料价回退
                 _bt = (request.form.get('batch_%d' % i) or '').strip()[:40]
+                # v3.104 回写表格用的单价/金额。录单页本来就不填单价（入库成本
+                # 来自采购单），没填就留空 —— 写 0 进表格会让人以为这笔是白送的。
+                _pr = (request.form.get('price_%d' % i) or '').strip()
+                try:
+                    _amt = round(num(_pr) * qty, 2) if _pr not in (None, '') else ''
+                except Exception:
+                    _amt = ''
                 _cx.execute("INSERT INTO txns(tdate,material_id,kind,qty,pieces,per_piece,"
                        "note,created_at,sqm,rolls,tpl_id,qty_unit,batch) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                        (d, mid, kind, qty, pieces, per, note,
@@ -266,6 +274,14 @@ def txn():
                     import json as _json
                     _cx.execute("UPDATE txns SET extra=? WHERE id=?",
                                 (_json.dumps(_xv, ensure_ascii=False), _tid_new))
+                _writes.append((kind, _bt, {
+                    '_tid': _tid_new,
+                    'name': vals.get('name') or '',
+                    'qty': qty, 'price': _pr, 'amount': _amt,
+                    'spec': vals.get('spec') or '', 'width': vals.get('width') or '',
+                    'sqm': sqm, 'rolls': rolls, 'unit': qu,
+                    'tdate': d, 'supplier': vals.get('supplier') or '', 'note': note,
+                }))
                 saved += 1
         except Exception:
             # 不能静默吞掉：窗口模式没有控制台，不落盘就永远查不到原因
@@ -277,6 +293,10 @@ def txn():
         if saved:
             tip = f'已保存 {saved} 条{"出库" if fixed=="出" else ("入库" if fixed=="进" else "")}单' \
                   + (f'，新建物料 {newmat} 种' if newmat else '')
+            # v3.104 事务已提交，这会儿才回写表格：单据存成功了才轮到表格
+            _wm = _write_back(_writes)
+            if _wm:
+                tip += '；' + _wm
         elif blocked:
             tip = f'一条都没保存：{blocked} 行超出库存（{"、".join(names[:3])}）'
         else:
@@ -296,7 +316,10 @@ def txn():
 
     # 默认只给一张卡片：多数时候就是录一笔，需要多行时自己点「＋ 加一行」。
     n = min(int_arg(request.args, 'n', default=1, lo=1), MAX_ROWS)
+    # v3.106 表单字段 ≡ 可映射字段：fixed 是「进/出」，模块键是 in/out
+    _mod = {'进': 'in', '出': 'out'}.get(fixed or '', 'in')
     return render_template('txn.html', cols=cols, fids=fids, mats=mats, msg=msg,
+                           FLDS=CL.shown(_mod), MOD=_mod,
                            fixed=fixed, ep=ep, only_stock=only_stock,
                            allm=request.args.get('allm') == '1',
                            tdate=today(), rows=range(n), n=n, tid=tid,
@@ -306,21 +329,214 @@ def txn():
                            xcols=_sch['xcols'],
                            js_mats=js_mats_with_price(mats),
                            # v3.35 批次候选：录单时下拉能选到采购到货登记过的批次
-                           batches=_batch_choices(),
+                           batches=_batch_choices(module=('out' if ep=='out' else 'in')),
                            # 启用了平米/卷料列才显示「数量按 平米/卷」的口径选择
-                           cols_has_area=_sch['has_area'])
+                           cols_has_area=_sch['has_area'],
+                           # v3.104 录入到电子表格：入库/出库各一套绑定
+                           **_bind_ctx())
 
-def _batch_choices(limit=300):
-    """录入页的批次候选：**未结单**的采购明细批次号。
+# --------------------------------------------------- 回写电子表格（v3.104）
+def _cur_bind(module):
+    """该模块当前要写入的表：优先上次绑的，没绑过就取最新一本工作簿的第一张表。
 
-    为什么改查 po_items（而不是到货登记表 po_receipts）：
-    v3.30 起采购与库存解耦、v3.35 起到货按入库录入算，批次号在建单时就
-    生成在 po_items 上了。第一次入库时 po_receipts 还是空的 —— 照旧查它，
-    使用者在最需要联想的时候（刚建完单、还没到货）反而一个候选都看不到。
+    与采购同一个道理 —— 出入库总得有个去处，每次都让用户先选一遍，
+    是把「记住」该做的事推给了人。没建过任何工作簿时才返回 None。
+    """
+    try:
+        b = BR.bind_get(module)
+        if b:
+            return b
+        for bk in BR.books():
+            shs = BR.sheets(bk['id'])
+            if shs:
+                return {'wb_id': bk['id'], 'sh_name': shs[0], 'mapping': {},
+                        'module': module}
+    except Exception:
+        _log_err('取默认表格绑定失败 %s' % module)
+    return None
 
-    只要「还没交齐」的单据：订 10 已到 10 的批次再选就没意义了，
+
+def _bind_from_form(module):
+    """表单里选的表；没传（页面上没这几项）就退回当前默认绑定。"""
+    try:
+        _bw = int(request.form.get('bind_wb_' + module) or 0)
+    except (TypeError, ValueError):
+        _bw = 0
+    _bsh = (request.form.get('bind_sh_' + module) or '').strip()
+    if _bw and _bsh:
+        return _bw, _bsh
+    b = _cur_bind(module)
+    return (b['wb_id'], b['sh_name']) if b else (0, '')
+
+
+def _write_back(rows):
+    """把刚存下的出入库写进电子表格。
+
+    rows 是 [(kind, batch, vals)]。入库写 'in' 那张表，出库写 'out' 那张表
+    —— 混录时（/txn 通用页）一行也按自己的方向各归各表，不会串成一锅。
+
+    为什么不塞进出入库的事务里：wb 表是另一份数据，绑在一起会让
+    「单据回滚了表格却写上了」和「单据存了表格没写」两种错乱纠缠不清。
+    表格写失败不该让单据跟着丢，所以放事务外、单独记日志。
+    """
+    mods = {}
+    for kind, bt, vals in (rows or []):
+        mods.setdefault('out' if kind == '出' else 'in', []).append([bt, vals])
+    ok = 0
+    for m, items in mods.items():
+        _bw, _bsh = _bind_from_form(m)
+        if not _bw or not _bsh:
+            continue
+        _mp = {}
+        for _f, _lb, _d in BR.FIELDS.get(m, []):
+            _v = request.form.get('map_%s_%s' % (m, _f))
+            try:
+                _mp[_f] = int(_v) if _v not in (None, '') else BR.SKIP
+            except (TypeError, ValueError):
+                _mp[_f] = BR.SKIP
+        # 页面没展开映射卡片时一个 map_* 都没提交，这时按表头自动猜一套
+        if all(v == BR.SKIP for v in _mp.values()):
+            _mp = BR.auto_map(m, BR.heads(_bw, _bsh))
+        if not BR.bind_set(m, _bw, _bsh, _mp):
+            continue
+        for _it in items:
+            _bt, _vals = _it[0], dict(_it[1])
+            _tid = _vals.pop('_tid', None)
+            # 没填批次号的行自动补一个：表格按批次号定位行，没有号无从下笔。
+            # 补完还要回写 txns，否则流水页是空的、表格里却有号，两边对不上账。
+            if not (_bt or '').strip():
+                try:
+                    _bt = (BT.next_no(1) or [''])[0]
+                except Exception:
+                    _log_err('自动生成批次号失败')
+                    continue
+                if not _bt:
+                    continue
+                _it[0] = _bt
+                if _tid:
+                    try:
+                        db.run("UPDATE txns SET batch=? WHERE id=?", _bt, _tid)
+                    except Exception:
+                        _log_err('批次号回写流水失败 id=%s' % _tid)
+            try:
+                _done, _why = BR.write(m, _bt, _vals)
+                if _done:
+                    ok += 1
+            except Exception:
+                _log_err('回写电子表格失败 %s' % _bt)
+    return ('%d 行已录入表格' % ok) if ok else ''
+
+
+def _bind_ctx():
+    """给录入页准备的绑定上下文：入库 / 出库各一套。
+
+    一本工作簿都没有时整套返回空，页面连卡片都不显示 —— 满页空下拉
+    比没有这个入口更让人困惑。
+    """
+    ctx = {'BOOKS': [], 'BINDS': {}, 'SHS': {}, 'HEADS': {}, 'MAPF': {},
+           'SHOWN': {}, 'SKIP': BR.SKIP}
+    # v3.106：表单字段 ≡ 可映射的字段，屏蔽一列两处同时消失
+    for _m in ('in', 'out'):
+        ctx['SHOWN'][_m] = CL.shown(_m)
+        _ss = {f for f, _ in ctx['SHOWN'][_m]}
+        ctx['MAPF'][_m] = [f for f in BR.FIELDS.get(_m, []) if f[0] in _ss]
+    try:
+        ctx['BOOKS'] = BR.books()
+    except Exception:
+        _log_err('读取工作簿列表失败')
+    for m in ('in', 'out'):
+        ctx['BINDS'][m] = None
+        ctx['SHS'][m] = []
+        ctx['HEADS'][m] = []
+        if not ctx['BOOKS']:
+            continue
+        b = _cur_bind(m)
+        if not b:
+            continue
+        ctx['BINDS'][m] = b
+        try:
+            ctx['SHS'][m] = BR.sheets(b['wb_id'])
+            ctx['HEADS'][m] = BR.heads(b['wb_id'], b['sh_name'])
+        except Exception:
+            _log_err('读取表格表头失败 %s' % m)
+    return ctx
+
+
+@bp.route('/txn/bind/sheets')
+def txn_bind_sheets():
+    """选了工作簿后，取它里面的工作表列表。"""
+    try:
+        wb_id = int(request.args.get('wb') or 0)
+    except (TypeError, ValueError):
+        wb_id = 0
+    return jsonify({'sheets': BR.sheets(wb_id) if wb_id else []})
+
+
+@bp.route('/txn/bind/heads')
+def txn_bind_heads():
+    """选了工作表后，取表头 + 自动猜的映射 + 这套表以前存过的映射。
+
+    以前配过就用以前那套 —— 换表再换回来，映射还在，不用重配一遍。
+    """
+    m = (request.args.get('m') or 'in').strip()
+    if m not in ('in', 'out'):
+        m = 'in'
+    try:
+        wb_id = int(request.args.get('wb') or 0)
+    except (TypeError, ValueError):
+        wb_id = 0
+    sh = (request.args.get('sh') or '').strip()
+    heads = BR.heads(wb_id, sh) if (wb_id and sh) else []
+    auto = BR.auto_map(m, heads)
+    saved = {}
+    if wb_id and sh:
+        try:
+            r = db.q("SELECT mapping FROM sheet_bind WHERE module=? AND wb_id=?"
+                     " AND sh_name=?", m, wb_id, sh)
+            if r:
+                saved = BR._json(r[0]['mapping'])
+        except Exception:
+            pass
+    return jsonify({'heads': heads, 'auto': auto, 'saved': saved})
+
+
+def _batch_choices(limit=300, module='in'):
+    """录入页的批次候选（v3.109）。
+
+    **表格优先**：表格是主体，采购下单 / 入库 / 出库都往同一张表写，表里那
+    一行就是这批货的档案。手填批次号单独入库的那些批次采购单里根本没有，
+    只查采购单的话，最需要联想的时候反而一个候选都看不到。
+    采购单只作为补充（表格里还没有的批次），两者按批次号去重。
+
+    采购单那一路只要「还没交齐」的：订 10 已到 10 的批次再选就没意义了，
     留着只会让人挑花眼、还可能重复入库。
     """
+    out = []
+    seen = set()
+    # 表格优先
+    try:
+        for r in BR.batch_rows(module, limit=limit):
+            bn = (r.get('b') or '').strip()
+            if not bn or bn in seen:
+                continue
+            seen.add(bn)
+            out.append(r)
+    except Exception:
+        pass
+    if len(out) >= limit:
+        return out
+    # 采购单补充
+    for r in _po_batch_choices(limit=limit):
+        bn = (r.get('b') or '').strip()
+        if not bn or bn in seen:
+            continue
+        seen.add(bn)
+        out.append(r)
+    return out
+
+
+def _po_batch_choices(limit=300):
+    """**未结单**的采购明细批次号。"""
     try:
         rows = db.q(
             "SELECT i.batch, i.name, i.spec, i.unit, i.conv,"
@@ -349,6 +565,7 @@ def _batch_choices(limit=300):
                 'st': r['status'] or '',
                 'left': round(left, 4),
                 'ord': r['qty'] or 0,
+                'src': 'po',
             })
         return out
     except Exception:
@@ -440,3 +657,8 @@ def _kind_list(kind):
                            total=tot['s'], count=tot['c'], url_kind='out_list' if kind == '出' else 'in_list',
                            mapped_n=mapped_n,
                            XC=_all_custom_cols(), XVAL=_extra_map(rows))
+
+
+# 显示哪些列：入库 / 出库共用一个端点，用 ?m=in|out 区分
+# （v3.106 与采购共用同一套实现）
+_cols_view = colsapi.register(bp, '/txn/cols', 'in', 'txn_cols_cfg')

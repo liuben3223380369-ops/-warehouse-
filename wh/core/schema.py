@@ -221,6 +221,33 @@ CREATE TABLE IF NOT EXISTS wb (
   updated  TEXT
 );
 
+/* ============ 业务模块 ↔ 电子表格 绑定（v3.100） ============
+   采购/入库/出库下单后，把数据回写到用户在制表模块做好的那张表。
+   绑定记到「模块 + 工作簿 + 工作表」这一层：换表再换回来，
+   上次配好的列映射还在，不会退回默认表头。 */
+CREATE TABLE IF NOT EXISTS sheet_bind (
+  module   TEXT    NOT NULL,        /* po 采购 | in 入库 | out 出库 */
+  wb_id    INTEGER NOT NULL,
+  sh_name  TEXT    NOT NULL,
+  mapping  TEXT    NOT NULL DEFAULT '{}',  /* JSON {字段: 列号}，-1 = 不写入 */
+  is_cur   INTEGER NOT NULL DEFAULT 0,     /* 1 = 该模块当前正在用这一本 */
+  updated  TEXT,
+  PRIMARY KEY(module, wb_id, sh_name)
+);
+
+/* ============ 填写模块「显示哪些列」（v3.106） ============
+   采购 / 入库 / 出库的表单只做两件事：填值、把值写进表格。
+   所以表单上的字段 ≡ 可以映射到表格的字段（同一套 fid）。
+   这里记每个模块哪些字段出现在表单上：屏蔽掉的既不显示，也不参与映射，
+   更不会写进表格 —— 一次屏蔽，两处同时生效。 */
+CREATE TABLE IF NOT EXISTS ui_field (
+  module  TEXT    NOT NULL,        /* po 采购 | in 入库 | out 出库 */
+  fid     TEXT    NOT NULL,        /* 字段，与 sheet/bridge.py 的 FIELDS 同一套 */
+  hide    INTEGER NOT NULL DEFAULT 0,   /* 1 = 屏蔽 */
+  ord     INTEGER NOT NULL DEFAULT 0,   /* 显示顺序 */
+  PRIMARY KEY(module, fid)
+);
+
 /* ============ 盘点（与出入库单据分离，调整时才生成单据） ============
    账实核对的标准流程：先按账面数生成盘点表 → 现场盲盘填实盘数 →
    算差异 → 确认后按差异生成盘盈入库 / 盘亏出库单据。
@@ -331,6 +358,14 @@ def migrate():
     # 来源：manual=采购页手工登记, txn=入库页按批次录入同步过来的
     if 'src' not in _cols('po_receipts'):
         run("ALTER TABLE po_receipts ADD COLUMN src TEXT DEFAULT 'manual'")
+    # v3.103 采购明细按「列」记长宽平米卷料：
+    # 卷料是「采购按平米、库存按平米+卷」这条业务线的核心口径，
+    # 之前只有 spec(长)/unit/conv，宽和卷数没处存，只能靠换算率反推，对不上账。
+    # 与 materials / txns 用同一套列名，导入导出与回写表格都能直接对齐。
+    for _col, _ddl in (('width', "TEXT DEFAULT ''"), ('sqm', 'REAL'),
+                       ('rolls', 'REAL'), ('qty_unit', "TEXT DEFAULT '平米'")):
+        if _col not in _cols('po_items'):
+            run("ALTER TABLE po_items ADD COLUMN %s %s" % (_col, _ddl))
     # 视图改成聚合 JOIN 后，老库里的旧视图不会自动更新，这里重建
     old = q("SELECT sql FROM sqlite_master WHERE type='view' AND name='v_stock'")
     if old and ('COALESCE(a.i' not in (old[0]['sql'] or '')

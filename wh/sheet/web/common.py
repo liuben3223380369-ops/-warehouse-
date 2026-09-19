@@ -15,7 +15,7 @@ from ...core import db, util
 from ...core.router import Router
 from ...core.util import new_nonce
 from ..engine import core as E
-from .. import batch, ref
+from .. import batch
 from ..ops import group as GR
 from ..ops.undo import (MAX_UNDO, snap as _snap,
                               restore as _restore, push as _push)

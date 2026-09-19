@@ -131,18 +131,6 @@ table.sh th{position:relative}
   </label>
 </div>
 <div class="card">
-  <div style="font-size:13px;color:#5b6675;margin-bottom:8px">
-    把在用的<b>库存模板</b>、<b>采购模板</b>摊成电子表格，存一份只读快照当作参考。
-    改参考表不影响原模板。
-  </div>
-  <form method="post" action="/sheet/ref" style="display:flex;gap:8px;flex-wrap:wrap">
-    <button class="btn" type="submit" style="width:auto;padding:11px 18px;flex:none;margin:0">📋 生成参考模板</button>
-    <label style="display:flex;align-items:center;font-size:13px;color:#5b6675;gap:4px">
-      <input type="checkbox" name="no_batch" value="1"> 不带批次号
-    </label>
-  </form>
-</div>
-<div class="card">
   {% if uni %}
   <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;
               font-size:13px;color:#5b6675;margin-bottom:8px">

@@ -73,12 +73,6 @@
 {# ---------- 明细 ---------- #}
 <div class="card">
   <h2>采购明细 <span class="pill">{{items|length}} 行</span></h2>
-  {% if ptpl %}
-  <div style="font-size:12px;color:#7a869a;margin-bottom:8px">
-    模板：<b>{{ptpl.name}}</b>
-    <a href="{{url_for('po_tpl_cols_set', tid=ptpl.id)}}" style="font-size:12px">⚙ 配列</a>
-  </div>
-  {% endif %}
   {% if items %}
   <div class="scroll"><table>
   <tr><th>物料</th><th class="n">订购</th><th class="n">已到</th><th class="n">未交</th>
@@ -89,9 +83,6 @@
       {% if it.batch %}<div style="font-size:12px;margin-top:2px"
         title="入库时填这个批次号，这批货就自动计入本单的已到数">📦 批次
         <b>{{it.batch}}</b></div>{% endif %}
-      {% for lb, vv in it.xcols %}
-        <div style="font-size:11px;color:#7a869a">{{lb}}：{{vv}}</div>
-      {% endfor %}
       {% if it.note %}<div style="font-size:11px;color:#7a869a">{{it.note}}</div>{% endif %}
       {% if it.sig %}<div style="font-size:11px;color:#98a2b3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px"
         title="明细指纹：供应商+名称+规格+单位 归一化，流水页靠它把采购实价映射到出入库单据">🔑 {{it.sig}}</div>{% endif %}</td>
@@ -170,20 +161,6 @@
       <div><label>批次号</label><input name="batch" placeholder="留空自动生成"></div>
       <div><label>备注</label><input name="note" placeholder="选填"></div>
     </div>
-    {% if ptpl %}<input type="hidden" name="ptpl" value="{{ptpl.id}}">
-    {% for xc in xcols %}{% set xt = xc.xtype or 'text' %}
-    <label>{{xc.label}}{% if xc.unit %}（{{xc.unit}}）{% endif %}</label>
-      {% if xt == 'select' %}
-      <select name="xc_{{xc.fid}}"><option value="">—</option>
-        {% for o in (xc.xopt or '').split(',') %}{% if o.strip() %}
-        <option value="{{o.strip()}}">{{o.strip()}}</option>{% endif %}{% endfor %}
-      </select>
-      {% elif xt == 'date' %}<input type="date" name="xc_{{xc.fid}}">
-      {% elif xt == 'calc' %}<input name="xc_{{xc.fid}}" readonly
-        style="background:#f4f6fa" placeholder="自动算：{{xc.xform}}">
-      {% else %}<input name="xc_{{xc.fid}}"
-        {% if xt=='number' %}inputmode="decimal"{% endif %}>{% endif %}
-    {% endfor %}{% endif %}
     <button type="submit" class="btn s g">加入明细</button>
   </form>
 </div>

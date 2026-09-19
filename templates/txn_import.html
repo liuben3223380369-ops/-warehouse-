@@ -11,31 +11,13 @@
   </div>
   {% if sig_hit %}
     <div style="margin-top:6px;color:#12a150;font-size:13px">
-      ✅ 列名和已有模板一致，已自动选中「{% for t in TPLS %}{% if t.id==tid %}{{ t.name }}{% endif %}{% endfor %}」，直接导入即可
+      ✅ 列名认得出来，直接导入即可
     </div>
   {% else %}
     <div style="margin-top:6px;color:#b26a00;font-size:13px">
-      ⚠️ 没见过这种列名。可以用它建个新模板，以后同样列名的表会自动归过来
+      ⚠️ 没见过这种列名，可能对不上。请对照下面「表格怎么填」的示例改表头
     </div>
-    <form method="post" action="{{ url_for('tpl_from_head') }}" style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">
-      <input type="hidden" name="_n" value="{{ new_nonce() }}">
-      <input type="hidden" name="hdr" value="{{ hdr|join('\t') }}">
-      <input name="name" placeholder="给这类表起个名字，如：卷料日报表" style="flex:1;min-width:160px" required>
-      <button type="submit" class="s">＋ 按表头建模板</button>
-    </form>
   {% endif %}
-</div>
-{% endif %}
-
-{% if TPLS %}
-<div class="card" style="padding:8px 10px">
-  <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-    <b style="font-size:14px">存到模板</b>
-    {% for t in TPLS %}
-      <a class="btn s {{ '' if t.id==tid else 'o' }}" href="{{ url_for(ep, tpl=t.id) }}">{{ t.name }}</a>
-    {% endfor %}
-  </div>
-  <div style="margin-top:4px;color:#5a6b7c;font-size:12px">导入的物料和单据会归到选中的模板</div>
 </div>
 {% endif %}
 

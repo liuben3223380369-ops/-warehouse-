@@ -37,18 +37,14 @@
 </div>
 
 <div class="rowflex">
-  <a class="btn s" href="{{url_for('po_tpls')}}" style="margin-top:0">🗂 采购模板（决定明细填哪些列）</a>
-</div>
-
-<div class="rowflex">
   <a class="btn s o" style="margin-top:0" href="{{url_for('po_summary')}}">
     📋 采购单汇总（金额快照）</a>
 </div>
 
-<div class="card" style="padding:10px 12px">
-  <div style="font-size:12px;color:#5b6675;margin-bottom:8px">
-    ⬇ 导出 Excel（按上面的筛选结果导出）</div>
-  <div class="rowflex" style="margin:0">
+<details class="card" style="padding:10px 12px">
+  <summary style="font-size:12px;color:#5b6675;cursor:pointer">
+    ⬇ 导出 Excel（按上面的筛选结果导出）</summary>
+  <div class="rowflex" style="margin:8px 0 0">
     <a class="btn s" style="margin-top:0" href="{{url_for('export_po_xlsx', t='orders', st=st, sup=sup, kw=kw)}}">采购单汇总</a>
     <a class="btn s" style="margin-top:0" href="{{url_for('export_po_xlsx', t='items', st=st, sup=sup, kw=kw)}}">采购明细</a>
   </div>
@@ -56,7 +52,7 @@
     <a class="btn s" style="margin-top:0" href="{{url_for('export_po_xlsx', t='recv', st=st, sup=sup, kw=kw)}}">到货流水</a>
     <a class="btn s" style="margin-top:0" href="{{url_for('export_po_xlsx', t='pay', st=st, sup=sup, kw=kw)}}">付款流水</a>
   </div>
-</div>
+</details>
 
 {% if rows %}
 {% for r in rows %}

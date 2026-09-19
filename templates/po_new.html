@@ -1,138 +1,78 @@
 {% extends 'base.html' %}
+{% from '_cols.html' import colbtn, colsbox %}
 {% block title %}新建采购单 - 仓库管理系统{% endblock %}
 {% block h1 %}新建采购单{% endblock %}
-{% block sub %}先建单头，再逐行加采购明细{% endblock %}
+{% block sub %}填单头，逐行加明细 · 计算交给表格{% endblock %}
 {% block body %}
 
 {% if err %}<div class="card" style="background:#fdeced;border-left:3px solid #e5484d">{{err}}</div>{% endif %}
 
 <form method="post" id="poform">
 <input type="hidden" name="_n" value="{{new_nonce()}}">
+
 <div class="card">
-  <label>供应商 *</label>
-  <input name="supplier" list="supl" autocomplete="off" placeholder="输入或选择供应商" required>
+  <div class="rowflex" style="margin:0">
+    <div style="flex:2"><label>供应商 *</label>
+      <input name="supplier" list="supl" autocomplete="off" placeholder="输入或选择" required></div>
+    <div><label>下单日期</label><input type="date" name="odate" value="{{today}}"></div>
+  </div>
   <datalist id="supl">{% for s in sups %}<option value="{{s}}">{% endfor %}</datalist>
 
   <div class="rowflex">
-    <div><label>下单日期</label><input type="date" name="odate" value="{{today}}"></div>
     <div><label>要求交期</label><input type="date" name="ddate"></div>
+    <div><label>税率 %</label><input name="tax_rate" inputmode="decimal" value="13"></div>
+    <div><label>单价口径</label>
+      <select name="price_tax">
+        <option value="1">含税</option><option value="0">不含税</option></select></div>
   </div>
-
-  {% if POTPLS %}
-  <label>采购模板（决定明细填哪些列）</label>
-  <select name="ptpl" onchange="location.href='{{url_for('po_new')}}?ptpl='+this.value">
-    {% for t in POTPLS %}<option value="{{t.id}}" {{'selected' if t.id==ptpl}}>{{t.name}}</option>{% endfor %}
-  </select>
-  <div style="font-size:12px;color:#7a869a;margin-top:-2px">
-    换模板会重开这一页（已填的明细不保留）。要改模板的列去
-    <a href="{{url_for('po_tpls')}}">采购模板</a> → ⚙ 配列。
-  </div>
-  {% else %}<input type="hidden" name="ptpl" value="0">{% endif %}
-
-  {% if TPLS %}
-  <div class="rowflex">
-    <div style="flex:1"><label>统计归类（只影响月报分组，不入库）</label><select name="tpl">
-      {% for t in TPLS %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}
-    </select></div>
-  </div>
-  {% endif %}
-  <div class="rowflex">
-    <div><label>税率 %</label><input name="tax_rate" inputmode="decimal" value="13"
-      oninput="calcAll()"></div>
-    <div><label>状态</label><select name="status">
-      <option>已下单</option><option>草稿</option></select></div>
-  </div>
-
-  <div class="rowflex" style="align-items:flex-end">
-    <div style="flex:1">
-      <label>单价口径</label>
-      <div style="display:flex;gap:14px;padding:9px 0;font-size:var(--fs-table)">
-        <label style="display:flex;align-items:center;gap:5px;margin:0">
-          <input type="radio" name="price_tax" value="1" checked onchange="calcAll()"
-            style="width:auto;margin:0">含税单价</label>
-        <label style="display:flex;align-items:center;gap:5px;margin:0">
-          <input type="radio" name="price_tax" value="0" onchange="calcAll()"
-            style="width:auto;margin:0">不含税单价</label>
-      </div>
-    </div>
-  </div>
-  <div style="font-size:12px;color:#7a869a;margin-top:-4px" id="tax_tip"></div>
-
   <label>备注</label><input name="note" placeholder="选填">
-  <datalist id="ulist">
-    {% for u in units %}<option value="{{u}}">{% endfor %}
-  </datalist>
+  <input type="hidden" name="status" value="已下单">
 </div>
 
-<div class="card">
-  <h2>采购明细 <span class="pill" id="cnt">0 行</span></h2>
-  <div id="rows"></div>
-
-{# 一行的样式模板：按采购模板启用的列渲染，JS 加行时复制它 #}
-<div id="tplrow" style="display:none">
-  {% for pair in PCOLS|batch(2) %}<div class="rowflex">
-  {% for c in pair %}
-    <div{% if c.fid in ('name',) %} style="flex:2"{% endif %}>
-      <label>{{c.label}}{% if c.unit %}（{{c.unit}}）{% endif %}{% if c.fid in ('name','qty') %} *{% endif %}</label>
-      {% if c.fid == 'name' %}
-        <input name="item_name" list="ml0" autocomplete="off" placeholder="输入即联想" class="nm" data-i="0">
-        <input type="hidden" name="item_mid" class="mid" data-i="0">
-        <div class="sg" id="sg0" style="display:none"></div>
-      {% elif c.fid == 'qty' %}
-        <input name="item_qty" inputmode="decimal" placeholder="" class="q" data-i="0" oninput="calcAll()">
-      {% elif c.fid == 'price' %}
-        <input name="item_price" inputmode="decimal" placeholder="0.00" class="p" data-i="0" oninput="calcAll()">
-      {% elif c.fid == 'unit' %}
-        <input name="item_unit" class="u" data-i="0" list="ulist" placeholder="个" oninput="showUnit(0)">
-      {% elif c.fid == 'conv' %}
-        <input name="item_conv" inputmode="decimal" value="1" class="cv" data-i="0" oninput="showUnit(0)">
-      {% elif c.fid == 'stock_unit' %}
-        <input name="item_stock_unit" class="su" data-i="0" list="ulist" placeholder="留空=同上">
-      {% elif c.fid == 'spec' %}
-        <input name="item_spec" class="sp" data-i="0">
-      {% elif c.fid == 'batch' %}
-        <input name="item_batch" data-i="0" placeholder="留空自动生成">
-      {% elif c.fid == 'note' %}
-        <input name="item_note" data-i="0" placeholder="选填">
-      {% elif c.fid.startswith('x_') %}
-        {% set xt = c.xtype or 'text' %}
-        {% if xt == 'select' %}
-        <select name="xc_{{c.fid}}" data-i="0">
-          <option value="">—</option>
-          {% for o in (c.xopt or '').split(',') %}{% if o.strip() %}
-          <option value="{{o.strip()}}">{{o.strip()}}</option>{% endif %}{% endfor %}
-        </select>
-        {% elif xt == 'date' %}
-        <input type="date" name="xc_{{c.fid}}" data-i="0">
-        {% elif xt == 'number' %}
-        <input name="xc_{{c.fid}}" inputmode="decimal" data-i="0" placeholder="">
-        {% elif xt == 'calc' %}
-        <input name="xc_{{c.fid}}" data-i="0" placeholder="自动算：{{c.xform}}" readonly
-               style="background:#f4f6fa">
-        {% else %}
-        <input name="xc_{{c.fid}}" data-i="0" placeholder="">
-        {% endif %}
-      {% else %}
-        <input name="item_{{c.fid}}" data-i="0">
-      {% endif %}
-    </div>
-  {% endfor %}
-  </div>{% endfor %}
-  <div class="uhint" data-i="0" style="font-size:12px;color:#7a869a"></div>
-  <datalist id="ml0">{% for m in mats %}<option value="{{m.name}}">{% endfor %}</datalist>
-  <div style="text-align:right"><button type="button" class="btn s o" style="width:auto;padding:6px 12px"
-    onclick="delRow(this)">删掉这行</button></div>
-</div>
-  <button type="button" class="btn s o" onclick="addRow()">＋ 加一行</button>
-  <button type="button" class="btn s" onclick="addRow(true)">＋ 复制上一行</button>
-
-  <div style="margin-top:12px;padding-top:10px;border-top:1px solid #eef2f7">
-    <div class="kv"><span>不含税金额</span><b id="s_amt">0.00</b></div>
-    <div class="kv"><span>税额</span><span id="s_tax">0.00</span></div>
-    <div class="kv"><span>价税合计</span><b id="s_total" style="color:#1f6feb">0.00</b></div>
+<div class="card" style="padding:10px 8px">
+  <div style="display:flex;justify-content:space-between;align-items:center;
+              padding:0 4px 8px;gap:8px">
+    <h2 style="margin:0">采购明细 <span class="pill" id="cnt">0 行</span></h2>
+    <span style="flex:1"></span>
+    {{ colbtn('po', url_for('po_cols_cfg')) }}
+    <button type="button" class="btn mini ghost" onclick="addRow()">＋ 加一行</button>
   </div>
-  <div style="font-size:12px;color:#7a869a;margin-top:8px">
-    金额 = 数量 × 单价，实时计算；税额按单头税率算。保存后可在详情页登记到货与付款。
+  <div style="font-size:12px;color:#7a869a;padding:0 4px 6px">
+    只填原始值。金额、卷数这类要算的，在表格里写公式算 —— 表单不代算。
+  </div>
+  <div style="overflow-x:auto">
+  <table id="mt">
+    <thead><tr>
+      {% for fid, lb in SHOWN %}
+      <th class="c" style="text-align:left;min-width:96px">{{lb}}</th>
+      {% endfor %}
+      <th class="c" style="width:26px"></th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  </div>
+</div>
+
+{# 录入到电子表格：默认记住上次那本，按批次号回写 #}
+<div class="card" style="padding:10px 12px">
+  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+    <span style="font-size:var(--fs-label);color:#5b6675">📗 录入到</span>
+    <select id="bind_wb" name="bind_wb" onchange="onWb()" class="cell" style="flex:1;min-width:110px">
+      {% for b in BOOKS %}
+      <option value="{{b.id}}" {% if BIND and BIND.wb_id==b.id %}selected{% endif %}>{{b.name}}</option>
+      {% endfor %}
+    </select>
+    <select id="bind_sh" name="bind_sh" onchange="onSh()" class="cell" style="flex:1;min-width:90px">
+      {% for s in SHS %}
+      <option value="{{s}}" {% if BIND and BIND.sh_name==s %}selected{% endif %}>{{s}}</option>
+      {% endfor %}
+    </select>
+    <button type="button" class="btn mini ghost" onclick="toggleMap()">列映射</button>
+  </div>
+  <div id="mapbox" style="display:none;margin-top:10px"></div>
+  <div style="font-size:12px;color:#7a869a;margin-top:6px">
+    按<b>批次号</b>写入：表里有这个号就更新那行，没有才追加。映射按「簿+表」记住；
+    在「显示列」里勾掉的字段不显示也不写入。
   </div>
 </div>
 
@@ -140,92 +80,154 @@
 <a class="btn s o" href="{{url_for('purchase_home')}}">取消</a>
 </form>
 
+{{ colsbox() }}
+
 <script>
+var MAPF = {{ MAPF|tojson }};
+var SKIP = {{ SKIP|tojson }};
+var CURHEADS = {{ HEADS|tojson }};
+var CURMAP = {{ (BIND.mapping if BIND else {})|tojson }};
 var MATS = {{ mats|tojson }};
+/* v3.106：明细列由「显示哪些列」决定 —— 与映射卡片同一套字段 */
+var FLDS = {{ SHOWN|tojson }};
 var n = 0;
 
-function addRow(copy){
-  var wrap=document.getElementById('rows');
-  var d=document.createElement('div');
-  d.className='card'; d.style.boxShadow='none'; d.style.border='1px solid #eef2f7';
-  d.innerHTML = rowHtml(n, copy ? wrap.lastElementChild : null);
-  wrap.appendChild(d);
-  bind(n); showUnit(n); n++;
-  document.getElementById('cnt').textContent = document.querySelectorAll('#rows .card').length + ' 行';
-  calcAll();
-  return false;
+function colLabel(i, h){
+  h = (h || '').trim();
+  return h ? (String.fromCharCode(65 + (i % 26)) + ' · ' + h) : ('第 ' + (i + 1) + ' 列');
 }
-function rowHtml(i, src){
-  // 索引替换只动 data-i 和 id（sg0/ml0），绝不动 name —— 自定义列的字段名
-  // 是 xc_x_1699999999 这种，含下划线+数字，用 /_(\d+)/ 替换会把字段名改坏。
-  var fix=function(h){ return h.replace(/data-i="\d+"/g,'data-i="'+i+'"')
-                              .replace(/id="([A-Za-z]+)\d+"/g,'id="$1'+i+'"'); };
-  var t=document.getElementById('tplrow');
-  return fix(src ? src.innerHTML : (t ? t.innerHTML : ''));
+function renderMap(heads, map){
+  var box = document.getElementById('mapbox');
+  if(!heads || !heads.length){ box.innerHTML = ''; return; }
+  var h = '<div style="font-size:12px;color:#7a869a;margin-bottom:6px">'
+        + '哪一列写什么（选「不写入」则该字段不进表）</div>';
+  for(var k = 0; k < MAPF.length; k++){
+    var fid = MAPF[k][0], lb = MAPF[k][1];
+    var cur = (map && map[fid] !== undefined) ? map[fid] : SKIP;
+    h += '<div class="rowflex" style="margin-bottom:4px">'
+       +   '<div style="width:88px;font-size:13px;padding-top:6px">' + lb + '</div>'
+       +   '<select name="map_' + fid + '" class="cell" style="flex:1">'
+       +     '<option value="' + SKIP + '"' + (cur == SKIP ? ' selected' : '') + '>不写入</option>';
+    for(var i = 0; i < heads.length; i++){
+      h += '<option value="' + i + '"' + (cur == i ? ' selected' : '') + '>'
+         + colLabel(i, heads[i]).replace(/</g, '&lt;') + '</option>';
+    }
+    h += '</select></div>';
+  }
+  box.innerHTML = h;
 }
-function delRow(b){ b.closest('.card').remove();
-  document.getElementById('cnt').textContent = document.querySelectorAll('#rows .card').length + ' 行';
-  calcAll(); }
+function toggleMap(){
+  var box = document.getElementById('mapbox');
+  if(box.style.display === 'none'){ box.style.display = 'block'; onSh(); }
+  else { box.style.display = 'none'; }
+}
+function onWb(){
+  var wb = document.getElementById('bind_wb').value;
+  document.getElementById('bind_sh').innerHTML = '';
+  if(document.getElementById('mapbox').style.display !== 'none')
+    document.getElementById('mapbox').innerHTML = '';
+  if(!wb) return;
+  fetch('{{url_for("po_bind_sheets")}}?wb=' + encodeURIComponent(wb))
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      var sel = document.getElementById('bind_sh');
+      (d.sheets || []).forEach(function(s){
+        var o = document.createElement('option');
+        o.value = s; o.textContent = s; sel.appendChild(o);
+      });
+      onSh();
+    });
+}
+function onSh(){
+  var wb = document.getElementById('bind_wb').value;
+  var sh = document.getElementById('bind_sh').value;
+  if(!wb || !sh){ document.getElementById('mapbox').innerHTML = ''; return; }
+  fetch('{{url_for("po_bind_heads")}}?wb=' + encodeURIComponent(wb)
+        + '&sh=' + encodeURIComponent(sh))
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      var m = (d.saved && Object.keys(d.saved).length) ? d.saved : d.auto;
+      renderMap(d.heads, m);
+    });
+}
+if(document.getElementById('bind_wb').value && document.getElementById('bind_sh').value){
+  renderMap(CURHEADS, (Object.keys(CURMAP).length ? CURMAP : null));
+}
+
+/* ---------------- 明细行 ----------------
+   列由 FLDS 生成：物料那一列带联想，其余是普通输入框。
+   v3.106 不再有任何自动计算 —— 填什么写什么，要算的去表格里写公式。 */
+function esc_(s){ return (s==null?'':String(s)).replace(/"/g, '&quot;'); }
+function rowHtml(i){
+  var h = '';
+  for(var k = 0; k < FLDS.length; k++){
+    var fid = FLDS[k][0], lb = FLDS[k][1];
+    if(fid === 'name'){
+      h += '<td class="c"><input name="item_name" list="ml' + i + '" autocomplete="off"'
+        +   ' class="cell nm" data-i="' + i + '" placeholder="物料" style="width:100%">'
+        +   '<input type="hidden" name="item_mid" class="mid" data-i="' + i + '">'
+        +   '<div class="sg" id="sg' + i + '" style="display:none;position:absolute;z-index:9"></div></td>';
+      continue;
+    }
+    var ph = esc_(lb);
+    h += '<td class="c"><input name="item_' + fid + '" class="cell F-' + fid
+      +   '" data-i="' + i + '" placeholder="' + ph + '" style="width:100%"></td>';
+  }
+  h += '<td class="c"><button type="button" onclick="delRow(this)" '
+    +   'style="width:auto;padding:2px 6px;margin:0;background:none;color:#98a2b3;'
+    +   'font-size:15px;box-shadow:none">×</button></td>';
+  return h;
+}
+function addRow(){
+  var tb = document.getElementById('rows');
+  var tr = document.createElement('tr');
+  tr.innerHTML = rowHtml(n);
+  tb.appendChild(tr);
+  bind(n);
+  n++;
+  document.getElementById('cnt').textContent = tb.querySelectorAll('tr').length + ' 行';
+}
+function delRow(b){
+  var tb = document.getElementById('rows');
+  var tr = b.closest('tr');
+  if(!tr) return;
+  tr.remove();
+  if(!tb.querySelectorAll('tr').length) addRow();
+  document.getElementById('cnt').textContent = tb.querySelectorAll('tr').length + ' 行';
+}
 function bind(i){
-  var el=document.querySelector('.nm[data-i="'+i+'"]'); if(!el) return;
-  el.oninput=function(){
-    var kw=el.value.trim().toLowerCase(); var box=document.getElementById('sg'+i);
-    if(!kw){ box.style.display='none'; return; }
-    var hit=MATS.filter(function(m){ return m.name.toLowerCase().indexOf(kw)>=0
-      || (m.code||'').toLowerCase().indexOf(kw)>=0; }).slice(0,8);
-    if(!hit.length){ box.style.display='none'; return; }
-    box.innerHTML='<div class="card" style="margin:4px 0;padding:6px;box-shadow:none;border:1px solid #eef2f7">'
-      + hit.map(function(m){ return '<div data-id="'+m.id+'" data-n="'+m.name.replace(/"/g,'&quot;')
-        +'" data-u="'+m.unit+'" data-s="'+m.spec+'" style="padding:5px;cursor:pointer">'
-        + m.name + (m.code?' <span class="pill">'+m.code+'</span>':'') + '</div>'; }).join('') + '</div>';
-    box.style.display='block';
+  var el = document.querySelector('.nm[data-i="' + i + '"]'); if(!el) return;
+  el.oninput = function(){
+    var kw = el.value.trim().toLowerCase();
+    var box = document.getElementById('sg' + i);
+    if(!kw){ box.style.display = 'none'; return; }
+    var hit = MATS.filter(function(m){
+      return m.name.toLowerCase().indexOf(kw) >= 0
+          || (m.code || '').toLowerCase().indexOf(kw) >= 0; }).slice(0, 8);
+    if(!hit.length){ box.style.display = 'none'; return; }
+    box.innerHTML = '<div style="background:#fff;border:1px solid #e3e7ec;border-radius:8px;'
+      + 'box-shadow:0 2px 8px rgba(0,0,0,.12);padding:4px">'
+      + hit.map(function(m){
+          return '<div data-id="' + m.id + '" data-n="' + m.name.replace(/"/g, '&quot;')
+            + '" data-u="' + m.unit + '" data-s="' + m.spec + '"'
+            + ' data-wd="' + (m.width || '') + '"'
+            + ' style="padding:6px 8px;cursor:pointer;font-size:13px">'
+            + m.name + (m.code ? ' <span class="pill">' + m.code + '</span>' : '') + '</div>';
+        }).join('') + '</div>';
+    box.style.display = 'block';
     box.querySelectorAll('div[data-id]').forEach(function(x){
-      x.onclick=function(){
-        el.value=x.dataset.n;
-        document.querySelector('.mid[data-i="'+i+'"]').value=x.dataset.id;
-        document.querySelector('.u[data-i="'+i+'"]').value=x.dataset.u||'';
-        showUnit(i);
-        document.querySelector('.sp[data-i="'+i+'"]').value=x.dataset.s||'';
-        box.style.display='none'; calcAll();
-        document.querySelector('.q[data-i="'+i+'"]').focus();
+      x.onclick = function(){
+        el.value = x.dataset.n;
+        document.querySelector('.mid[data-i="' + i + '"]').value = x.dataset.id;
+        /* 选中物料只带出档案里已有的长/宽 —— 其余照旧留空，不算不代填 */
+        var lEl = document.querySelector('.F-spec[data-i="' + i + '"]');
+        var wEl = document.querySelector('.F-width[data-i="' + i + '"]');
+        if(lEl && x.dataset.s) lEl.value = x.dataset.s;
+        if(wEl && x.dataset.wd) wEl.value = x.dataset.wd;
+        box.style.display = 'none';
       };
     });
   };
-}
-function showUnit(i){
-  var u=document.querySelector('.u[data-i="'+i+'"]');
-  var cv=document.querySelector('.cv[data-i="'+i+'"]');
-  var su=document.querySelector('.su[data-i="'+i+'"]');
-  var hint=document.querySelector('.uhint[data-i="'+i+'"]');
-  if(!u||!hint) return;
-  var c=parseFloat(cv&&cv.value);
-  var s=(su&&su.value||'').trim();
-  if(!s || !c || Math.abs(c-1)<1e-9){ hint.textContent=''; return; }
-  hint.innerHTML='入库按 <b>'+s+'</b> 计：1 '+u.value+' = '+c+' '+s;
-}
-function calcAll(){
-  var rate=parseFloat(document.querySelector('[name=tax_rate]').value)||0;
-  var ptRadio=document.querySelector('[name=price_tax]:checked');
-  var pt=ptRadio?parseInt(ptRadio.value,10):1;
-  if(document.getElementById('tax_tip')){
-    document.getElementById('tax_tip').textContent = pt
-      ? '单价按含税填：不含税金额 = 数量 × 单价 ÷ (1+税率)'
-      : '单价按不含税填：税额 = 数量 × 单价 × 税率';
-  }
-  var amt=0;
-  document.querySelectorAll('.q').forEach(function(q){
-    var i=q.dataset.i;
-    var p=document.querySelector('.p[data-i="'+i+'"]');
-    var qv=parseFloat(q.value)||0, pv=parseFloat(p&&p.value)||0;
-    var up=pt?pv/(1+rate/100):pv;          /* pt=1 单价含税，先除税 */
-    var line=Math.round(qv*up*100)/100; amt+=line;
-    var ln=document.querySelector('.ln[data-i="'+i+'"]');
-    if(ln) ln.textContent = line? ('小计 '+line.toFixed(2)) : '';
-  });
-  var tax=Math.round(amt*rate)/100;
-  document.getElementById('s_amt').textContent=amt.toFixed(2);
-  document.getElementById('s_tax').textContent=tax.toFixed(2);
-  document.getElementById('s_total').textContent=(amt+tax).toFixed(2);
 }
 addRow();
 </script>
